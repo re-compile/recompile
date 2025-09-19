@@ -1,0 +1,53 @@
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
+*.code-workspace
+
+# Rust
+/target/
+**/target/
+
+# Generic build dirs
+/build/
+**/build/
+
+# Project-specific build outputs
+recompile/build/
+recompile/build/**
+
+# QEMU/VM artifacts
+recompile/runtime/vm/*.img
+recompile/runtime/vm/*.qcow2
+recompile/runtime/vm/*.iso
+recompile/runtime/vm/uefi_vars.fd
+recompile/runtime/vm/firmware.path
+recompile/runtime/vm/seed.iso
+recompile/runtime/vm/seed/
+recompile/runtime/vm/kernel/vmlinuz
+recompile/runtime/vm/kernel/initrd
+
+# Findings and logs
+recompile/build/re-findings.log
+recompile/build/.re/
+
+# eBPF build artifacts
+recompile/runtime/bpf/*.o
+recompile/runtime/bpf/*.bpf.o
+recompile/runtime/bpf/*.ll
+recompile/runtime/bpf/*.bc
+recompile/runtime/bpf/*.skel.h
+# Generated per-guest kernel header (large)
+recompile/runtime/bpf/vmlinux.h
+
+# CMake outputs
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake-build*/
+**/install_manifest.txt
+
+# Tools downloaded locally
+cloud-localds
+
+# Misc logs
+*.log

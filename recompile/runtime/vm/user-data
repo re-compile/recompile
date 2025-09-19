@@ -1,0 +1,40 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+
+write_files:
+  - path: /usr/local/bin/re-firstboot.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euxo pipefail
+      echo "[re-firstboot] start"
+
+      # Ensure console & 9p
+      modprobe virtio_console || true
+      modprobe 9pnet_virtio || true
+      modprobe 9p || true
+
+      # Mount the host project
+      mkdir -p /host
+      mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144 host /host || true
+
+      # Get a working bpftool for THIS kernel version
+      apt-get update -y || true
+      apt-get install -y --no-install-recommends linux-tools-common linux-tools-$(uname -r) || true
+
+      # Find bpftool either in PATH or the versioned dir
+      BPFOOL="$(command -v bpftool || true)"
+      if [ -z "${BPFOOL}" ] && [ -x "/usr/lib/linux-tools/$(uname -r)/bpftool" ]; then
+        BPFOOL="/usr/lib/linux-tools/$(uname -r)/bpftool"
+      fi
+
+      # Dump vmlinux.h if possible (ok even if apt failed; we’ll report miss)
+      if [ -n "${BPFOOL:-}" ]; then
+        "${BPFOOL}" btf dump file /sys/kernel/btf/vmlinux format c > /host/runtime/bpf/vmlinux.h || true
+      fi
+
+      echo "RE:READY: mounted_host=$(mountpoint -q /host && echo 1 || echo 0) vmlinux_header=$([ -s /host/runtime/bpf/vmlinux.h ] && echo ok || echo miss)"
+
+runcmd:
+  - [ bash, -lc, "/usr/local/bin/re-firstboot.sh" ]
