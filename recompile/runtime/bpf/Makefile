@@ -1,35 +1,47 @@
-BPF_CLANG ?= clang
+# --- runtime/bpf/Makefile (drop-in) ---
+LLVM_PREFIX ?= /opt/homebrew/opt/llvm
+CLANG       ?= $(LLVM_PREFIX)/bin/clang
+OBJDUMP     ?= $(LLVM_PREFIX)/bin/llvm-objdump
 
-UNAME_M := $(shell uname -m)
-ifeq ($(BPF_ARCH),)
-  ifeq ($(UNAME_M),x86_64)
-    BPF_ARCH := x86
-  else ifeq ($(UNAME_M),arm64)
-    BPF_ARCH := arm64
-  else ifeq ($(UNAME_M),aarch64)
-    BPF_ARCH := arm64
-  else
-    BPF_ARCH := x86
-  endif
-endif
+# Where this Makefile lives
+BPF_DIR     := $(abspath .)
 
-BPF_CFLAGS ?= -g -O2 -target bpf -D__TARGET_ARCH_$(BPF_ARCH)
+# Headers we vendor/local-generate:
+#   include/            <- your downloaded libbpf headers live here
+#   include/uapi        <- (optional) put any UAPI shims here
+#   vmlinux.h           <- generated inside this dir
+#   ../shared           <- your re_events.h etc.
+BPF_INCLUDES := \
+  -I$(BPF_DIR) \
+  -I$(BPF_DIR)/include \
+  -I$(BPF_DIR)/include/uapi \
+  -I$(BPF_DIR)/../shared
 
-SRCS := heap_tracker.bpf.c copy_checker.bpf.c
-OBJS := $(SRCS:.c=.o)
+BPF_CFLAGS := -target bpf -D__TARGET_ARCH_arm64 -O2 -g \
+  -Wall -Wno-unknown-attributes -Wno-unused-value -Wno-pointer-sign \
+  -Wno-compare-distinct-pointer-types \
+  -Wno-gnu-variable-sized-type-not-at-end -Wno-incompatible-pointer-types \
+  -Wno-unused-function \
+  $(BPF_INCLUDES)
 
-ifeq ($(wildcard vmlinux.h),)
-all:
-	@echo "Skipping BPF build: missing runtime/bpf/vmlinux.h (run 'make vm' to generate from microVM kernel BTF)"
-	@true
-else
-all: $(OBJS)
-endif
+BPF_SRCS := copy_checker.bpf.c heap_tracker.bpf.c
+BPF_OBJS := $(BPF_SRCS:.c=.o)
 
-%.o: %.c ../shared/re_events.h
-	$(BPF_CLANG) $(BPF_CFLAGS) -c $< -o $@
+.PHONY: all clean clang-version check-btf
+all: $(BPF_OBJS)
+
+%.bpf.o: %.bpf.c
+	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(OBJS)
+	rm -f $(BPF_OBJS)
 
+clang-version:
+	@$(CLANG) --version | head -1
 
+check-btf:
+	@test -s $(BPF_DIR)/vmlinux.h && echo "✓ vmlinux.h present" || (echo "✗ vmlinux.h missing" && exit 1)
+	@if [ -f copy_checker.bpf.o ]; then \
+	  $(OBJDUMP) -h copy_checker.bpf.o | grep -q ' BTF' && echo "✓ BTF sections present in copy_checker.bpf.o" || echo "✗ no BTF sections yet"; \
+	else echo "… build objects first"; fi
+# --- end ---

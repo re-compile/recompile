@@ -36,5 +36,72 @@ write_files:
 
       echo "RE:READY: mounted_host=$(mountpoint -q /host && echo 1 || echo 0) vmlinux_header=$([ -s /host/runtime/bpf/vmlinux.h ] && echo ok || echo miss)"
 
+      # Smoke finding to host via virtio port
+      if [ -e /dev/virtio-ports/re.findings ]; then
+        echo 'RE:FINDING: {"id":"F-smoke","origin":"boot","kind":"note","severity":"info","message":"virtio channel OK"}' \
+          > /dev/virtio-ports/re.findings
+      fi
+
+      # Skeletons (ok if they already exist)
+      bpftool gen skeleton /host/runtime/bpf/heap_tracker.bpf.o > /host/runtime/bpf/heap_tracker.skel.h || true
+      bpftool gen skeleton /host/runtime/bpf/copy_checker.bpf.o > /host/runtime/bpf/copy_checker.skel.h || true
+
+      if bpftool prog loadall /host/runtime/bpf/copy_checker.bpf.o /sys/fs/bpf/re-test 2>/tmp/vlog; then
+        echo "RE:DEBUG: bpftool loadall OK" > /dev/virtio-ports/re.findings
+        rm -rf /sys/fs/bpf/re-test || true
+      else
+        echo "RE:DEBUG: bpftool loadall FAILED"    > /dev/virtio-ports/re.findings
+        tail -n 80 /tmp/vlog                      >> /dev/virtio-ports/re.findings
+        dmesg | tail -n 120                       >> /dev/virtio-ports/re.findings
+      fi
+
+      # Build tiny agent (needs -ldl)
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        build-essential clang pkg-config libbpf-dev libelf-dev zlib1g-dev || true
+      clang -O2 -g -Wall -I/host/runtime/bpf -I/host/runtime -I/host/runtime/shared \
+        -o /usr/local/bin/re-mini /host/runtime/agent/re-mini.c -lelf -lz -lbpf -ldl || true
+
+      # Tiny test (first: safe copy to prove pipeline; second: overflow)
+      cat >/tmp/memcpy_overflow.c <<'EOF'
+      #include <stdio.h>
+      #include <stdlib.h>
+      #include <string.h>
+      int main() {
+        char *dst = (char*)malloc(32);
+        char src[64];
+        memset(src, 'A', sizeof(src));
+        memcpy(dst, src, 64);
+        puts("done");
+        return 0;
+      }
+      EOF
+      clang -O0 -g -fno-omit-frame-pointer -fno-builtin -o /tmp/memcpy_overflow /tmp/memcpy_overflow.c
+      /tmp/memcpy_overflow || true
+
+      # Run agent (background)      # Run agent (background)
+      nohup /usr/local/bin/re-mini \
+        --obj /host/runtime/bpf/copy_checker.bpf.o \
+        --libc /usr/lib/aarch64-linux-gnu/libc.so.6 \
+        --func memcpy \
+        --out /dev/virtio-ports/re.findings >/dev/null 2>&1 &
+
+      sleep 1
+      /tmp/memcpy_overflow || true
+      
+      if command -v bpftool >/dev/null 2>&1; then
+        if bpftool map show name hits >/dev/null 2>&1; then
+          echo 'RE:DEBUG: dumping hits map:' > /dev/virtio-ports/re.findings
+          bpftool map dump name hits            >> /dev/virtio-ports/re.findings
+          # also save to the host for post-mortem
+          bpftool map dump name hits            >  /host/build/hits.dump 2>/dev/null || true
+        else
+          echo 'RE:DEBUG: hits map not found'   > /dev/virtio-ports/re.findings
+        fi
+        # optional: show prog run counters if kernel exposes them
+        bpftool prog show > /host/build/bpftool-prog.txt 2>/dev/null || true
+      fi
+
 runcmd:
   - [ bash, -lc, "/usr/local/bin/re-firstboot.sh" ]
+  - [ bash, -lc, "apt-get update -y" ]
+  - [ bash, -lc, "apt-get install -y --no-install-recommends build-essential clang pkg-config libbpf-dev linux-tools-$(uname -r)" ]

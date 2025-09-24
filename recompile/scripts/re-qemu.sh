@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-cd "$root"
+cd "$root/recompile"
 mkdir -p build/.re
 : > build/.re/console.log
 : > build/re-findings.log
