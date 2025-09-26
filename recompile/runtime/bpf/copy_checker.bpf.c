@@ -44,6 +44,8 @@ struct {
 /* ---- Event payload (keep it POD & stable) ---- */
 struct copy_event {
     __u64 ts_ns;
+    __u32 pid;
+    __u32 tid;
     __u64 dst;
     __u64 src;
     __u64 len;
@@ -63,6 +65,9 @@ static __always_inline void fill_basic(struct pt_regs *ctx,
     void *dst, const void *src, __u64 len)
 {
     e->ts_ns   = bpf_ktime_get_ns();
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    e->pid     = pid_tgid >> 32;
+    e->tid     = (__u32)pid_tgid;
     e->dst     = (__u64)dst;
     e->src     = (__u64)src;
     e->len     = len;

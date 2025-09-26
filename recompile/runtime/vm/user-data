@@ -19,6 +19,7 @@ write_files:
       mkdir -p /host
       mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144 host /host || true
       mkdir -p /host/build || true
+      rm -f /host/build/hits.log /host/build/hits.dump || true
 
       # Get a working bpftool for THIS kernel version
       apt-get update -y || true
@@ -82,6 +83,7 @@ write_files:
       nohup /usr/local/bin/re-mini \
         --heap /host/runtime/bpf/heap_tracker.bpf.o \
         --obj /host/runtime/bpf/copy_checker.bpf.o \
+        --binary /tmp/memcpy_overflow \
         --libc /usr/lib/aarch64-linux-gnu/libc.so.6 \
         --func memcpy \
         --out /dev/virtio-ports/re.findings >/dev/null 2>&1 &
