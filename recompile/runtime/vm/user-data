@@ -18,6 +18,7 @@ write_files:
       # Mount the host project
       mkdir -p /host
       mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144 host /host || true
+      mkdir -p /host/build || true
 
       # Get a working bpftool for THIS kernel version
       apt-get update -y || true
@@ -61,7 +62,7 @@ write_files:
       clang -O2 -g -Wall -I/host/runtime/bpf -I/host/runtime -I/host/runtime/shared \
         -o /usr/local/bin/re-mini /host/runtime/agent/re-mini.c -lelf -lz -lbpf -ldl || true
 
-      # Tiny test (first: safe copy to prove pipeline; second: overflow)
+      # Tiny test program (intentional overflow)
       cat >/tmp/memcpy_overflow.c <<'EOF'
       #include <stdio.h>
       #include <stdlib.h>
@@ -76,26 +77,24 @@ write_files:
       }
       EOF
       clang -O0 -g -fno-omit-frame-pointer -fno-builtin -o /tmp/memcpy_overflow /tmp/memcpy_overflow.c
-      /tmp/memcpy_overflow || true
 
-      # Run agent (background)      # Run agent (background)
+      # Run agent (background)
       nohup /usr/local/bin/re-mini \
+        --heap /host/runtime/bpf/heap_tracker.bpf.o \
         --obj /host/runtime/bpf/copy_checker.bpf.o \
         --libc /usr/lib/aarch64-linux-gnu/libc.so.6 \
         --func memcpy \
         --out /dev/virtio-ports/re.findings >/dev/null 2>&1 &
 
       sleep 1
+      # Execute overflow workload (once agent + probes are attached)
       /tmp/memcpy_overflow || true
       
       if command -v bpftool >/dev/null 2>&1; then
         if bpftool map show name hits >/dev/null 2>&1; then
-          echo 'RE:DEBUG: dumping hits map:' > /dev/virtio-ports/re.findings
-          bpftool map dump name hits            >> /dev/virtio-ports/re.findings
-          # also save to the host for post-mortem
           bpftool map dump name hits            >  /host/build/hits.dump 2>/dev/null || true
         else
-          echo 'RE:DEBUG: hits map not found'   > /dev/virtio-ports/re.findings
+          echo 'RE:DEBUG: hits map not found'   > /host/build/hits.log 2>/dev/null || true
         fi
         # optional: show prog run counters if kernel exposes them
         bpftool prog show > /host/build/bpftool-prog.txt 2>/dev/null || true
