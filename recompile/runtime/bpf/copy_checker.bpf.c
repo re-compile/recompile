@@ -4,6 +4,8 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
+#include "../shared/re_events.h"
+
 /* macOS host toolchain won't bring this in; kernel default is 127 */
 #ifndef PERF_MAX_STACK_DEPTH
 #define PERF_MAX_STACK_DEPTH 127
@@ -15,8 +17,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 65536);
     __type(key,   __u64);
-    __type(value, __u64);   // size
-    __uint(map_flags, BPF_F_NO_PREALLOC);
+    __type(value, struct re_alloc_info);
 } allocs SEC(".maps");
 
 /* ---- Ring buffer for findings ---- */
@@ -51,6 +52,7 @@ struct copy_event {
     __u64 len;
     __u64 dst_size;   // 0 if unknown
     __s32 call_sid;   // stack id (user)
+    __s32 alloc_sid;  // allocation stack id (user)
     __u8  api;        // 1 = memcpy (future: 2=memmove, 3=strcpy, etc.)
     __u8  severity;   // rule-of-thumb: 2=warn, 3=error
     __u16 _pad;
@@ -92,8 +94,9 @@ int BPF_KPROBE(on_memcpy)
 
     // Look up heap capacity if we have it
     __u64 key = (__u64)dst;
-    __u64 *psz = bpf_map_lookup_elem(&allocs, &key);
-    __u64 cap = psz ? *psz : 0;
+    struct re_alloc_info *info = bpf_map_lookup_elem(&allocs, &key);
+    __u64 cap = info ? info->size : 0;
+    __s32 alloc_sid = info ? info->alloc_stack_id : -1;
 
     // Emit an event whenever cap is unknown or len > cap
     if (cap && len <= cap)
@@ -104,6 +107,7 @@ int BPF_KPROBE(on_memcpy)
 
     fill_basic(ctx, e, dst, src, len);
     e->dst_size = cap;
+    e->alloc_sid = alloc_sid;
 
     // quick severity heuristic
     if (cap && len > cap) e->severity = 3; // overflow

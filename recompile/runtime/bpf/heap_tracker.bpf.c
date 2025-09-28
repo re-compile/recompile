@@ -4,17 +4,18 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
+#include "../shared/re_events.h"
+
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 /* ---- Maps ---- */
 
-// ptr -> size (capacity). Shared with other objs (copy_checker).
+// ptr -> alloc info (size + alloc stack). Shared with other objs (copy_checker).
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 65536);
     __type(key,   __u64);   // heap pointer as u64
-    __type(value, __u64);   // size
-    __uint(map_flags, BPF_F_NO_PREALLOC);
+    __type(value, struct re_alloc_info);
 } allocs SEC(".maps");
 
 // tid -> pending size for malloc/calloc/realloc (entry -> return)
@@ -23,7 +24,6 @@ struct {
     __uint(max_entries, 8192);
     __type(key,   __u32);   // TID
     __type(value, __u64);   // size
-    __uint(map_flags, BPF_F_NO_PREALLOC);
 } pending SEC(".maps");
 
 // tid -> pending OLD pointer for realloc (to handle success/failure correctly)
@@ -32,8 +32,18 @@ struct {
     __uint(max_entries, 8192);
     __type(key,   __u32);   // TID
     __type(value, __u64);   // old pointer (as u64)
-    __uint(map_flags, BPF_F_NO_PREALLOC);
 } realloc_old SEC(".maps");
+
+#ifndef PERF_MAX_STACK_DEPTH
+#define PERF_MAX_STACK_DEPTH 127
+#endif
+
+struct {
+    __uint(type, BPF_MAP_TYPE_STACK_TRACE);
+    __uint(key_size, sizeof(__u32));
+    __uint(value_size, sizeof(__u64) * PERF_MAX_STACK_DEPTH);
+    __uint(max_entries, 2048);
+} ustacks SEC(".maps");
 
 /* ---- Helpers ---- */
 
@@ -119,7 +129,11 @@ int BPF_KRETPROBE(u_malloc_exit)
     __u64 size = take_pending_size();
     if (ret && size) {
         __u64 key = (__u64)ret;
-        bpf_map_update_elem(&allocs, &key, &size, BPF_ANY);
+        struct re_alloc_info info = {
+            .size = size,
+            .alloc_stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK)
+        };
+        bpf_map_update_elem(&allocs, &key, &info, BPF_ANY);
     }
     return 0;
 }
@@ -143,7 +157,11 @@ int BPF_KRETPROBE(u_calloc_exit)
     __u64 size = take_pending_size();
     if (ret && size) {
         __u64 key = (__u64)ret;
-        bpf_map_update_elem(&allocs, &key, &size, BPF_ANY);
+        struct re_alloc_info info = {
+            .size = size,
+            .alloc_stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK)
+        };
+        bpf_map_update_elem(&allocs, &key, &info, BPF_ANY);
     }
     return 0;
 }
@@ -187,7 +205,11 @@ int BPF_KRETPROBE(u_realloc_exit)
         bpf_map_delete_elem(&allocs, &old);
     if (size) {
         __u64 key = (__u64)ret;
-        bpf_map_update_elem(&allocs, &key, &size, BPF_ANY);
+        struct re_alloc_info info = {
+            .size = size,
+            .alloc_stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK)
+        };
+        bpf_map_update_elem(&allocs, &key, &info, BPF_ANY);
     }
     return 0;
 }

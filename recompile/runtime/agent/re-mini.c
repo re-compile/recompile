@@ -36,6 +36,7 @@ struct copy_event {
     __u64 len;
     __u64 dst_size;   // 0 if unknown
     __s32 call_sid;
+    __s32 alloc_sid;
     __u8  api;        // 1=memcpy
     __u8  severity;   // 2=warn, 3=error
     __u16 _pad;
@@ -65,6 +66,9 @@ static char last_drop_reason[128];
 struct frame_info {
     char function[128];
     char file[PATH_MAX];
+    char module[PATH_MAX];
+    __u64 address;
+    __u64 offset;
     int line;
     int column;
     bool has_symbol;
@@ -79,6 +83,48 @@ static void debug_drop(__u32 pid, const char *reason);
 static bool already_reported(__u32 pid, __u64 dst);
 static void mark_reported(__u32 pid, __u64 dst);
 static int collect_call_frames(__u32 pid, __s32 stack_id, struct frame_info *frames, int max_frames);
+
+static const struct frame_info *select_primary(const struct frame_info *frames, int count)
+{
+    const struct frame_info *primary = NULL;
+    for (int i = 0; i < count; ++i) {
+        if (!frames[i].has_symbol)
+            continue;
+        if (!primary) {
+            primary = &frames[i];
+            continue;
+        }
+        bool primary_is_system = primary->file[0] && strstr(primary->file, "/usr/") != NULL;
+        bool current_is_system = frames[i].file[0] && strstr(frames[i].file, "/usr/") != NULL;
+        if (primary_is_system && !current_is_system)
+            primary = &frames[i];
+    }
+    if (!primary && count > 0)
+        primary = &frames[0];
+    return primary;
+}
+
+static void build_stack_json(const struct frame_info *frames, int count, char *out, size_t out_sz)
+{
+    size_t off = 0;
+    if (out_sz == 0) return;
+    out[0] = '\0';
+    off += snprintf(out + off, out_sz - off, "[");
+    for (int i = 0; i < count && off + 4 < out_sz; ++i) {
+        const struct frame_info *fr = &frames[i];
+        char escaped[512];
+        const char *text = fr->summary[0] ? fr->summary : "<unknown>";
+        json_escape(text, escaped, sizeof(escaped));
+        off += snprintf(out + off, out_sz - off, "%s\"%s\"", (i == 0 ? "" : ","), escaped);
+    }
+    if (off + 2 < out_sz) {
+        out[off++] = ']';
+        out[off] = '\0';
+    } else if (out_sz > 2) {
+        out[out_sz - 2] = ']';
+        out[out_sz - 1] = '\0';
+    }
+}
 
 static void on_sig(int sig){ (void)sig; stop = 1; }
 
@@ -103,24 +149,55 @@ static void log_line(const char *fmt, ...) {
 }
 
 static void emit_finding(const struct copy_event *e,
-    struct frame_info *call_frames, int call_count)
+    struct frame_info *call_frames, int call_count,
+    struct frame_info *alloc_frames, int alloc_count)
 {
-    const char *severity = (e->severity >= 3) ? "error" : "warning";
+    const struct frame_info *primary_call = select_primary(call_frames, call_count);
+    const struct frame_info *primary_alloc = select_primary(alloc_frames, alloc_count);
+    const struct frame_info *primary = primary_call ? primary_call : primary_alloc;
 
-    const struct frame_info *primary = NULL;
-    for (int i = 0; i < call_count; ++i) {
-        if (!call_frames[i].has_symbol) continue;
-        if (primary == NULL) {
-            primary = &call_frames[i];
-            continue;
-        }
-        /* prefer non-system frames */
-        bool primary_is_system = primary->file[0] && strstr(primary->file, "/usr/") != NULL;
-        bool current_is_system = call_frames[i].file[0] && strstr(call_frames[i].file, "/usr/") != NULL;
-        if (primary_is_system && !current_is_system)
-            primary = &call_frames[i];
+    bool known_cap = e->dst_size > 0;
+    bool hard_overflow = known_cap && e->len > e->dst_size;
+    const char *severity = hard_overflow ? "error" : "warning";
+
+    char call_stack_json[1536];
+    char alloc_stack_json[1536];
+    build_stack_json(call_frames, call_count, call_stack_json, sizeof(call_stack_json));
+    build_stack_json(alloc_frames, alloc_count, alloc_stack_json, sizeof(alloc_stack_json));
+
+    const char *location_summary = (primary && primary->summary[0]) ? primary->summary : "unknown location";
+    char message[512];
+    if (known_cap) {
+        snprintf(message, sizeof(message),
+            "memcpy overflow: copied %llu bytes into 0x%llx (capacity %llu) at %s",
+            (unsigned long long)e->len,
+            (unsigned long long)e->dst,
+            (unsigned long long)e->dst_size,
+            location_summary);
+    } else {
+        snprintf(message, sizeof(message),
+            "memcpy overflow suspicion: copied %llu bytes into 0x%llx (capacity unknown) at %s",
+            (unsigned long long)e->len,
+            (unsigned long long)e->dst,
+            location_summary);
     }
-    if (!primary && call_count > 0) primary = &call_frames[0];
+
+    char escaped_message[512];
+    json_escape(message, escaped_message, sizeof(escaped_message));
+
+    char fix_hint[512];
+    if (known_cap) {
+        snprintf(fix_hint, sizeof(fix_hint),
+            "Bound copy to <= %llu bytes or grow the destination buffer to >= %llu bytes",
+            (unsigned long long)e->dst_size,
+            (unsigned long long)e->len);
+    } else {
+        snprintf(fix_hint, sizeof(fix_hint),
+            "Grow the destination allocation to at least %llu bytes or re-run with heap tracking enabled to capture its size",
+            (unsigned long long)e->len);
+    }
+    char escaped_fix[512];
+    json_escape(fix_hint, escaped_fix, sizeof(escaped_fix));
 
     char primary_uri[PATH_MAX + 8] = "file://unknown";
     int primary_line = 0;
@@ -130,52 +207,6 @@ static void emit_finding(const struct copy_event *e,
         primary_line = primary->line > 0 ? primary->line - 1 : 0;
         primary_col = primary->column > 0 ? primary->column - 1 : 0;
     }
-
-    char message[256];
-    if (e->dst_size)
-        snprintf(message, sizeof(message),
-            "memcpy overflow: wrote %llu bytes into allocation of %llu bytes at 0x%llx",
-            (unsigned long long)e->len,
-            (unsigned long long)e->dst_size,
-            (unsigned long long)e->dst);
-    else
-        snprintf(message, sizeof(message),
-            "memcpy overflow suspicion: wrote %llu bytes into allocation without tracked size at 0x%llx",
-            (unsigned long long)e->len,
-            (unsigned long long)e->dst);
-
-    char call_stack_json[1536];
-    size_t call_off = 0;
-    call_off += snprintf(call_stack_json + call_off, sizeof(call_stack_json) - call_off, "[");
-    for (int i = 0; i < call_count && call_off + 4 < sizeof(call_stack_json); ++i) {
-        char escaped[512];
-        json_escape(call_frames[i].summary, escaped, sizeof(escaped));
-        call_off += snprintf(call_stack_json + call_off, sizeof(call_stack_json) - call_off,
-            "%s\"%s\"", (i == 0 ? "" : ","), escaped);
-    }
-    if (call_off + 2 < sizeof(call_stack_json)) {
-        call_stack_json[call_off++] = ']';
-        call_stack_json[call_off] = '\0';
-    } else {
-        snprintf(call_stack_json, sizeof(call_stack_json), "[]");
-    }
-
-    char escaped_message[512];
-    json_escape(message, escaped_message, sizeof(escaped_message));
-
-    char fix_hint[512];
-    if (e->dst_size) {
-        snprintf(fix_hint, sizeof(fix_hint),
-            "Bound copy to <= %llu bytes or grow the destination buffer to >= %llu bytes",
-            (unsigned long long)e->dst_size,
-            (unsigned long long)e->len);
-    } else {
-        snprintf(fix_hint, sizeof(fix_hint),
-            "Grow the destination allocation to at least %llu bytes or re-run with heap_tracker active to capture allocation size",
-            (unsigned long long)e->len);
-    }
-    char escaped_fix[512];
-    json_escape(fix_hint, escaped_fix, sizeof(escaped_fix));
 
     char primary_json[256];
     snprintf(primary_json, sizeof(primary_json),
@@ -187,17 +218,19 @@ static void emit_finding(const struct copy_event *e,
         "RE:FINDING: {\"id\":\"F-heap-overflow-%llu\",\"origin\":\"ebpf\",\"kind\":\"heap_overflow\","
         "\"severity\":\"%s\",\"message\":\"%s\",\"primaryLocation\":%s,"
         "\"evidence\":{\"api\":\"memcpy\",\"len\":%llu,\"dest_alloc\":{\"ptr\":\"0x%llx\",\"size\":%llu},"
-        "\"stacks\":{\"call\":%s}},\"fixHints\":[\"%s\"],\"dataQuality\":{\"eventsDropped\":0}}\n",
+        "\"stacks\":{\"alloc\":%s,\"call\":%s}},\"fixHints\":[\"%s\"],\"dataQuality\":{\"eventsDropped\":0}}\n",
         (unsigned long long)e->ts_ns, severity, escaped_message, primary_json,
         (unsigned long long)e->len, (unsigned long long)e->dst,
-        (unsigned long long)e->dst_size, call_stack_json, escaped_fix);
+        (unsigned long long)e->dst_size, alloc_stack_json, call_stack_json, escaped_fix);
 
     dprintf(out_fd, "%s", finding);
 
-    const char *top = (call_count > 0) ? call_frames[0].summary : "<no stack>";
-    log_line("heap overflow: pid=%u len=%llu dst_size=%llu dst=0x%llx top=%s",
-        e->pid, (unsigned long long)e->len, (unsigned long long)e->dst_size,
-        (unsigned long long)e->dst, top);
+    const char *top = (primary_call && primary_call->summary[0]) ? primary_call->summary : location_summary;
+    log_line("heap overflow: pid=%u len=%llu dst_size=%llu dst=0x%llx at %s", e->pid,
+        (unsigned long long)e->len,
+        (unsigned long long)e->dst_size,
+        (unsigned long long)e->dst,
+        top);
 }
 
 static int on_event(void *ctx, void *data, size_t len){
@@ -228,7 +261,10 @@ static int on_event(void *ctx, void *data, size_t len){
     struct frame_info call_frames[MAX_CALL_FRAMES];
     int call_count = collect_call_frames(ev.pid, ev.call_sid, call_frames, MAX_CALL_FRAMES);
 
-    emit_finding(&ev, call_frames, call_count);
+    struct frame_info alloc_frames[MAX_CALL_FRAMES];
+    int alloc_count = collect_call_frames(ev.pid, ev.alloc_sid, alloc_frames, MAX_CALL_FRAMES);
+
+    emit_finding(&ev, call_frames, call_count, alloc_frames, alloc_count);
     finding_emitted = true;
     return 0;
 }
@@ -597,16 +633,20 @@ static bool symbolize_address(__u32 pid, __u64 addr, struct frame_info *out)
     char module[PATH_MAX];
     __u64 base = 0;
     if (!find_module_for_addr(pid, addr, module, sizeof(module), &base)) {
+        out->address = addr;
         snprintf(out->summary, sizeof(out->summary), "0x%llx", (unsigned long long)addr);
         return false;
     }
 
-    __u64 offset = addr - base;
+    out->address = addr;
+    out->offset = addr - base;
+    strncpy(out->module, module, sizeof(out->module) - 1);
+
     char cmd[PATH_MAX * 2 + 64];
-    snprintf(cmd, sizeof(cmd), "addr2line -f -C -e %s 0x%llx 2>/dev/null", module, (unsigned long long)offset);
+    snprintf(cmd, sizeof(cmd), "addr2line -f -C -e %s 0x%llx 2>/dev/null", module, (unsigned long long)out->offset);
     FILE *fp = popen(cmd, "r");
     if (!fp) {
-        snprintf(out->summary, sizeof(out->summary), "%s+0x%llx", module, (unsigned long long)offset);
+        snprintf(out->summary, sizeof(out->summary), "%s+0x%llx", module, (unsigned long long)out->offset);
         return false;
     }
 
@@ -614,7 +654,7 @@ static bool symbolize_address(__u32 pid, __u64 addr, struct frame_info *out)
     char loc[256] = {0};
     if (!fgets(func, sizeof(func), fp) || !fgets(loc, sizeof(loc), fp)) {
         pclose(fp);
-        snprintf(out->summary, sizeof(out->summary), "%s+0x%llx", module, (unsigned long long)offset);
+        snprintf(out->summary, sizeof(out->summary), "%s+0x%llx", module, (unsigned long long)out->offset);
         return false;
     }
     pclose(fp);
@@ -628,16 +668,23 @@ static bool symbolize_address(__u32 pid, __u64 addr, struct frame_info *out)
     strncpy(location_copy, loc, sizeof(location_copy) - 1);
     location_copy[sizeof(location_copy) - 1] = '\0';
 
-    char *col_part = strrchr(location_copy, ':');
-    if (col_part) {
-        *col_part = '\0';
-        out->column = atoi(col_part + 1);
+    int line = -1;
+    int column = -1;
+    char *last = strrchr(location_copy, ':');
+    if (last) {
+        column = atoi(last + 1);
+        *last = '\0';
+        char *prev = strrchr(location_copy, ':');
+        if (prev) {
+            line = atoi(prev + 1);
+            *prev = '\0';
+        } else {
+            line = column;
+            column = -1;
+        }
     }
-    char *line_part = strrchr(location_copy, ':');
-    if (line_part) {
-        *line_part = '\0';
-        out->line = atoi(line_part + 1);
-    }
+    out->line = (line > 0) ? line : 0;
+    out->column = (column > 0) ? column : 0;
 
     strncpy(out->file, location_copy, sizeof(out->file) - 1);
 
@@ -651,7 +698,7 @@ static bool symbolize_address(__u32 pid, __u64 addr, struct frame_info *out)
             out->function[0] ? out->function : "?", out->file, out->line);
     } else {
         snprintf(out->summary, sizeof(out->summary), "%s+0x%llx",
-            module, (unsigned long long)offset);
+            module, (unsigned long long)out->offset);
     }
     return out->has_symbol;
 }
@@ -712,6 +759,7 @@ int main(int argc, char **argv){
     struct link_vec heap_links = {0};
     struct link_vec copy_links = {0};
     int shared_allocs_fd = -1;
+    int shared_ustacks_fd = -1;
 
     for (int i=1;i<argc;i++){
         if (strcmp(argv[i],"--obj")==0 && i+1<argc) obj_path = argv[++i];
@@ -767,6 +815,13 @@ int main(int argc, char **argv){
         } else {
             log_line("heap tracker missing 'allocs' map");
         }
+
+        struct bpf_map *heap_stacks = bpf_object__find_map_by_name(heap_obj, "ustacks");
+        if (heap_stacks) {
+            shared_ustacks_fd = bpf_map__fd(heap_stacks);
+        } else {
+            log_line("heap tracker missing 'ustacks' map");
+        }
     }
 
     struct bpf_object *obj = bpf_object__open_file(obj_path, NULL);
@@ -782,6 +837,15 @@ int main(int argc, char **argv){
             }
         } else {
             log_line("copy checker missing 'allocs' map definition");
+        }
+    }
+    if (shared_ustacks_fd >= 0) {
+        struct bpf_map *stacks_map = bpf_object__find_map_by_name(obj, "ustacks");
+        if (stacks_map) {
+            int rc = bpf_map__reuse_fd(stacks_map, shared_ustacks_fd);
+            if (rc) {
+                log_line("reuse ustacks map failed: %d", rc);
+            }
         }
     }
     int err = bpf_object__load(obj);
