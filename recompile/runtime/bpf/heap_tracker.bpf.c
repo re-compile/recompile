@@ -3,14 +3,17 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
+#include <stdbool.h>
 
 #include "../shared/re_events.h"
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
-/* ---- Maps ---- */
+/* ----------------------------------------------------------------------
+ * Shared maps
+ * ---------------------------------------------------------------------- */
 
-// ptr -> alloc info (size + alloc stack). Shared with other objs (copy_checker).
+// ptr -> alloc info (size + alloc stack). Shared with copy_checker.
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 65536);
@@ -18,12 +21,20 @@ struct {
     __type(value, struct re_alloc_info);
 } allocs SEC(".maps");
 
+// cache for recently freed allocations (detect double/invalid frees)
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 65536);
+    __type(key,   __u64);
+    __type(value, struct re_alloc_info);
+} freed SEC(".maps");
+
 // tid -> pending size for malloc/calloc/realloc (entry -> return)
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 8192);
     __type(key,   __u32);   // TID
-    __type(value, __u64);   // size
+    __type(value, __u64);   // encoded size (size+1, U64_MAX sentinel)
 } pending SEC(".maps");
 
 // tid -> pending OLD pointer for realloc (to handle success/failure correctly)
@@ -33,6 +44,20 @@ struct {
     __type(key,   __u32);   // TID
     __type(value, __u64);   // old pointer (as u64)
 } realloc_old SEC(".maps");
+
+// Sentinel ring buffer (shared with other programs)
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 8 << 20); // 8 MiB per PID default budget
+} sentinel_events SEC(".maps");
+
+// Per-PID sequence/drop state for sentinel events
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 32768);
+    __type(key,   __u32);
+    __type(value, struct re_sentinel_state);
+} sentinel_state SEC(".maps");
 
 #ifndef PERF_MAX_STACK_DEPTH
 #define PERF_MAX_STACK_DEPTH 127
@@ -45,47 +70,78 @@ struct {
     __uint(max_entries, 2048);
 } ustacks SEC(".maps");
 
-/* ---- Helpers ---- */
+/* ----------------------------------------------------------------------
+ * Helpers
+ * ---------------------------------------------------------------------- */
 
-/* ---- 64-bit overflow helpers (no 128-bit builtins in eBPF) ---- */
 #ifndef U64_MAX
 #define U64_MAX (__u64)0xFFFFFFFFFFFFFFFFull
 #endif
 
-// 64-bit multiply overflow check without 128-bit ops or division.
-// Computes a*b into *out, returns 1 if overflow would occur, else 0.
-static __always_inline int mul_overflow_u64(__u64 a, __u64 b, __u64 *out)
+static __always_inline struct re_sentinel_state *sentinel_get_state(__u32 pid)
 {
-    __u32 ah = (__u32)(a >> 32), al = (__u32)a;
-    __u32 bh = (__u32)(b >> 32), bl = (__u32)b;
-
-    // If both high halves are non-zero, product needs >= 64+ bits -> overflow
-    if (ah && bh)
-        return 1;
-
-    // Cross terms: (ah*bl + bh*al) must fit in 32 bits, otherwise overflow
-    __u64 mid = (__u64)ah * bl + (__u64)bh * al;
-    if (mid > 0xFFFFFFFFULL)
-        return 1;
-
-    // Low term (al*bl) is 64-bit; add shifted cross term (<<32) safely
-    __u64 low  = (__u64)al * bl;
-    __u64 high = mid << 32;
-
-    // Check carry on the final add (wrap means overflow)
-    __u64 res = high + low;
-    if (res < low)
-        return 1;
-
-    *out = res;
-    return 0;
+    struct re_sentinel_state *st = bpf_map_lookup_elem(&sentinel_state, &pid);
+    if (!st) {
+        struct re_sentinel_state zero = {};
+        if (bpf_map_update_elem(&sentinel_state, &pid, &zero, BPF_NOEXIST) == 0)
+            st = bpf_map_lookup_elem(&sentinel_state, &pid);
+    }
+    return st;
 }
 
-static __always_inline int add_overflow_u64(__u64 a, __u64 b, __u64 *out)
+static __always_inline struct re_sentinel_event *sentinel_event_reserve(struct re_sentinel_state *st, __u64 pid_tgid)
 {
-    __u64 r = a + b;
-    *out = r;
-    return r < a;            /* wraparound => overflow */
+    if (!st)
+        return NULL;
+
+    __u32 pid = pid_tgid >> 32;
+    __u32 tid = (__u32)pid_tgid;
+
+    struct re_sentinel_event *evt = bpf_ringbuf_reserve(&sentinel_events, sizeof(*evt), 0);
+    if (!evt) {
+        st->drops += 1;
+        return NULL;
+    }
+
+    evt->version = RE_SENTINEL_EVENT_VERSION;
+    evt->type = 0;
+    evt->flags = 0;
+    evt->lock_kind = RE_SENTINEL_LOCK_NONE;
+    evt->pid = pid;
+    evt->tid = tid;
+    evt->site_id = 0;
+    evt->stack_id = -1;
+    evt->stack_fp = 0;
+    evt->lock_site_id = 0;
+    evt->drop_count = 0;
+    evt->len = 0;
+    evt->alloc_size = 0;
+    evt->fd = -1;
+    evt->bytes_ret = 0;
+    evt->errno_code = 0;
+    evt->extra_count = 0;
+    evt->seq = 0;
+    evt->ts_ns = bpf_ktime_get_ns();
+    evt->addr = 0;
+    evt->lock_addr = 0;
+
+    __u64 seq = st->seq + 1;
+    evt->seq = seq;
+    evt->drop_count = st->drops;
+    st->seq = seq;
+    st->drops = 0;
+    return evt;
+}
+
+static __always_inline void sentinel_event_submit(struct re_sentinel_event *evt)
+{
+    if (evt)
+        bpf_ringbuf_submit(evt, 0);
+}
+
+static __always_inline __u32 saturate_u32(__u64 value)
+{
+    return value > (__u64)0xffffffff ? (__u32)0xffffffff : (__u32)value;
 }
 
 static __always_inline __u32 get_tid(void)
@@ -96,23 +152,51 @@ static __always_inline __u32 get_tid(void)
 static __always_inline void remember_size(__u64 sz)
 {
     __u32 tid = get_tid();
-    if (sz == 0) return; // 0 means "unknown/overflow" => do not create mapping
-    bpf_map_update_elem(&pending, &tid, &sz, BPF_ANY);
+    __u64 enc = (sz == U64_MAX) ? U64_MAX : (sz + 1);
+    bpf_map_update_elem(&pending, &tid, &enc, BPF_ANY);
 }
 
-static __always_inline __u64 take_pending_size(void)
+static __always_inline bool take_pending_size(__u64 *out)
 {
     __u32 tid = get_tid();
     __u64 *p = bpf_map_lookup_elem(&pending, &tid);
-    __u64 v = p ? *p : 0;
-    if (p) bpf_map_delete_elem(&pending, &tid);
-    return v;
+    if (!p)
+        return false;
+    __u64 enc = *p;
+    bpf_map_delete_elem(&pending, &tid);
+    if (enc == U64_MAX)
+        *out = U64_MAX;
+    else
+        *out = enc - 1;
+    return true;
 }
 
-/* ---- malloc/calloc/realloc/free uprobes ----
- * We read arguments from pt_regs with PT_REGS_PARMx to be arch-safe.
- * aarch64: first 3 args are x0/x1/x2; return value in x0.
- */
+/* ---- 64-bit overflow helpers (no 128-bit builtins in eBPF) ---- */
+static __always_inline int mul_overflow_u64(__u64 a, __u64 b, __u64 *out)
+{
+    __u32 ah = (__u32)(a >> 32), al = (__u32)a;
+    __u32 bh = (__u32)(b >> 32), bl = (__u32)b;
+
+    if (ah && bh)
+        return 1;
+
+    __u64 mid = (__u64)ah * bl + (__u64)bh * al;
+    if (mid > 0xFFFFFFFFULL)
+        return 1;
+
+    __u64 low  = (__u64)al * bl;
+    __u64 high = mid << 32;
+    __u64 res = high + low;
+    if (res < low)
+        return 1;
+
+    *out = res;
+    return 0;
+}
+
+/* ----------------------------------------------------------------------
+ * Uprobes
+ * ---------------------------------------------------------------------- */
 
 SEC("uprobe/malloc")
 int BPF_KPROBE(u_malloc_enter)
@@ -126,15 +210,42 @@ SEC("uretprobe/malloc")
 int BPF_KRETPROBE(u_malloc_exit)
 {
     void *ret = (void *)PT_REGS_RC(ctx);
-    __u64 size = take_pending_size();
-    if (ret && size) {
+    __u64 size = 0;
+    bool have_size = take_pending_size(&size);
+    if (!ret)
+        return 0;
+
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+    int stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+
+    struct re_sentinel_state *st = sentinel_get_state(pid);
+    if (!st)
+        return 0;
+
+    if (have_size) {
+        st->flags |= RE_SENTINEL_STATE_ARMED;
         __u64 key = (__u64)ret;
+        bpf_map_delete_elem(&freed, &key);
         struct re_alloc_info info = {
             .size = size,
-            .alloc_stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK)
+            .alloc_stack_id = stack_id,
         };
         bpf_map_update_elem(&allocs, &key, &info, BPF_ANY);
     }
+
+    struct re_sentinel_event *evt = sentinel_event_reserve(st, pid_tgid);
+    if (!evt)
+        return 0;
+
+    evt->type = RE_SENTINEL_TYPE_MALLOC;
+    evt->addr = (__u64)ret;
+    evt->stack_id = stack_id;
+    evt->stack_fp = (__u32)stack_id;
+    evt->len = have_size ? saturate_u32(size) : 0;
+    evt->alloc_size = evt->len;
+
+    sentinel_event_submit(evt);
     return 0;
 }
 
@@ -144,8 +255,8 @@ int BPF_KPROBE(u_calloc_enter)
     __u64 nmemb = (__u64)PT_REGS_PARM1(ctx);
     __u64 size  = (__u64)PT_REGS_PARM2(ctx);
     __u64 total = 0;
-    if (mul_overflow_u64((__u64)nmemb, (__u64)size, &total))
-        total = 0;           /* overflow => unknown; skip mapping on exit */
+    if (mul_overflow_u64(nmemb, size, &total))
+        total = 0;
     remember_size(total);
     return 0;
 }
@@ -154,15 +265,42 @@ SEC("uretprobe/calloc")
 int BPF_KRETPROBE(u_calloc_exit)
 {
     void *ret = (void *)PT_REGS_RC(ctx);
-    __u64 size = take_pending_size();
-    if (ret && size) {
+    __u64 size = 0;
+    bool have_size = take_pending_size(&size);
+    if (!ret)
+        return 0;
+
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+    int stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+
+    struct re_sentinel_state *st = sentinel_get_state(pid);
+    if (!st)
+        return 0;
+
+    if (have_size) {
+        st->flags |= RE_SENTINEL_STATE_ARMED;
         __u64 key = (__u64)ret;
+        bpf_map_delete_elem(&freed, &key);
         struct re_alloc_info info = {
             .size = size,
-            .alloc_stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK)
+            .alloc_stack_id = stack_id,
         };
         bpf_map_update_elem(&allocs, &key, &info, BPF_ANY);
     }
+
+    struct re_sentinel_event *evt = sentinel_event_reserve(st, pid_tgid);
+    if (!evt)
+        return 0;
+
+    evt->type = RE_SENTINEL_TYPE_MALLOC;
+    evt->addr = (__u64)ret;
+    evt->stack_id = stack_id;
+    evt->stack_fp = (__u32)stack_id;
+    evt->len = have_size ? saturate_u32(size) : 0;
+    evt->alloc_size = evt->len;
+
+    sentinel_event_submit(evt);
     return 0;
 }
 
@@ -171,11 +309,10 @@ int BPF_KPROBE(u_realloc_enter)
 {
     void *oldp   = (void *)PT_REGS_PARM1(ctx);
     __u64 new_sz = (__u64)PT_REGS_PARM2(ctx);
-    // record desired new size and stash old pointer; DO NOT delete yet
     if (oldp) {
         __u32 tid = get_tid();
-        __u64 k = (__u64)oldp;
-        bpf_map_update_elem(&realloc_old, &tid, &k, BPF_ANY);
+        __u64 addr = (__u64)oldp;
+        bpf_map_update_elem(&realloc_old, &tid, &addr, BPF_ANY);
     }
     remember_size(new_sz);
     return 0;
@@ -185,32 +322,54 @@ SEC("uretprobe/realloc")
 int BPF_KRETPROBE(u_realloc_exit)
 {
     void *ret = (void *)PT_REGS_RC(ctx);
-    __u64 size = take_pending_size();
+    __u64 size = 0;
+    bool have_size = take_pending_size(&size);
     __u32 tid = get_tid();
     __u64 *pold = bpf_map_lookup_elem(&realloc_old, &tid);
     __u64 old = pold ? *pold : 0;
-    if (pold) bpf_map_delete_elem(&realloc_old, &tid);
+    if (pold)
+        bpf_map_delete_elem(&realloc_old, &tid);
+
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+    int stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+
+    struct re_sentinel_state *st = sentinel_get_state(pid);
+    if (!st)
+        return 0;
+
     if (!ret) {
-        // failure path
-        if (size == 0 && old) {
-            // glibc: realloc(old, 0) frees old and returns NULL
+        if (have_size && size == 0 && old)
             bpf_map_delete_elem(&allocs, &old);
-        }
-        // else: keep old mapping as-is (failure, size > 0)
         return 0;
     }
 
-    // success path: new pointer is 'ret'
     if (old && old != (__u64)ret)
         bpf_map_delete_elem(&allocs, &old);
-    if (size) {
+
+    if (have_size) {
+        st->flags |= RE_SENTINEL_STATE_ARMED;
         __u64 key = (__u64)ret;
+        bpf_map_delete_elem(&freed, &key);
         struct re_alloc_info info = {
             .size = size,
-            .alloc_stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK)
+            .alloc_stack_id = stack_id,
         };
         bpf_map_update_elem(&allocs, &key, &info, BPF_ANY);
     }
+
+    struct re_sentinel_event *evt = sentinel_event_reserve(st, pid_tgid);
+    if (!evt)
+        return 0;
+
+    evt->type = RE_SENTINEL_TYPE_MALLOC;
+    evt->addr = (__u64)ret;
+    evt->stack_id = stack_id;
+    evt->stack_fp = (__u32)stack_id;
+    evt->len = have_size ? saturate_u32(size) : 0;
+    evt->alloc_size = evt->len;
+
+    sentinel_event_submit(evt);
     return 0;
 }
 
@@ -218,9 +377,62 @@ SEC("uprobe/free")
 int BPF_KPROBE(u_free_enter)
 {
     void *p = (void *)PT_REGS_PARM1(ctx);
-    if (p) {
-        __u64 key = (__u64)p;
-        bpf_map_delete_elem(&allocs, &key);
+    if (!p)
+        return 0;
+
+    __u64 key = (__u64)p;
+    struct re_alloc_info *info = bpf_map_lookup_elem(&allocs, &key);
+    struct re_alloc_info *prev = bpf_map_lookup_elem(&freed, &key);
+
+    __u8 status = RE_SENTINEL_FREE_OK;
+    __u64 size = 0;
+    __s32 alloc_stack = -1;
+
+    if (!info) {
+        if (prev) {
+            status = RE_SENTINEL_FREE_DOUBLE;
+            size = prev->size;
+            alloc_stack = prev->alloc_stack_id;
+        } else {
+            status = RE_SENTINEL_FREE_INVALID;
+        }
+    } else {
+        size = info->size;
+        alloc_stack = info->alloc_stack_id;
     }
+
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+
+    struct re_sentinel_state *st = sentinel_get_state(pid);
+    if (!st)
+        return 0;
+
+    if (!(st->flags & RE_SENTINEL_STATE_ARMED))
+        return 0;
+
+    int stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+
+    struct re_sentinel_event *evt = sentinel_event_reserve(st, pid_tgid);
+    if (!evt)
+        return 0;
+
+    evt->type = RE_SENTINEL_TYPE_FREE;
+    evt->addr = key;
+    evt->stack_id = stack_id;
+    evt->stack_fp = (__u32)stack_id;
+    evt->alloc_size = saturate_u32(size);
+    evt->errno_code = status;
+
+    if (alloc_stack >= 0)
+        evt->site_id = (unsigned)(alloc_stack + 1);
+
+    if (info) {
+        struct re_alloc_info snapshot = *info;
+        bpf_map_delete_elem(&allocs, &key);
+        bpf_map_update_elem(&freed, &key, &snapshot, BPF_ANY);
+    }
+
+    sentinel_event_submit(evt);
     return 0;
 }

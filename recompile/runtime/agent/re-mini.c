@@ -22,25 +22,11 @@
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 
+#include "../shared/re_events.h"
+
 #ifndef PERF_MAX_STACK_DEPTH
 #define PERF_MAX_STACK_DEPTH 127
 #endif
-
-// ---- must match copy_checker.bpf.c payload layout ----
-struct copy_event {
-    __u64 ts_ns;
-    __u32 pid;
-    __u32 tid;
-    __u64 dst;
-    __u64 src;
-    __u64 len;
-    __u64 dst_size;   // 0 if unknown
-    __s32 call_sid;
-    __s32 alloc_sid;
-    __u8  api;        // 1=memcpy
-    __u8  severity;   // 2=warn, 3=error
-    __u16 _pad;
-};
 
 static volatile sig_atomic_t stop = 0;
 static const char *obj_path = NULL;
@@ -55,7 +41,8 @@ static int out_fd = -1;
 static int ustacks_fd = -1;
 static __u32 self_pid = 0;
 static __u32 target_pid = 0;
-static bool finding_emitted = false;
+static bool memcpy_finding_emitted = false;
+static unsigned free_finding_mask = 0;
 
 #define MAX_TRACKED_PIDS 32
 struct pid_entry { __u32 pid; bool allowed; };
@@ -148,7 +135,7 @@ static void log_line(const char *fmt, ...) {
     va_end(ap);
 }
 
-static void emit_finding(const struct copy_event *e,
+static void emit_memcpy_finding(const struct re_sentinel_event *ev,
     struct frame_info *call_frames, int call_count,
     struct frame_info *alloc_frames, int alloc_count)
 {
@@ -156,8 +143,8 @@ static void emit_finding(const struct copy_event *e,
     const struct frame_info *primary_alloc = select_primary(alloc_frames, alloc_count);
     const struct frame_info *primary = primary_call ? primary_call : primary_alloc;
 
-    bool known_cap = e->dst_size > 0;
-    bool hard_overflow = known_cap && e->len > e->dst_size;
+    bool known_cap = ev->alloc_size > 0;
+    bool hard_overflow = known_cap && ev->len > ev->alloc_size;
     const char *severity = hard_overflow ? "error" : "warning";
 
     char call_stack_json[1536];
@@ -169,17 +156,17 @@ static void emit_finding(const struct copy_event *e,
     char message[512];
     if (known_cap) {
         snprintf(message, sizeof(message),
-            "memcpy overflow: copied %llu bytes into 0x%llx (capacity %llu) at %s",
-            (unsigned long long)e->len,
-            (unsigned long long)e->dst,
-            (unsigned long long)e->dst_size,
-            location_summary);
+                 "memcpy overflow: copied %llu bytes into 0x%llx (capacity %u) at %s",
+                 (unsigned long long)ev->len,
+                 (unsigned long long)ev->addr,
+                 ev->alloc_size,
+                 location_summary);
     } else {
         snprintf(message, sizeof(message),
-            "memcpy overflow suspicion: copied %llu bytes into 0x%llx (capacity unknown) at %s",
-            (unsigned long long)e->len,
-            (unsigned long long)e->dst,
-            location_summary);
+                 "memcpy overflow suspicion: copied %llu bytes into 0x%llx (capacity unknown) at %s",
+                 (unsigned long long)ev->len,
+                 (unsigned long long)ev->addr,
+                 location_summary);
     }
 
     char escaped_message[512];
@@ -188,13 +175,13 @@ static void emit_finding(const struct copy_event *e,
     char fix_hint[512];
     if (known_cap) {
         snprintf(fix_hint, sizeof(fix_hint),
-            "Bound copy to <= %llu bytes or grow the destination buffer to >= %llu bytes",
-            (unsigned long long)e->dst_size,
-            (unsigned long long)e->len);
+                 "Bound copy to <= %u bytes or grow the destination buffer to >= %llu bytes",
+                 ev->alloc_size,
+                 (unsigned long long)ev->len);
     } else {
         snprintf(fix_hint, sizeof(fix_hint),
-            "Grow the destination allocation to at least %llu bytes or re-run with heap tracking enabled to capture its size",
-            (unsigned long long)e->len);
+                 "Grow the destination allocation to at least %llu bytes or re-run with heap tracking enabled to capture its size",
+                 (unsigned long long)ev->len);
     }
     char escaped_fix[512];
     json_escape(fix_hint, escaped_fix, sizeof(escaped_fix));
@@ -210,62 +197,185 @@ static void emit_finding(const struct copy_event *e,
 
     char primary_json[256];
     snprintf(primary_json, sizeof(primary_json),
-        "{\"uri\":\"%s\",\"range\":{\"start\":{\"line\":%d,\"character\":%d},\"end\":{\"line\":%d,\"character\":%d}}}",
-        primary_uri, primary_line, primary_col, primary_line, primary_col + 1);
+             "{\"uri\":\"%s\",\"range\":{\"start\":{\"line\":%d,\"character\":%d},\"end\":{\"line\":%d,\"character\":%d}}}",
+             primary_uri, primary_line, primary_col, primary_line, primary_col + 1);
 
     char finding[4096];
     snprintf(finding, sizeof(finding),
-        "RE:FINDING: {\"id\":\"F-heap-overflow-%llu\",\"origin\":\"ebpf\",\"kind\":\"heap_overflow\","
-        "\"severity\":\"%s\",\"message\":\"%s\",\"primaryLocation\":%s,"
-        "\"evidence\":{\"api\":\"memcpy\",\"len\":%llu,\"dest_alloc\":{\"ptr\":\"0x%llx\",\"size\":%llu},"
-        "\"stacks\":{\"alloc\":%s,\"call\":%s}},\"fixHints\":[\"%s\"],\"dataQuality\":{\"eventsDropped\":0}}\n",
-        (unsigned long long)e->ts_ns, severity, escaped_message, primary_json,
-        (unsigned long long)e->len, (unsigned long long)e->dst,
-        (unsigned long long)e->dst_size, alloc_stack_json, call_stack_json, escaped_fix);
+             "RE:FINDING: {\"id\":\"F-heap-overflow-%llu\",\"origin\":\"ebpf\",\"kind\":\"heap_overflow\","
+             "\"severity\":\"%s\",\"message\":\"%s\",\"primaryLocation\":%s,"
+             "\"evidence\":{\"api\":\"memcpy\",\"len\":%llu,\"dest_alloc\":{\"ptr\":\"0x%llx\",\"size\":%u},"
+             "\"stacks\":{\"alloc\":%s,\"call\":%s}},\"fixHints\":[\"%s\"],\"dataQuality\":{\"eventsDropped\":0}}\n",
+             (unsigned long long)ev->ts_ns, severity, escaped_message, primary_json,
+             (unsigned long long)ev->len, (unsigned long long)ev->addr,
+             ev->alloc_size, alloc_stack_json, call_stack_json, escaped_fix);
 
     dprintf(out_fd, "%s", finding);
 
     const char *top = (primary_call && primary_call->summary[0]) ? primary_call->summary : location_summary;
-    log_line("heap overflow: pid=%u len=%llu dst_size=%llu dst=0x%llx at %s", e->pid,
-        (unsigned long long)e->len,
-        (unsigned long long)e->dst_size,
-        (unsigned long long)e->dst,
-        top);
+    log_line("heap overflow: pid=%u len=%u dst_size=%u dst=0x%llx at %s",
+             ev->pid, ev->len, ev->alloc_size,
+             (unsigned long long)ev->addr, top);
 }
 
-static int on_event(void *ctx, void *data, size_t len){
+static void emit_free_finding(const struct re_sentinel_event *ev, __u8 status,
+    struct frame_info *free_frames, int free_count,
+    struct frame_info *alloc_frames, int alloc_count)
+{
+    const struct frame_info *primary_call = select_primary(free_frames, free_count);
+    const struct frame_info *primary_alloc = select_primary(alloc_frames, alloc_count);
+    const struct frame_info *primary = primary_call ? primary_call : primary_alloc;
+
+    const char *kind = (status == RE_SENTINEL_FREE_DOUBLE) ? "double_free" : "invalid_free";
+
+    char free_stack_json[1536];
+    char alloc_stack_json[1536];
+    build_stack_json(free_frames, free_count, free_stack_json, sizeof(free_stack_json));
+    build_stack_json(alloc_frames, alloc_count, alloc_stack_json, sizeof(alloc_stack_json));
+
+    const char *location_summary = (primary && primary->summary[0]) ? primary->summary : "unknown location";
+    char message[512];
+    if (status == RE_SENTINEL_FREE_DOUBLE) {
+        snprintf(message, sizeof(message),
+                 "double free: free(0x%llx) called again at %s",
+                 (unsigned long long)ev->addr,
+                 location_summary);
+    } else {
+        snprintf(message, sizeof(message),
+                 "invalid free: pointer 0x%llx was never tracked by the allocator (reported at %s)",
+                 (unsigned long long)ev->addr,
+                 location_summary);
+    }
+
+    char escaped_message[512];
+    json_escape(message, escaped_message, sizeof(escaped_message));
+
+    char fix_hint[512];
+    if (status == RE_SENTINEL_FREE_DOUBLE) {
+        snprintf(fix_hint, sizeof(fix_hint),
+                 "Guard pointer 0x%llx so it is freed only once (set to NULL after free or remove duplicate free)",
+                 (unsigned long long)ev->addr);
+    } else {
+        snprintf(fix_hint, sizeof(fix_hint),
+                 "Only pass pointers returned by malloc/calloc/realloc to free (0x%llx is not tracked)",
+                 (unsigned long long)ev->addr);
+    }
+    char escaped_fix[512];
+    json_escape(fix_hint, escaped_fix, sizeof(escaped_fix));
+
+    char primary_uri[PATH_MAX + 8] = "file://unknown";
+    int primary_line = 0;
+    int primary_col = 0;
+    if (primary && primary->has_symbol && primary->file[0]) {
+        snprintf(primary_uri, sizeof(primary_uri), "file://%s", primary->file);
+        primary_line = primary->line > 0 ? primary->line - 1 : 0;
+        primary_col = primary->column > 0 ? primary->column - 1 : 0;
+    }
+
+    char primary_json[256];
+    snprintf(primary_json, sizeof(primary_json),
+             "{\"uri\":\"%s\",\"range\":{\"start\":{\"line\":%d,\"character\":%d},\"end\":{\"line\":%d,\"character\":%d}}}",
+             primary_uri, primary_line, primary_col, primary_line, primary_col + 1);
+
+    char finding[4096];
+    snprintf(finding, sizeof(finding),
+             "RE:FINDING: {\"id\":\"F-%s-%llu\",\"origin\":\"ebpf\",\"kind\":\"%s\","
+             "\"severity\":\"error\",\"message\":\"%s\",\"primaryLocation\":%s,"
+             "\"evidence\":{\"api\":\"free\",\"memory\":{\"ptr\":\"0x%llx\",\"size\":%u},"
+             "\"stacks\":{\"alloc\":%s,\"call\":%s}},\"fixHints\":[\"%s\"],\"dataQuality\":{\"eventsDropped\":0}}\n",
+             kind,
+             (unsigned long long)ev->ts_ns,
+             kind,
+             escaped_message,
+             primary_json,
+             (unsigned long long)ev->addr,
+             ev->alloc_size,
+             alloc_stack_json,
+             free_stack_json,
+             escaped_fix);
+
+    dprintf(out_fd, "%s", finding);
+
+    const char *top = (primary_call && primary_call->summary[0]) ? primary_call->summary : location_summary;
+    log_line("%s: pid=%u ptr=0x%llx size=%u at %s",
+             kind,
+             ev->pid,
+             (unsigned long long)ev->addr,
+             ev->alloc_size,
+             top);
+}
+
+static int on_sentinel_event(void *ctx, void *data, size_t len)
+{
     (void)ctx;
-    if (len < sizeof(struct copy_event))
+    if (len < sizeof(struct re_sentinel_event))
         return 0;
 
-    struct copy_event ev;
+    struct re_sentinel_event ev;
     memcpy(&ev, data, sizeof(ev));
-
-    if (finding_emitted)
-        return 0;
 
     if (!ensure_pid_allowed(ev.pid))
         return 0;
 
-    if (ev.dst_size && ev.len <= ev.dst_size && ev.severity < 3) {
-        debug_drop(ev.pid, "len <= dst_size");
-        return 0;
+    if (ev.drop_count && ev.pid) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "drop_count=%u", ev.drop_count);
+        debug_drop(ev.pid, buf);
     }
 
-    if (already_reported(ev.pid, ev.dst))
-        return 0;
+    switch (ev.type) {
+    case RE_SENTINEL_TYPE_MEMCPY: {
+        if (memcpy_finding_emitted)
+            return 0;
 
-    mark_reported(ev.pid, ev.dst);
-    last_drop_reason[0] = '\0';
+        if (ev.alloc_size && ev.len <= ev.alloc_size)
+            return 0;
 
-    struct frame_info call_frames[MAX_CALL_FRAMES];
-    int call_count = collect_call_frames(ev.pid, ev.call_sid, call_frames, MAX_CALL_FRAMES);
+        if (already_reported(ev.pid, ev.addr))
+            return 0;
 
-    struct frame_info alloc_frames[MAX_CALL_FRAMES];
-    int alloc_count = collect_call_frames(ev.pid, ev.alloc_sid, alloc_frames, MAX_CALL_FRAMES);
+        __s32 alloc_sid = -1;
+        if (ev.site_id)
+            alloc_sid = (__s32)ev.site_id - 1;
 
-    emit_finding(&ev, call_frames, call_count, alloc_frames, alloc_count);
-    finding_emitted = true;
+        struct frame_info call_frames[MAX_CALL_FRAMES];
+        struct frame_info alloc_frames[MAX_CALL_FRAMES];
+        int call_count = collect_call_frames(ev.pid, ev.stack_id, call_frames, MAX_CALL_FRAMES);
+        int alloc_count = collect_call_frames(ev.pid, alloc_sid, alloc_frames, MAX_CALL_FRAMES);
+
+        mark_reported(ev.pid, ev.addr);
+        last_drop_reason[0] = '\0';
+        emit_memcpy_finding(&ev, call_frames, call_count, alloc_frames, alloc_count);
+        memcpy_finding_emitted = true;
+        break;
+    }
+    case RE_SENTINEL_TYPE_FREE: {
+        __u8 status = (ev.errno_code >= 0 && ev.errno_code <= RE_SENTINEL_FREE_INVALID)
+                        ? (__u8)ev.errno_code : RE_SENTINEL_FREE_OK;
+        if (status == RE_SENTINEL_FREE_OK)
+            return 0;
+
+        unsigned bit = (status <= 30) ? (1u << status) : (1u << 31);
+        if (free_finding_mask & bit)
+            return 0;
+        free_finding_mask |= bit;
+
+        __s32 alloc_sid = -1;
+        if (ev.site_id)
+            alloc_sid = (__s32)ev.site_id - 1;
+
+        struct frame_info free_frames[MAX_CALL_FRAMES];
+        struct frame_info alloc_frames[MAX_CALL_FRAMES];
+        int free_count = collect_call_frames(ev.pid, ev.stack_id, free_frames, MAX_CALL_FRAMES);
+        int alloc_count = collect_call_frames(ev.pid, alloc_sid, alloc_frames, MAX_CALL_FRAMES);
+
+        emit_free_finding(&ev, status, free_frames, free_count, alloc_frames, alloc_count);
+        break;
+    }
+    default:
+        break;
+    }
+
     return 0;
 }
 
@@ -760,6 +870,8 @@ int main(int argc, char **argv){
     struct link_vec copy_links = {0};
     int shared_allocs_fd = -1;
     int shared_ustacks_fd = -1;
+    int shared_events_fd = -1;
+    int shared_state_fd = -1;
 
     for (int i=1;i<argc;i++){
         if (strcmp(argv[i],"--obj")==0 && i+1<argc) obj_path = argv[++i];
@@ -822,6 +934,20 @@ int main(int argc, char **argv){
         } else {
             log_line("heap tracker missing 'ustacks' map");
         }
+
+        struct bpf_map *events_map = bpf_object__find_map_by_name(heap_obj, "sentinel_events");
+        if (events_map) {
+            shared_events_fd = bpf_map__fd(events_map);
+        } else {
+            log_line("heap tracker missing 'sentinel_events' map");
+        }
+
+        struct bpf_map *state_map = bpf_object__find_map_by_name(heap_obj, "sentinel_state");
+        if (state_map) {
+            shared_state_fd = bpf_map__fd(state_map);
+        } else {
+            log_line("heap tracker missing 'sentinel_state' map");
+        }
     }
 
     struct bpf_object *obj = bpf_object__open_file(obj_path, NULL);
@@ -848,6 +974,22 @@ int main(int argc, char **argv){
             }
         }
     }
+    if (shared_events_fd >= 0) {
+        struct bpf_map *events_map = bpf_object__find_map_by_name(obj, "sentinel_events");
+        if (events_map) {
+            int rc = bpf_map__reuse_fd(events_map, shared_events_fd);
+            if (rc)
+                log_line("reuse sentinel_events map failed: %d", rc);
+        }
+    }
+    if (shared_state_fd >= 0) {
+        struct bpf_map *state_map = bpf_object__find_map_by_name(obj, "sentinel_state");
+        if (state_map) {
+            int rc = bpf_map__reuse_fd(state_map, shared_state_fd);
+            if (rc)
+                log_line("reuse sentinel_state map failed: %d", rc);
+        }
+    }
     int err = bpf_object__load(obj);
     if (err) {
       char msg[256];
@@ -860,21 +1002,31 @@ int main(int argc, char **argv){
       return 1;
     }
 
-    struct bpf_map *events = bpf_object__find_map_by_name(obj, "events");
-    struct ring_buffer *rb = NULL;
-    if (events) {
-        int mfd = bpf_map__fd(events);
-        rb = ring_buffer__new(mfd, on_event, NULL, NULL);
-        if (libbpf_get_error(rb)) rb = NULL;
+    int rb_fd = -1;
+    if (shared_events_fd >= 0) {
+        rb_fd = shared_events_fd;
     } else {
-        log_line("no 'events' map found");
+        struct bpf_map *events_map = bpf_object__find_map_by_name(obj, "sentinel_events");
+        if (events_map)
+            rb_fd = bpf_map__fd(events_map);
     }
 
-    struct bpf_map *ustacks_map = bpf_object__find_map_by_name(obj, "ustacks");
-    if (ustacks_map) {
-        ustacks_fd = bpf_map__fd(ustacks_map);
+    struct ring_buffer *rb = NULL;
+    if (rb_fd >= 0) {
+        rb = ring_buffer__new(rb_fd, on_sentinel_event, NULL, NULL);
+        if (libbpf_get_error(rb)) rb = NULL;
     } else {
-        log_line("warning: no 'ustacks' map found; stacks unavailable");
+        log_line("no 'sentinel_events' map found");
+    }
+
+    if (shared_ustacks_fd >= 0) {
+        ustacks_fd = shared_ustacks_fd;
+    } else {
+        struct bpf_map *ustacks_map = bpf_object__find_map_by_name(obj, "ustacks");
+        if (ustacks_map)
+            ustacks_fd = bpf_map__fd(ustacks_map);
+        else
+            log_line("warning: no 'ustacks' map found; stacks unavailable");
     }
 
     if (attach_uprobes_for_object(obj, libc_path, &cache, &copy_links, func_filter) != 0) {

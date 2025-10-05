@@ -68,12 +68,14 @@ write_files:
       #include <stdio.h>
       #include <stdlib.h>
       #include <string.h>
+      #include <unistd.h>
       int main() {
         char *dst = (char*)malloc(32);
         char src[64];
         memset(src, 'A', sizeof(src));
         memcpy(dst, src, 64);
         puts("done");
+        sleep(1);
         return 0;
       }
       EOF
