@@ -115,7 +115,12 @@ struct re_sentinel_state {
 
 #define RE_SENTINEL_STATE_ARMED (1u << 0)
 
-/* Shared heap allocation metadata (unchanged) */
+/* Shared heap allocation metadata */
+struct re_alloc_key {
+    __u32 pid;
+    __u64 addr;
+};
+
 struct re_alloc_info {
     __u64 size;
     __s32 alloc_stack_id;

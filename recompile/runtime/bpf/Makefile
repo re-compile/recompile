@@ -24,7 +24,7 @@ BPF_CFLAGS := -target bpf -D__TARGET_ARCH_arm64 -O2 -g \
   -Wno-unused-function \
   $(BPF_INCLUDES)
 
-BPF_SRCS := copy_checker.bpf.c heap_tracker.bpf.c
+BPF_SRCS := copy_checker.bpf.c heap_tracker.bpf.c sentinel_extra.bpf.c
 BPF_OBJS := $(BPF_SRCS:.c=.o)
 
 .PHONY: all clean clang-version check-btf

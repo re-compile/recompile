@@ -13,9 +13,9 @@
 
 /* Shared maps (re-used from heap_tracker) */
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 65536);
-    __type(key,   __u64);
+    __type(key,   struct re_alloc_key);
     __type(value, struct re_alloc_info);
 } allocs SEC(".maps");
 
@@ -129,13 +129,16 @@ int BPF_KPROBE(on_memcpy)
     if (!dst)
         return 0;
 
-    __u64 key = (__u64)dst;
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+    struct re_alloc_key key = {
+        .pid = pid,
+        .addr = (__u64)dst,
+    };
     struct re_alloc_info *info = bpf_map_lookup_elem(&allocs, &key);
     __u64 cap = info ? info->size : 0;
     __s32 alloc_sid = info ? info->alloc_stack_id : -1;
 
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    __u32 pid = pid_tgid >> 32;
     struct re_sentinel_state *st = sentinel_get_state(pid);
     if (!st)
         return 0;
@@ -150,9 +153,10 @@ int BPF_KPROBE(on_memcpy)
     int stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
 
     evt->type = RE_SENTINEL_TYPE_MEMCPY;
-    evt->addr = key;
+    evt->addr = key.addr;
     evt->stack_id = stack_id;
-    evt->stack_fp = (__u32)stack_id;
+    if (stack_id >= 0)
+        evt->stack_fp = (__u32)stack_id;
     evt->len = saturate_u32(len);
     evt->alloc_size = saturate_u32(cap);
 

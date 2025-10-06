@@ -47,6 +47,7 @@ write_files:
       # Skeletons (ok if they already exist)
       bpftool gen skeleton /host/runtime/bpf/heap_tracker.bpf.o > /host/runtime/bpf/heap_tracker.skel.h || true
       bpftool gen skeleton /host/runtime/bpf/copy_checker.bpf.o > /host/runtime/bpf/copy_checker.skel.h || true
+      bpftool gen skeleton /host/runtime/bpf/sentinel_extra.bpf.o > /host/runtime/bpf/sentinel_extra.skel.h || true
 
       if bpftool prog loadall /host/runtime/bpf/copy_checker.bpf.o /sys/fs/bpf/re-test 2>/tmp/vlog; then
         echo "RE:DEBUG: bpftool loadall OK" > /dev/virtio-ports/re.findings
@@ -63,36 +64,34 @@ write_files:
       clang -O2 -g -Wall -I/host/runtime/bpf -I/host/runtime -I/host/runtime/shared \
         -o /usr/local/bin/re-mini /host/runtime/agent/re-mini.c -lelf -lz -lbpf -ldl || true
 
-      # Tiny test program (intentional overflow)
-      cat >/tmp/memcpy_overflow.c <<'EOF'
+      # Tiny test program (intentional double free)
+      cat >/tmp/double_free.c <<'EOF'
       #include <stdio.h>
       #include <stdlib.h>
-      #include <string.h>
-      #include <unistd.h>
       int main() {
-        char *dst = (char*)malloc(32);
-        char src[64];
-        memset(src, 'A', sizeof(src));
-        memcpy(dst, src, 64);
+        char *p = (char*)malloc(16);
+        free(p);
+        free(p); // double free
         puts("done");
         sleep(1);
         return 0;
       }
       EOF
-      clang -O0 -g -fno-omit-frame-pointer -fno-builtin -o /tmp/memcpy_overflow /tmp/memcpy_overflow.c
+      clang -O0 -g -fno-omit-frame-pointer -fno-builtin -o /tmp/double_free /tmp/double_free.c
 
       # Run agent (background)
       nohup /usr/local/bin/re-mini \
         --heap /host/runtime/bpf/heap_tracker.bpf.o \
         --obj /host/runtime/bpf/copy_checker.bpf.o \
-        --binary /tmp/memcpy_overflow \
+        --sentinel /host/runtime/bpf/sentinel_extra.bpf.o \
+        --binary /tmp/double_free \
         --libc /usr/lib/aarch64-linux-gnu/libc.so.6 \
-        --func memcpy \
+        --func free \
         --out /dev/virtio-ports/re.findings >/dev/null 2>&1 &
 
       sleep 1
-      # Execute overflow workload (once agent + probes are attached)
-      /tmp/memcpy_overflow || true
+      # Execute double free workload (once agent + probes are attached)
+      /tmp/double_free || true
       
       if command -v bpftool >/dev/null 2>&1; then
         if bpftool map show name hits >/dev/null 2>&1; then

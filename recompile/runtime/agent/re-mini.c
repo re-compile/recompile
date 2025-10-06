@@ -33,6 +33,7 @@ static const char *obj_path = NULL;
 static const char *heap_path = NULL;
 static const char *libc_path = "/usr/lib/aarch64-linux-gnu/libc.so.6";
 static const char *binary_path = NULL;
+static const char *sentinel_path = NULL;
 static char binary_realpath_buf[PATH_MAX];
 static bool binary_realpath_ok = false;
 static const char *func_filter = NULL;
@@ -539,6 +540,37 @@ static int attach_uprobes_for_object(struct bpf_object *obj, const char *libc_pa
 
         bool retprobe = false;
         const char *sym = NULL;
+        if (strncmp(sec, "tracepoint/", 11) == 0) {
+            const char *tp = sec + 11;
+            const char *slash = strchr(tp, '/');
+            if (!slash) {
+                log_line("invalid tracepoint section %s", sec);
+                return -1;
+            }
+            char category[64];
+            char name[64];
+            size_t cat_len = slash - tp;
+            if (cat_len >= sizeof(category)) cat_len = sizeof(category) - 1;
+            memcpy(category, tp, cat_len);
+            category[cat_len] = '\0';
+            const char *tp_name = slash + 1;
+            size_t name_len = strlen(tp_name);
+            if (name_len >= sizeof(name)) name_len = sizeof(name) - 1;
+            memcpy(name, tp_name, name_len);
+            name[name_len] = '\0';
+
+            struct bpf_link *link = bpf_program__attach_tracepoint(prog, category, name);
+            if (!link || libbpf_get_error(link)) {
+                long rc = libbpf_get_error(link);
+                log_line("attach tracepoint %s/%s failed: %ld", category, name, rc);
+                return -1;
+            }
+            if (out_links && out_links->count < (int)(sizeof(out_links->links)/sizeof(out_links->links[0])))
+                out_links->links[out_links->count++] = link;
+            log_line("attached tracepoint %s/%s", category, name);
+            continue;
+        }
+
         if (strncmp(sec, "uretprobe/", 10) == 0) {
             retprobe = true;
             sym = sec + 10;
@@ -552,7 +584,15 @@ static int attach_uprobes_for_object(struct bpf_object *obj, const char *libc_pa
         if (filter && strcmp(filter, sym) != 0) continue;
 
         char impl[128] = {0};
-        size_t off = cache_symbol_offset(cache, libc_path, sym, impl, sizeof(impl));
+        char sym_buf[128];
+        const char *sym_name = sym;
+        size_t off = cache_symbol_offset(cache, libc_path, sym_name, impl, sizeof(impl));
+        if (!off && sym_name[0] != '_' && sym_name[1] != '_') {
+            snprintf(sym_buf, sizeof(sym_buf), "__%s", sym_name);
+            off = cache_symbol_offset(cache, libc_path, sym_buf, impl, sizeof(impl));
+            if (off)
+                sym_name = sym_buf;
+        }
         if (!off) {
             log_line("resolve failed for %s in %s", sym, libc_path);
             return -1;
@@ -562,7 +602,7 @@ static int attach_uprobes_for_object(struct bpf_object *obj, const char *libc_pa
             bpf_program__attach_uprobe(prog, retprobe, -1, libc_path, off);
         if (!link || libbpf_get_error(link)) {
             long rc = libbpf_get_error(link);
-            log_line("attach failed for %s (impl %s): %ld", sym, impl, rc);
+            log_line("attach failed for %s (impl %s): %ld", sym_name, impl, rc);
             return -1;
         }
 
@@ -570,7 +610,7 @@ static int attach_uprobes_for_object(struct bpf_object *obj, const char *libc_pa
             out_links->links[out_links->count++] = link;
         }
 
-        log_line("attached %s (impl %s) at 0x%zx%s", sym, impl, off,
+        log_line("attached %s (impl %s) at 0x%zx%s", sym_name, impl, off,
             retprobe ? " [ret]" : "");
     }
     return 0;
@@ -752,8 +792,20 @@ static bool symbolize_address(__u32 pid, __u64 addr, struct frame_info *out)
     out->offset = addr - base;
     strncpy(out->module, module, sizeof(out->module) - 1);
 
-    char cmd[PATH_MAX * 2 + 64];
-    snprintf(cmd, sizeof(cmd), "addr2line -f -C -e %s 0x%llx 2>/dev/null", module, (unsigned long long)out->offset);
+    char cmd[PATH_MAX * 2 + 128];
+    // Prefer llvm-symbolizer if available (better demangling and accuracy), fallback to addr2line
+    // Both tools print two lines for a single address when requested this way:
+    //  1) function name
+    //  2) file:path:line[:col] or '??:0:0' on failure
+    snprintf(
+        cmd,
+        sizeof(cmd),
+        "(command -v llvm-symbolizer >/dev/null 2>&1 && llvm-symbolizer --inlining --demangle --obj=%s 0x%llx) || addr2line -f -C -e %s 0x%llx 2>/dev/null",
+        module,
+        (unsigned long long)out->offset,
+        module,
+        (unsigned long long)out->offset
+    );
     FILE *fp = popen(cmd, "r");
     if (!fp) {
         snprintf(out->summary, sizeof(out->summary), "%s+0x%llx", module, (unsigned long long)out->offset);
@@ -860,7 +912,7 @@ static size_t json_escape(const char *in, char *out, size_t out_sz)
 
 static void usage(const char *argv0){
     fprintf(stderr,
-        "usage: %s [--heap <heap_tracker.o>] --obj <copy_checker.o> [--binary <path>] [--libc <libc.so>] [--func memcpy] [--out <path>]\n",
+        "usage: %s [--heap <heap_tracker.o>] --obj <copy_checker.o> [--sentinel <sentinel.o>] [--binary <path>] [--libc <libc.so>] [--func memcpy] [--out <path>]\n",
         argv0);
 }
 
@@ -868,10 +920,12 @@ int main(int argc, char **argv){
     struct sym_cache cache = {0};
     struct link_vec heap_links = {0};
     struct link_vec copy_links = {0};
+    struct link_vec sentinel_links = {0};
     int shared_allocs_fd = -1;
     int shared_ustacks_fd = -1;
     int shared_events_fd = -1;
     int shared_state_fd = -1;
+    struct bpf_object *sentinel_obj = NULL;
 
     for (int i=1;i<argc;i++){
         if (strcmp(argv[i],"--obj")==0 && i+1<argc) obj_path = argv[++i];
@@ -879,6 +933,7 @@ int main(int argc, char **argv){
         else if (strcmp(argv[i],"--binary")==0 && i+1<argc) binary_path = argv[++i];
         else if (strcmp(argv[i],"--libc")==0 && i+1<argc) libc_path = argv[++i];
         else if (strcmp(argv[i],"--func")==0 && i+1<argc) func_filter = argv[++i];
+        else if (strcmp(argv[i],"--sentinel")==0 && i+1<argc) sentinel_path = argv[++i];
         else if (strcmp(argv[i],"--out")==0 && i+1<argc) out_path = argv[++i];
         else if (!strcmp(argv[i],"-h") || !strcmp(argv[i],"--help")) { usage(argv[0]); return 1; }
     }
@@ -1002,6 +1057,48 @@ int main(int argc, char **argv){
       return 1;
     }
 
+    if (attach_uprobes_for_object(obj, libc_path, &cache, &copy_links, func_filter) != 0) {
+        return 1;
+    }
+
+    if (sentinel_path) {
+        sentinel_obj = bpf_object__open_file(sentinel_path, NULL);
+        if (libbpf_get_error(sentinel_obj)) {
+            log_line("sentinel open failed: %ld", libbpf_get_error(sentinel_obj));
+            return 1;
+        }
+        if (shared_allocs_fd >= 0) {
+            struct bpf_map *allocs_map = bpf_object__find_map_by_name(sentinel_obj, "allocs");
+            if (allocs_map)
+                bpf_map__reuse_fd(allocs_map, shared_allocs_fd);
+        }
+        if (shared_ustacks_fd >= 0) {
+            struct bpf_map *ustacks_map = bpf_object__find_map_by_name(sentinel_obj, "ustacks");
+            if (ustacks_map)
+                bpf_map__reuse_fd(ustacks_map, shared_ustacks_fd);
+        }
+        if (shared_events_fd >= 0) {
+            struct bpf_map *events_map = bpf_object__find_map_by_name(sentinel_obj, "sentinel_events");
+            if (events_map)
+                bpf_map__reuse_fd(events_map, shared_events_fd);
+        }
+        if (shared_state_fd >= 0) {
+            struct bpf_map *state_map = bpf_object__find_map_by_name(sentinel_obj, "sentinel_state");
+            if (state_map)
+                bpf_map__reuse_fd(state_map, shared_state_fd);
+        }
+        err = bpf_object__load(sentinel_obj);
+        if (err) {
+            char msg[256];
+            libbpf_strerror(err, msg, sizeof(msg));
+            log_line("sentinel load BPF failed: %d (%s)", err, msg);
+            return 1;
+        }
+        if (attach_uprobes_for_object(sentinel_obj, libc_path, &cache, &sentinel_links, NULL) != 0) {
+            return 1;
+        }
+    }
+
     int rb_fd = -1;
     if (shared_events_fd >= 0) {
         rb_fd = shared_events_fd;
@@ -1009,6 +1106,11 @@ int main(int argc, char **argv){
         struct bpf_map *events_map = bpf_object__find_map_by_name(obj, "sentinel_events");
         if (events_map)
             rb_fd = bpf_map__fd(events_map);
+        else if (sentinel_obj) {
+            struct bpf_map *extra_events = bpf_object__find_map_by_name(sentinel_obj, "sentinel_events");
+            if (extra_events)
+                rb_fd = bpf_map__fd(extra_events);
+        }
     }
 
     struct ring_buffer *rb = NULL;
@@ -1025,12 +1127,13 @@ int main(int argc, char **argv){
         struct bpf_map *ustacks_map = bpf_object__find_map_by_name(obj, "ustacks");
         if (ustacks_map)
             ustacks_fd = bpf_map__fd(ustacks_map);
-        else
+        else if (sentinel_obj) {
+            struct bpf_map *extra_ustacks = bpf_object__find_map_by_name(sentinel_obj, "ustacks");
+            if (extra_ustacks)
+                ustacks_fd = bpf_map__fd(extra_ustacks);
+        }
+        if (ustacks_fd < 0)
             log_line("warning: no 'ustacks' map found; stacks unavailable");
-    }
-
-    if (attach_uprobes_for_object(obj, libc_path, &cache, &copy_links, func_filter) != 0) {
-        return 1;
     }
 
     signal(SIGINT, on_sig); signal(SIGTERM, on_sig);
@@ -1038,5 +1141,8 @@ int main(int argc, char **argv){
         if (rb) ring_buffer__poll(rb, 250);
         else    usleep(200*1000);
     }
+    (void)heap_links;
+    (void)copy_links;
+    (void)sentinel_links;
     return 0;
 }

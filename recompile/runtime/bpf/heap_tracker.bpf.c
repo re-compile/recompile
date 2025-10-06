@@ -15,17 +15,17 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 // ptr -> alloc info (size + alloc stack). Shared with copy_checker.
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 65536);
-    __type(key,   __u64);   // heap pointer as u64
+    __type(key,   struct re_alloc_key);
     __type(value, struct re_alloc_info);
 } allocs SEC(".maps");
 
 // cache for recently freed allocations (detect double/invalid frees)
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 65536);
-    __type(key,   __u64);
+    __type(key,   struct re_alloc_key);
     __type(value, struct re_alloc_info);
 } freed SEC(".maps");
 
@@ -223,9 +223,13 @@ int BPF_KRETPROBE(u_malloc_exit)
     if (!st)
         return 0;
 
+    struct re_alloc_key key = {
+        .pid = pid,
+        .addr = (__u64)ret,
+    };
+
     if (have_size) {
         st->flags |= RE_SENTINEL_STATE_ARMED;
-        __u64 key = (__u64)ret;
         bpf_map_delete_elem(&freed, &key);
         struct re_alloc_info info = {
             .size = size,
@@ -241,7 +245,8 @@ int BPF_KRETPROBE(u_malloc_exit)
     evt->type = RE_SENTINEL_TYPE_MALLOC;
     evt->addr = (__u64)ret;
     evt->stack_id = stack_id;
-    evt->stack_fp = (__u32)stack_id;
+    if (stack_id >= 0)
+        evt->stack_fp = (__u32)stack_id;
     evt->len = have_size ? saturate_u32(size) : 0;
     evt->alloc_size = evt->len;
 
@@ -278,9 +283,13 @@ int BPF_KRETPROBE(u_calloc_exit)
     if (!st)
         return 0;
 
+    struct re_alloc_key key = {
+        .pid = pid,
+        .addr = (__u64)ret,
+    };
+
     if (have_size) {
         st->flags |= RE_SENTINEL_STATE_ARMED;
-        __u64 key = (__u64)ret;
         bpf_map_delete_elem(&freed, &key);
         struct re_alloc_info info = {
             .size = size,
@@ -296,7 +305,8 @@ int BPF_KRETPROBE(u_calloc_exit)
     evt->type = RE_SENTINEL_TYPE_MALLOC;
     evt->addr = (__u64)ret;
     evt->stack_id = stack_id;
-    evt->stack_fp = (__u32)stack_id;
+    if (stack_id >= 0)
+        evt->stack_fp = (__u32)stack_id;
     evt->len = have_size ? saturate_u32(size) : 0;
     evt->alloc_size = evt->len;
 
@@ -338,24 +348,32 @@ int BPF_KRETPROBE(u_realloc_exit)
     if (!st)
         return 0;
 
+    struct re_alloc_key new_key = {
+        .pid = pid,
+        .addr = (__u64)ret,
+    };
+    struct re_alloc_key old_key = {
+        .pid = pid,
+        .addr = old,
+    };
+
     if (!ret) {
         if (have_size && size == 0 && old)
-            bpf_map_delete_elem(&allocs, &old);
+            bpf_map_delete_elem(&allocs, &old_key);
         return 0;
     }
 
     if (old && old != (__u64)ret)
-        bpf_map_delete_elem(&allocs, &old);
+        bpf_map_delete_elem(&allocs, &old_key);
 
     if (have_size) {
         st->flags |= RE_SENTINEL_STATE_ARMED;
-        __u64 key = (__u64)ret;
-        bpf_map_delete_elem(&freed, &key);
+        bpf_map_delete_elem(&freed, &new_key);
         struct re_alloc_info info = {
             .size = size,
             .alloc_stack_id = stack_id,
         };
-        bpf_map_update_elem(&allocs, &key, &info, BPF_ANY);
+        bpf_map_update_elem(&allocs, &new_key, &info, BPF_ANY);
     }
 
     struct re_sentinel_event *evt = sentinel_event_reserve(st, pid_tgid);
@@ -365,7 +383,8 @@ int BPF_KRETPROBE(u_realloc_exit)
     evt->type = RE_SENTINEL_TYPE_MALLOC;
     evt->addr = (__u64)ret;
     evt->stack_id = stack_id;
-    evt->stack_fp = (__u32)stack_id;
+    if (stack_id >= 0)
+        evt->stack_fp = (__u32)stack_id;
     evt->len = have_size ? saturate_u32(size) : 0;
     evt->alloc_size = evt->len;
 
@@ -380,7 +399,14 @@ int BPF_KPROBE(u_free_enter)
     if (!p)
         return 0;
 
-    __u64 key = (__u64)p;
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+
+    struct re_alloc_key key = {
+        .pid = pid,
+        .addr = (__u64)p,
+    };
+
     struct re_alloc_info *info = bpf_map_lookup_elem(&allocs, &key);
     struct re_alloc_info *prev = bpf_map_lookup_elem(&freed, &key);
 
@@ -401,9 +427,6 @@ int BPF_KPROBE(u_free_enter)
         alloc_stack = info->alloc_stack_id;
     }
 
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    __u32 pid = pid_tgid >> 32;
-
     struct re_sentinel_state *st = sentinel_get_state(pid);
     if (!st)
         return 0;
@@ -418,9 +441,10 @@ int BPF_KPROBE(u_free_enter)
         return 0;
 
     evt->type = RE_SENTINEL_TYPE_FREE;
-    evt->addr = key;
+    evt->addr = key.addr;
     evt->stack_id = stack_id;
-    evt->stack_fp = (__u32)stack_id;
+    if (stack_id >= 0)
+        evt->stack_fp = (__u32)stack_id;
     evt->alloc_size = saturate_u32(size);
     evt->errno_code = status;
 
