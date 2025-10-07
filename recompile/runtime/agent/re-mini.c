@@ -136,6 +136,48 @@ static void log_line(const char *fmt, ...) {
     va_end(ap);
 }
 
+// V1 schema finding emission
+static void emit_v1_finding(const char *finding_json, const char *crashpack_dir)
+{
+    // Create crashpack directory if it doesn't exist
+    char mkdir_cmd[PATH_MAX + 32];
+    snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir -p %s", crashpack_dir);
+    system(mkdir_cmd);
+    
+    // Write to crashpack/findings.json
+    char crashpack_findings_path[PATH_MAX];
+    snprintf(crashpack_findings_path, sizeof(crashpack_findings_path), "%s/findings.json", crashpack_dir);
+    
+    int findings_fd = open(crashpack_findings_path, O_CREAT | O_WRONLY | O_APPEND, 0644);
+    if (findings_fd >= 0) {
+        dprintf(findings_fd, "%s\n", finding_json);
+        close(findings_fd);
+        log_line("V1 finding written to %s", crashpack_findings_path);
+    } else {
+        log_line("Failed to open %s for writing: %s", crashpack_findings_path, strerror(errno));
+    }
+    
+    // Also write to .re/last_finding.json
+    char last_finding_path[PATH_MAX];
+    snprintf(last_finding_path, sizeof(last_finding_path), "%s/.re/last_finding.json", crashpack_dir);
+    
+    // Create .re directory if it doesn't exist
+    char re_dir[PATH_MAX];
+    snprintf(re_dir, sizeof(re_dir), "%s/.re", crashpack_dir);
+    char mkdir_re_cmd[PATH_MAX + 32];
+    snprintf(mkdir_re_cmd, sizeof(mkdir_re_cmd), "mkdir -p %s", re_dir);
+    system(mkdir_re_cmd);
+    
+    int last_fd = open(last_finding_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (last_fd >= 0) {
+        dprintf(last_fd, "%s\n", finding_json);
+        close(last_fd);
+        log_line("V1 finding written to %s", last_finding_path);
+    } else {
+        log_line("Failed to open %s for writing: %s", last_finding_path, strerror(errno));
+    }
+}
+
 static void emit_memcpy_finding(const struct re_sentinel_event *ev,
     struct frame_info *call_frames, int call_count,
     struct frame_info *alloc_frames, int alloc_count)
@@ -212,6 +254,21 @@ static void emit_memcpy_finding(const struct re_sentinel_event *ev,
              ev->alloc_size, alloc_stack_json, call_stack_json, escaped_fix);
 
     dprintf(out_fd, "%s", finding);
+
+    // Also emit v1 schema finding
+    char v1_finding[4096];
+    snprintf(v1_finding, sizeof(v1_finding),
+             "{\"schema_version\":\"1.0\",\"id\":\"F-heap-overflow-%llu\",\"class\":\"heap_overflow\","
+             "\"confidence\":\"high\",\"severity\":\"%s\",\"timestamp\":%llu,\"pid\":%u,"
+             "\"evidence\":{\"memory\":{\"ptr\":%llu,\"size\":%u,\"alloc_size\":%u,\"operation\":\"memcpy\"},"
+             "\"stacks\":{\"alloc\":%s,\"call\":%s},\"alloc_site\":\"%s\"},"
+             "\"escalation\":{\"tool\":\"asan\",\"reason\":\"len>alloc_size\",\"estimated_cost\":\"low\",\"cooldown_ms\":10000},"
+             "\"related\":[]}",
+             (unsigned long long)ev->ts_ns, severity, (unsigned long long)ev->ts_ns, ev->pid,
+             (unsigned long long)ev->addr, ev->len, ev->alloc_size,
+             alloc_stack_json, call_stack_json, primary ? primary->file : "unknown");
+
+    emit_v1_finding(v1_finding, "/host/build/crashpack");
 
     const char *top = (primary_call && primary_call->summary[0]) ? primary_call->summary : location_summary;
     log_line("heap overflow: pid=%u len=%u dst_size=%u dst=0x%llx at %s",
@@ -296,6 +353,27 @@ static void emit_free_finding(const struct re_sentinel_event *ev, __u8 status,
              escaped_fix);
 
     dprintf(out_fd, "%s", finding);
+
+    // Also emit v1 schema finding
+    char v1_finding[4096];
+    const char *v1_class = (status == RE_SENTINEL_FREE_DOUBLE) ? "double_free" : "invalid_free";
+    const char *v1_confidence = (status == RE_SENTINEL_FREE_DOUBLE) ? "certain" : "high";
+    const char *v1_severity = (status == RE_SENTINEL_FREE_DOUBLE) ? "critical" : "high";
+    
+    snprintf(v1_finding, sizeof(v1_finding),
+             "{\"schema_version\":\"1.0\",\"id\":\"F-%s-%llu\",\"class\":\"%s\","
+             "\"confidence\":\"%s\",\"severity\":\"%s\",\"timestamp\":%llu,\"pid\":%u,"
+             "\"evidence\":{\"memory\":{\"ptr\":%llu,\"size\":%u,\"alloc_size\":%u,\"operation\":\"free\"},"
+             "\"stacks\":{\"alloc\":%s,\"call\":%s},\"alloc_site\":\"%s\"},"
+             "\"escalation\":{\"tool\":\"asan\",\"reason\":\"%s_detected\",\"estimated_cost\":\"low\",\"cooldown_ms\":%d},"
+             "\"related\":[]}",
+             kind, (unsigned long long)ev->ts_ns, v1_class, v1_confidence, v1_severity,
+             (unsigned long long)ev->ts_ns, ev->pid,
+             (unsigned long long)ev->addr, ev->alloc_size, ev->alloc_size,
+             alloc_stack_json, free_stack_json, primary ? primary->file : "unknown",
+             v1_class, (status == RE_SENTINEL_FREE_DOUBLE) ? 0 : 5000);
+
+    emit_v1_finding(v1_finding, "/host/build/crashpack");
 
     const char *top = (primary_call && primary_call->summary[0]) ? primary_call->summary : location_summary;
     log_line("%s: pid=%u ptr=0x%llx size=%u at %s",

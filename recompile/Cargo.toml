@@ -6,7 +6,7 @@ members = [
   "runtime/agent",
   "protocols/mcp",
   "lsp"
-]
+, "re-rules", "re-crashpack"]
 
 resolver = "2"
 
