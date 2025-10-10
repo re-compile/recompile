@@ -41,6 +41,7 @@ recompile/runtime/bpf/*.bc
 recompile/runtime/bpf/*.skel.h
 # Generated per-guest kernel header (large)
 recompile/runtime/bpf/vmlinux.h
+**/vmlinux.h
 
 # CMake outputs
 **/CMakeFiles/
