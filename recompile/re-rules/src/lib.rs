@@ -8,10 +8,17 @@ use thiserror::Error;
 pub mod config;
 pub mod rules;
 pub mod engine;
+pub mod clustering;
+pub mod symbolizer;
 
 pub use config::{Config, RulesConfig, EscalationConfig as ConfigEscalationConfig, ClusteringConfig, SymbolizeConfig, Mode};
 pub use rules::{Rule, RuleRegistry, DebounceConfig, EscalationConfig, RuleMatcher};
 pub use engine::{RuleEngine, RuleEngineStats};
+pub use clustering::{ClusterManager, ClusteringConfig as ClusterConfig, ClusteringStats};
+pub use symbolizer::{
+    Symbolizer, LlvmSymbolizer, Addr2lineSymbolizer, CompositeSymbolizer,
+    SymbolizerConfig, Frame
+};
 
 /// Event types from the eBPF sentinel
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

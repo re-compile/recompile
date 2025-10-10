@@ -70,6 +70,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn load_findings(findings_file: &str) -> Result<Vec<Finding>, Box<dyn std::error::Error>> {
     let content = fs::read_to_string(findings_file)?;
-    let findings: Vec<Finding> = serde_json::from_str(&content)?;
-    Ok(findings)
+    
+    // Try to parse as array of findings first
+    if let Ok(findings) = serde_json::from_str::<Vec<Finding>>(&content) {
+        return Ok(findings);
+    }
+    
+    // Try to parse as single finding
+    if let Ok(finding) = serde_json::from_str::<Finding>(&content) {
+        return Ok(vec![finding]);
+    }
+    
+    // Try to parse as line-delimited JSON
+    let mut findings = Vec::new();
+    for line in content.lines() {
+        if !line.trim().is_empty() {
+            if let Ok(finding) = serde_json::from_str::<Finding>(line) {
+                findings.push(finding);
+            }
+        }
+    }
+    
+    if !findings.is_empty() {
+        return Ok(findings);
+    }
+    
+    Err(format!("Could not parse findings from {}", findings_file).into())
 }

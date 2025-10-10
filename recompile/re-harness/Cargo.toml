@@ -1,6 +1,6 @@
 [package]
 edition.workspace = true
-name = "re-rules"
+name = "re-harness"
 version.workspace = true
 license.workspace = true
 
@@ -10,18 +10,12 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
-env_logger = { workspace = true }
 tokio = { version = "1.0", features = ["time", "fs"] }
-toml = "0.8"
+uuid = "1.0"
+chrono = "0.4"
+handlebars = "4.0"
+env_logger = { workspace = true }
 
 [[bin]]
-name = "generate_config"
-path = "src/bin/generate_config.rs"
-
-[[bin]]
-name = "test_clustering"
-path = "src/bin/test_clustering.rs"
-
-[[bin]]
-name = "test_symbolizer"
-path = "src/bin/test_symbolizer.rs"
+name = "generate_harness"
+path = "src/bin/generate_harness.rs"

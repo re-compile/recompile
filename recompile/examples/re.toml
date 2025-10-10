@@ -6,9 +6,9 @@ confidence_hi = 0.8
 confidence_lo = 0.5
 
 [rules.cooldowns]
+R-double-free = 0
 R-memcpy-oob = 10000
 R-uaf-hint = 5000
-R-double-free = 0
 R-invalid-free = 5000
 
 [escalation]
@@ -16,8 +16,8 @@ default_timeout = 120
 max_total_budget = 600
 
 [escalation.timeouts]
-valgrind = 300
 gdb = 60
+valgrind = 300
 asan = 120
 
 [clustering]

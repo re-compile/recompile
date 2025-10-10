@@ -36,6 +36,9 @@ pub struct ClusteringConfig {
     pub window_s: f64,
     pub top_k: usize,
     pub enabled: bool,
+    pub max_clusters: usize,
+    pub confidence_merge_threshold: f64,
+    pub similarity_threshold: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +83,9 @@ impl Default for Config {
                 window_s: 1.5,
                 top_k: 3,
                 enabled: true,
+                max_clusters: 1000,
+                confidence_merge_threshold: 0.8,
+                similarity_threshold: 0.9,
             },
             symbolize: SymbolizeConfig {
                 enabled: true,

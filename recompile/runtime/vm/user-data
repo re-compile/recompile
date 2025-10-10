@@ -64,6 +64,12 @@ write_files:
       clang -O2 -g -Wall -I/host/runtime/bpf -I/host/runtime -I/host/runtime/shared \
         -o /usr/local/bin/re-mini /host/runtime/agent/re-mini.c -lelf -lz -lbpf -ldl || true
 
+      # Skip Rust installation for now - too slow for VM boot
+      # curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y || true
+      # source $HOME/.cargo/env || true
+      # cd /host/runtime/agent-rs && cargo build --release || true
+      # cp /host/runtime/agent-rs/target/release/re-agent /usr/local/bin/re-agent || true
+
       # Tiny test program (intentional invalid free)
       cat >/tmp/invalid_free.c <<'EOF'
       #include <stdio.h>
@@ -79,7 +85,7 @@ write_files:
       EOF
       clang -O0 -g -fno-omit-frame-pointer -fno-builtin -o /tmp/invalid_free /tmp/invalid_free.c
 
-      # Run agent (background)
+      # Run C agent (background) for BPF probes
       nohup /usr/local/bin/re-mini \
         --heap /host/runtime/bpf/heap_tracker.bpf.o \
         --obj /host/runtime/bpf/copy_checker.bpf.o \
@@ -89,8 +95,15 @@ write_files:
         --func free \
         --out /dev/virtio-ports/re.findings >/dev/null 2>&1 &
 
-      sleep 1
-      # Execute invalid free workload (once agent + probes are attached)
+      # Skip Rust agent for now - not built yet
+      # nohup /usr/local/bin/re-agent \
+      #   --binary /tmp/invalid_free \
+      #   --libc /usr/lib/aarch64-linux-gnu/libc.so.6 \
+      #   --out /dev/virtio-ports/re.findings \
+      #   --findings /host/build/crashpack/findings.json >/dev/null 2>&1 &
+
+      sleep 2
+      # Execute invalid free workload (once agents + probes are attached)
       /tmp/invalid_free || true
       
       if command -v bpftool >/dev/null 2>&1; then

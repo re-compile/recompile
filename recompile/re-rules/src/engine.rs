@@ -2,7 +2,7 @@
 
 use crate::{
     Config, RuleRegistry, SentinelEvent, Finding, AnomalyClass, 
-    EscalationPlan, Result
+    EscalationPlan, Result, ClusterManager
 };
 use std::collections::{HashMap, VecDeque};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -15,6 +15,7 @@ pub struct RuleEngine {
     active_clusters: HashMap<String, ClusterState>,
     cooldowns: HashMap<String, Instant>,
     findings: Vec<Finding>,
+    cluster_manager: ClusterManager,
 }
 
 #[derive(Debug, Clone)]
@@ -29,12 +30,21 @@ struct ClusterState {
 
 impl RuleEngine {
     pub fn new(config: Config) -> Self {
+        let cluster_config = crate::clustering::ClusteringConfig {
+            window_s: config.clustering.window_s,
+            max_clusters: config.clustering.max_clusters,
+            top_k: config.clustering.top_k,
+            confidence_merge_threshold: config.clustering.confidence_merge_threshold,
+            similarity_threshold: config.clustering.similarity_threshold,
+        };
+        
         Self {
             registry: RuleRegistry::new(),
             event_buffer: VecDeque::new(),
             active_clusters: HashMap::new(),
             cooldowns: HashMap::new(),
             findings: Vec::new(),
+            cluster_manager: ClusterManager::new(cluster_config),
             config,
         }
     }
@@ -60,12 +70,34 @@ impl RuleEngine {
         let rule_ids: Vec<String> = self.registry.all_rules().map(|r| r.id.clone()).collect();
         for rule_id in rule_ids {
             if let Some(finding) = self.check_rule_by_id(&rule_id, &event)? {
-                new_findings.push(finding);
+                // Process through clustering
+                let events_slice = self.get_relevant_events(&finding, &event);
+                if let Some(merged_finding) = self.cluster_manager.add_finding(finding, &events_slice) {
+                    new_findings.push(merged_finding);
+                }
             }
         }
 
-        self.findings.extend(new_findings.clone());
+        // Get Top-K findings from cluster manager
+        let _top_k_findings = self.cluster_manager.get_top_k_findings();
+        
+        // Update our findings list with clustered results
+        self.findings = self.cluster_manager.get_all_findings();
+        
         Ok(new_findings)
+    }
+    
+    /// Get relevant events for a finding
+    fn get_relevant_events(&self, _finding: &Finding, trigger_event: &SentinelEvent) -> Vec<SentinelEvent> {
+        // Get events in a time window around the trigger event
+        let window_start = trigger_event.ts_ns.saturating_sub(1_000_000_000); // 1 second before
+        let window_end = trigger_event.ts_ns.saturating_add(1_000_000_000); // 1 second after
+        
+        self.event_buffer
+            .iter()
+            .filter(|e| e.ts_ns >= window_start && e.ts_ns <= window_end)
+            .cloned()
+            .collect()
     }
 
     /// Check a specific rule by ID against the current event window
@@ -87,7 +119,7 @@ impl RuleEngine {
             _ => None,
         };
 
-        let (id, rule_type, min_hits, window_ms) = match rule_info {
+        let (id, rule_type, min_hits, _window_ms) = match rule_info {
             Some(info) => info,
             None => return Ok(None),
         };
@@ -261,7 +293,7 @@ impl RuleEngine {
     }
 
     /// Create a simple finding without using the rule registry
-    fn create_simple_finding(&self, rule_id: &str, rule_type: &str, events: &[SentinelEvent], trigger_event: &SentinelEvent) -> Result<Finding> {
+    fn create_simple_finding(&self, _rule_id: &str, rule_type: &str, events: &[SentinelEvent], trigger_event: &SentinelEvent) -> Result<Finding> {
         let (class, confidence, severity) = match rule_type {
             "memcpy" => (AnomalyClass::HeapOverflow, crate::Confidence::High, crate::Severity::High),
             "double_free" => (AnomalyClass::DoubleFree, crate::Confidence::Certain, crate::Severity::Critical),
@@ -387,6 +419,16 @@ impl RuleEngine {
     /// Get all findings generated so far
     pub fn get_findings(&self) -> &[Finding] {
         &self.findings
+    }
+    
+    /// Get Top-K findings (most important)
+    pub fn get_top_k_findings(&self) -> Vec<Finding> {
+        self.cluster_manager.get_top_k_findings()
+    }
+    
+    /// Get clustering statistics
+    pub fn get_clustering_stats(&self) -> crate::ClusteringStats {
+        self.cluster_manager.get_stats()
     }
 
     /// Clear all findings (for testing)

@@ -1,0 +1,17 @@
+[package]
+edition.workspace = true
+name = "re-agent"
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+env_logger = "0.10"
+tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "time", "fs", "process"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+bytes = "1.0"

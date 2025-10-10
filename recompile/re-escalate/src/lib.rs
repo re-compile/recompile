@@ -40,20 +40,8 @@ pub struct EscalationPlan {
     pub cooldown_ms: u32,
 }
 
-/// Finding from the rule engine
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Finding {
-    pub schema_version: String,
-    pub id: String,
-    pub class: String,
-    pub confidence: String,
-    pub severity: String,
-    pub timestamp: u64,
-    pub pid: u32,
-    pub evidence: serde_json::Value,
-    pub escalation: Option<EscalationPlan>,
-    pub related: Vec<String>,
-}
+/// Finding from the rule engine (re-exported from re-crashpack for consistency)
+pub use re_crashpack::{Finding, Evidence, MemoryEvidence, StackEvidence};
 
 /// Escalation runner configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +109,8 @@ pub enum EscalationError {
     Io(#[from] std::io::Error),
     #[error("JSON serialization error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("Output parsing error: {0}")]
+    OutputParsing(String),
 }
 
 pub type Result<T> = std::result::Result<T, EscalationError>;

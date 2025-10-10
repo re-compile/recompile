@@ -11,6 +11,10 @@ serde.workspace = true
 serde_json.workspace = true
 log.workspace = true
 env_logger.workspace = true
+chrono = "0.4"
 vm-launcher = { path = "../vm-launcher" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
 
 

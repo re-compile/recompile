@@ -16,7 +16,7 @@
 recompile/build/
 recompile/build/**
 
-# QEMU/VM artifacts
+# QEMU/VM artifacts (keep cloud images for development)
 recompile/runtime/vm/*.img
 recompile/runtime/vm/*.qcow2
 recompile/runtime/vm/*.iso
@@ -26,8 +26,10 @@ recompile/runtime/vm/seed.iso
 recompile/runtime/vm/seed/
 recompile/runtime/vm/kernel/vmlinuz
 recompile/runtime/vm/kernel/initrd
+# But keep the cloud-init user-data for development
+!recompile/runtime/vm/user-data
 
-# Findings and logs
+# Findings and logs (keep for development)
 recompile/build/re-findings.log
 recompile/build/.re/
 
@@ -51,3 +53,48 @@ cloud-localds
 
 # Misc logs
 *.log
+
+# Keep important development files
+!recompile/examples/
+!recompile/scripts/
+!recompile/runtime/agent/
+!recompile/runtime/agent-rs/
+!recompile/runtime/bpf/*.c
+!recompile/runtime/bpf/*.h
+!recompile/runtime/shared/
+!recompile/runtime/vm/README.md
+!recompile/runtime/vm/user-data
+!recompile/runtime/vm/meta-data
+
+# Exclude compiled binaries and debug symbols from examples
+recompile/examples/*.dSYM/
+recompile/examples/*.dSYM/**
+recompile/examples/build/
+recompile/examples/build/**
+recompile/examples/double_free
+recompile/examples/invalid_free
+recompile/examples/memcpy_overflow
+# But keep source files and build scripts
+!recompile/examples/*.c
+!recompile/examples/*.sh
+!recompile/examples/*.toml
+!recompile/examples/re.toml
+
+# Keep documentation and planning files
+!*.md
+!plan.md
+!v1-questions.md
+!recompile/ARCHITECTURE.md
+!recompile/README.md
+!recompile/QUICKSTART.md
+!recompile/CHANGELOG.md
+
+# Keep configuration files
+!recompile/re.toml
+!recompile/Cargo.toml
+!recompile/Cargo.lock
+!recompile/Makefile
+
+# Keep source code
+!recompile/*/src/
+!recompile/*/Cargo.toml
