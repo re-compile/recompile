@@ -1,4 +1,7 @@
 //! Native mode implementation for Linux hosts
+//!
+//! This module implements direct eBPF-based analysis without a VM.
+//! It invokes the C agent (re-mini) to attach probes and monitor the target binary.
 
 use anyhow::Result;
 use std::path::PathBuf;
@@ -7,8 +10,15 @@ use std::path::PathBuf;
 use libc;
 
 /// Run analysis in native mode (Linux only)
+///
+/// # Arguments
+/// * `binary_path` - Path to the target binary to analyze
+/// * `output_dir` - Directory for crashpack output
+/// * `escalate_mode` - Escalation mode: "auto", "always", or "never"
+/// * `symbolizer_tool` - Symbolizer to use: "llvm-symbolizer" or "addr2line"
+/// * `args` - Arguments to pass to the target binary
 pub fn run_native(
-    _binary_path: &PathBuf,
+    binary_path: &PathBuf,
     output_dir: &PathBuf,
     _escalate_mode: &str,
     _symbolizer_tool: &str,
@@ -30,28 +40,42 @@ pub fn run_native(
     // Create output directory
     std::fs::create_dir_all(output_dir)?;
 
-    // For now, we'll use the existing VM approach but run the agent directly
-    // In a full implementation, this would:
-    // 1. Load BPF programs directly on the host
-    // 2. Attach probes to the target binary
-    // 3. Run the Rust agent in the same process
-    // 4. Generate findings directly to the output directory
+    // TODO: Implement native mode execution
+    // The implementation should:
+    // 1. Locate BPF objects (heap_tracker.bpf.o, copy_checker.bpf.o, sentinel_extra.bpf.o)
+    // 2. Locate the C agent binary (re-mini)
+    // 3. Detect libc path for the target binary
+    // 4. Launch re-mini with appropriate arguments:
+    //    re-mini --heap <heap_tracker.o> --obj <copy_checker.o> --sentinel <sentinel.o> \
+    //            --binary <target> --libc <libc.so> --out <findings_path>
+    // 5. Wait for agent to attach probes
+    // 6. Fork/exec the target binary (or have re-mini do it)
+    // 7. Collect findings from the output file
+    // 8. Optionally run escalation (ASan, etc.)
+    // 9. Generate crashpack
 
-    println!("Native mode analysis completed.");
-    println!("Note: Full native mode implementation requires additional BPF integration.");
-    println!("Currently falling back to VM mode for complete functionality.");
+    println!("Binary: {}", binary_path.display());
+    println!("Output: {}", output_dir.display());
+    println!();
+    println!("⚠️  Native mode is not yet fully implemented.");
+    println!();
+    println!("To test the eBPF pipeline manually:");
+    println!("  1. Build re-mini: cd runtime/agent && clang -O2 -g -o re-mini re-mini.c -lelf -lz -lbpf -ldl");
+    println!("  2. Run: sudo ./re-mini --heap runtime/bpf/heap_tracker.bpf.o \\");
+    println!("            --obj runtime/bpf/copy_checker.bpf.o --binary {} \\", binary_path.display());
+    println!("            --libc /lib/x86_64-linux-gnu/libc.so.6 --out /dev/stdout &");
+    println!("  3. Execute the binary in another terminal");
 
     Ok(())
 }
 
-/// Check for required Linux capabilities
+/// Check for required Linux capabilities (CAP_BPF, CAP_PERFMON)
 #[cfg(target_os = "linux")]
 fn check_capabilities() -> Result<()> {
     // Check if running as root or with required capabilities
     let uid = unsafe { libc::getuid() };
-    let gid = unsafe { libc::getgid() };
-    
-    println!("Running as UID: {}, GID: {}", uid, gid);
+
+    println!("Running as UID: {}", uid);
     
     if uid != 0 {
         // For non-root users, check if we can access BPF files
@@ -81,21 +105,12 @@ fn can_access_bpf() -> Result<bool> {
     if !bpf_path.exists() {
         return Ok(false);
     }
-    
-    // Try to create a temporary directory in /sys/fs/bpf
+
+    // Try to read the BPF filesystem
     // This is a simple test to see if we have BPF capabilities
     match std::fs::read_dir(bpf_path) {
         Ok(_) => Ok(true),
         Err(_) => Ok(false),
     }
-}
-
-/// Check if current process has a specific capability
-#[cfg(target_os = "linux")]
-fn has_capability(_cap_name: &str) -> Result<bool> {
-    // This is a simplified check - in practice, you'd use libcap or similar
-    // For now, we'll assume capabilities are available if running as root
-    let uid = unsafe { libc::getuid() };
-    Ok(uid == 0)
 }
 
