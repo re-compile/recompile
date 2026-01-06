@@ -18,8 +18,9 @@ Traditional debugging requires juggling gdb, Valgrind, and multiple sanitizers. 
 ### Working Components
 | Component | Location | Status |
 |-----------|----------|--------|
-| eBPF probes | `recompile/runtime/bpf/` | Functional |
+| eBPF probes | `recompile/runtime/bpf/` | Functional (heap_tracker, copy_checker) |
 | C agent (re-mini) | `recompile/runtime/agent/re-mini.c` | Functional |
+| Native mode | `recompile/rerun/src/native.rs` | Implemented - invokes re-mini |
 | VM launcher | `recompile/vm-launcher/` | Functional |
 | Compiler wrapper | `recompile/recc/` | Functional |
 | Event schema | `recompile/runtime/shared/re_events.h` | Complete |
@@ -27,10 +28,10 @@ Traditional debugging requires juggling gdb, Valgrind, and multiple sanitizers. 
 ### Needs Implementation
 | Component | Location | Status |
 |-----------|----------|--------|
-| Native Linux mode | `recompile/rerun/src/native.rs` | Stubbed - needs re-mini integration |
 | Escalation runners | `recompile/re-escalate/` | Stubbed - ASan/Valgrind/GDB |
 | Crashpack writer | `recompile/re-crashpack/` | Stubbed |
 | Harness generator | `recompile/re-harness/` | Stubbed |
+| sentinel_extra.bpf.o | `recompile/runtime/bpf/` | Needs full vmlinux.h for tracepoints |
 
 ### Deferred to Phase 2+
 - LLVM passes (`llvm-passes/`)
@@ -111,11 +112,6 @@ user-data (inside VM):
 
 ## Known Issues
 
-### native.rs Bugs
-1. **References Rust agent** - Comment says "Run the Rust agent" but should use C agent (re-mini)
-2. **Unused function** - `has_capability()` function is dead code
-3. **Not implemented** - Just prints messages, doesn't actually run re-mini
-
 ### re-mini.c Limitations
 1. **No fork/exec** - Agent only attaches probes; target binary must be run separately
 2. **Hardcoded paths**:
@@ -160,29 +156,68 @@ clang -O2 -g -Wall -I../bpf -I../shared \
 
 ## Testing
 
-### E2E Tests (Priority)
-```bash
-# Build examples
-cd recompile/examples && ./build.sh
+### Requirements for Native Mode Testing
+Native mode requires a Linux environment with eBPF support:
+- **Kernel**: 4.15+ for uprobes, 5.x+ for BTF (recommended)
+- **Permissions**: Root or CAP_BPF + CAP_PERFMON capabilities
+- **Filesystem**: `/sys/fs/bpf` must be mounted
 
-# Expected results:
-# - memcpy_overflow → heap_overflow finding
-# - double_free → double_free finding
-# - invalid_free → invalid_free finding
+Docker on Linux with `--privileged` flag works. Sandboxed environments (like some CI containers) may not have eBPF support.
+
+### Building All Components
+```bash
+cd recompile
+
+# Build Rust CLI
+cargo build --release
+
+# Build BPF objects (auto-detects x86_64 vs arm64)
+cd runtime/bpf && make
+
+# Build C agent
+cd ../agent
+clang -O2 -g -Wall -I../bpf -I../shared \
+  -o re-mini re-mini.c -lelf -lz -lbpf -ldl
+
+# Build example programs
+cd ../../examples
+clang -g -O0 -fno-omit-frame-pointer -o memcpy_overflow memcpy_overflow.c
+clang -g -O0 -fno-omit-frame-pointer -o double_free double_free.c
+clang -g -O0 -fno-omit-frame-pointer -o invalid_free invalid_free.c
 ```
 
-### Running the Agent (Current Working Flow Inside VM)
+### Running Native Mode E2E Test
 ```bash
-/usr/local/bin/re-mini \
-  --heap /host/runtime/bpf/heap_tracker.bpf.o \
-  --obj /host/runtime/bpf/copy_checker.bpf.o \
-  --sentinel /host/runtime/bpf/sentinel_extra.bpf.o \
-  --binary /tmp/test_binary \
-  --libc /lib/x86_64-linux-gnu/libc.so.6 \
-  --out /dev/stdout &
+cd recompile
 
-# Then run the target
-./test_binary
+# Run with native mode (requires Linux + eBPF)
+./target/release/rerun run --native examples/memcpy_overflow --output build/test
+
+# Expected: heap_overflow finding detected
+```
+
+### Expected Results
+| Example | Expected Finding |
+|---------|-----------------|
+| memcpy_overflow | heap_overflow (memcpy writes 64 bytes to 32-byte buffer) |
+| double_free | double_free (same pointer freed twice) |
+| invalid_free | invalid_free (freeing stack variable) |
+
+### Manual Agent Testing (Without CLI)
+```bash
+# Start agent in background
+sudo ./runtime/agent/re-mini \
+  --heap runtime/bpf/heap_tracker.bpf.o \
+  --obj runtime/bpf/copy_checker.bpf.o \
+  --binary examples/memcpy_overflow \
+  --libc /lib/x86_64-linux-gnu/libc.so.6 \
+  --out /tmp/findings.jsonl &
+
+# Run target
+./examples/memcpy_overflow
+
+# Check findings
+cat /tmp/findings.jsonl
 ```
 
 ## Finding Schema (v1)
