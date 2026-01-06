@@ -54,6 +54,10 @@ cloud-localds
 # Misc logs
 *.log
 
+# Compiled agent binaries
+recompile/runtime/agent/re-mini
+recompile/runtime/agent-rs/target/
+
 # Keep important development files
 !recompile/examples/
 !recompile/scripts/
