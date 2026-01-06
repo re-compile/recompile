@@ -1,7 +1,17 @@
 # --- runtime/bpf/Makefile (drop-in) ---
-LLVM_PREFIX ?= /opt/homebrew/opt/llvm
-CLANG       ?= $(LLVM_PREFIX)/bin/clang
-OBJDUMP     ?= $(LLVM_PREFIX)/bin/llvm-objdump
+
+# Detect LLVM toolchain (prefer system clang on Linux, Homebrew on macOS)
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+  LLVM_PREFIX ?= /opt/homebrew/opt/llvm
+  CLANG       ?= $(LLVM_PREFIX)/bin/clang
+  OBJDUMP     ?= $(LLVM_PREFIX)/bin/llvm-objdump
+  TARGET_ARCH ?= arm64
+else
+  CLANG       ?= clang
+  OBJDUMP     ?= llvm-objdump
+  TARGET_ARCH ?= x86
+endif
 
 # Where this Makefile lives
 BPF_DIR     := $(abspath .)
@@ -17,7 +27,7 @@ BPF_INCLUDES := \
   -I$(BPF_DIR)/include/uapi \
   -I$(BPF_DIR)/../shared
 
-BPF_CFLAGS := -target bpf -D__TARGET_ARCH_arm64 -O2 -g \
+BPF_CFLAGS := -target bpf -D__TARGET_ARCH_$(TARGET_ARCH) -O2 -g \
   -Wall -Wno-unknown-attributes -Wno-unused-value -Wno-pointer-sign \
   -Wno-compare-distinct-pointer-types \
   -Wno-gnu-variable-sized-type-not-at-end -Wno-incompatible-pointer-types \
