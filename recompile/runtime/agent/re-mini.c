@@ -15,6 +15,7 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 #include <dlfcn.h>
@@ -28,20 +29,92 @@
 #define PERF_MAX_STACK_DEPTH 127
 #endif
 
+// Common libc paths for different Linux distributions
+static const char *libc_search_paths[] = {
+    "/lib/x86_64-linux-gnu/libc.so.6",      // Debian/Ubuntu x86_64
+    "/lib64/libc.so.6",                      // RHEL/CentOS/Fedora x86_64
+    "/usr/lib/x86_64-linux-gnu/libc.so.6",  // Some Debian variants
+    "/usr/lib64/libc.so.6",                  // Some RHEL variants
+    "/lib/libc.so.6",                        // Generic
+    "/lib/aarch64-linux-gnu/libc.so.6",     // Debian/Ubuntu arm64
+    "/usr/lib/aarch64-linux-gnu/libc.so.6", // ARM64 variants
+    NULL
+};
+
+// Recursive mkdir - creates all parent directories as needed
+static int mkdir_p(const char *path, mode_t mode) {
+    char tmp[PATH_MAX];
+    char *p = NULL;
+    size_t len;
+
+    snprintf(tmp, sizeof(tmp), "%s", path);
+    len = strlen(tmp);
+    if (len > 0 && tmp[len - 1] == '/')
+        tmp[len - 1] = '\0';
+
+    for (p = tmp + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            if (mkdir(tmp, mode) != 0 && errno != EEXIST)
+                return -1;
+            *p = '/';
+        }
+    }
+    if (mkdir(tmp, mode) != 0 && errno != EEXIST)
+        return -1;
+    return 0;
+}
+
+// Detect libc path using ldd on self or by checking common paths
+static const char *detect_libc_path(void) {
+    // First, check common paths
+    for (int i = 0; libc_search_paths[i] != NULL; i++) {
+        if (access(libc_search_paths[i], R_OK) == 0) {
+            return libc_search_paths[i];
+        }
+    }
+
+    // Fallback: try to find via /proc/self/maps
+    FILE *fp = fopen("/proc/self/maps", "r");
+    if (fp) {
+        static char detected_path[PATH_MAX];
+        char line[512];
+        while (fgets(line, sizeof(line), fp)) {
+            if (strstr(line, "libc") && strstr(line, ".so")) {
+                // Parse the path from the maps line
+                char *path_start = strchr(line, '/');
+                if (path_start) {
+                    char *path_end = strchr(path_start, '\n');
+                    if (path_end) *path_end = '\0';
+                    path_end = strchr(path_start, ' ');
+                    if (path_end) *path_end = '\0';
+                    strncpy(detected_path, path_start, sizeof(detected_path) - 1);
+                    detected_path[sizeof(detected_path) - 1] = '\0';
+                    fclose(fp);
+                    return detected_path;
+                }
+            }
+        }
+        fclose(fp);
+    }
+
+    return NULL;
+}
+
 static volatile sig_atomic_t stop = 0;
 static const char *obj_path = NULL;
 static const char *heap_path = NULL;
-static const char *libc_path = "/usr/lib/aarch64-linux-gnu/libc.so.6";
+static const char *libc_path = NULL;  // Detected at runtime or via --libc
 static const char *binary_path = NULL;
 static const char *sentinel_path = NULL;
 static char binary_realpath_buf[PATH_MAX];
 static bool binary_realpath_ok = false;
 static const char *func_filter = NULL;
-static const char *out_path = "/dev/virtio-ports/re.findings";
+static const char *out_path = NULL;  // NULL = stdout, or set via --out
+static const char *crashpack_dir = NULL;  // NULL = cwd/crashpack, or set via --crashpack
 static int out_fd = -1;
 static int ustacks_fd = -1;
 static __u32 self_pid = 0;
-static __u32 target_pid = 0;
 static bool memcpy_finding_emitted = false;
 static unsigned free_finding_mask = 0;
 
@@ -137,17 +210,17 @@ static void log_line(const char *fmt, ...) {
 }
 
 // V1 schema finding emission
-static void emit_v1_finding(const char *finding_json, const char *crashpack_dir)
+static void emit_v1_finding(const char *finding_json, const char *output_dir)
 {
     // Create crashpack directory if it doesn't exist
-    char mkdir_cmd[PATH_MAX + 32];
-    snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir -p %s", crashpack_dir);
-    system(mkdir_cmd);
-    
+    if (mkdir_p(output_dir, 0755) != 0) {
+        log_line("Failed to create directory %s: %s", output_dir, strerror(errno));
+    }
+
     // Write to crashpack/findings.json
     char crashpack_findings_path[PATH_MAX];
-    snprintf(crashpack_findings_path, sizeof(crashpack_findings_path), "%s/findings.json", crashpack_dir);
-    
+    snprintf(crashpack_findings_path, sizeof(crashpack_findings_path), "%s/findings.json", output_dir);
+
     int findings_fd = open(crashpack_findings_path, O_CREAT | O_WRONLY | O_APPEND, 0644);
     if (findings_fd >= 0) {
         dprintf(findings_fd, "%s\n", finding_json);
@@ -156,17 +229,17 @@ static void emit_v1_finding(const char *finding_json, const char *crashpack_dir)
     } else {
         log_line("Failed to open %s for writing: %s", crashpack_findings_path, strerror(errno));
     }
-    
+
     // Also write to .re/last_finding.json
     char last_finding_path[PATH_MAX];
-    snprintf(last_finding_path, sizeof(last_finding_path), "%s/.re/last_finding.json", crashpack_dir);
-    
+    snprintf(last_finding_path, sizeof(last_finding_path), "%s/.re/last_finding.json", output_dir);
+
     // Create .re directory if it doesn't exist
     char re_dir[PATH_MAX];
-    snprintf(re_dir, sizeof(re_dir), "%s/.re", crashpack_dir);
-    char mkdir_re_cmd[PATH_MAX + 32];
-    snprintf(mkdir_re_cmd, sizeof(mkdir_re_cmd), "mkdir -p %s", re_dir);
-    system(mkdir_re_cmd);
+    snprintf(re_dir, sizeof(re_dir), "%s/.re", output_dir);
+    if (mkdir_p(re_dir, 0755) != 0) {
+        log_line("Failed to create directory %s: %s", re_dir, strerror(errno));
+    }
     
     int last_fd = open(last_finding_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
     if (last_fd >= 0) {
@@ -268,7 +341,7 @@ static void emit_memcpy_finding(const struct re_sentinel_event *ev,
              (unsigned long long)ev->addr, ev->len, ev->alloc_size,
              alloc_stack_json, call_stack_json, primary ? primary->file : "unknown");
 
-    emit_v1_finding(v1_finding, "/host/build/crashpack");
+    emit_v1_finding(v1_finding, crashpack_dir ? crashpack_dir : "crashpack");
 
     const char *top = (primary_call && primary_call->summary[0]) ? primary_call->summary : location_summary;
     log_line("heap overflow: pid=%u len=%u dst_size=%u dst=0x%llx at %s",
@@ -373,7 +446,7 @@ static void emit_free_finding(const struct re_sentinel_event *ev, __u8 status,
              alloc_stack_json, free_stack_json, primary ? primary->file : "unknown",
              v1_class, (status == RE_SENTINEL_FREE_DOUBLE) ? 0 : 5000);
 
-    emit_v1_finding(v1_finding, "/host/build/crashpack");
+    emit_v1_finding(v1_finding, crashpack_dir ? crashpack_dir : "crashpack");
 
     const char *top = (primary_call && primary_call->summary[0]) ? primary_call->summary : location_summary;
     log_line("%s: pid=%u ptr=0x%llx size=%u at %s",
@@ -737,32 +810,35 @@ static bool ensure_pid_allowed(__u32 pid)
         return false;
     }
 
-    if (target_pid && pid != target_pid)
-        return false;
-
+    // No --binary filter: allow all PIDs (except self)
     if (binary_path == NULL) {
         entry->allowed = true;
-        if (!target_pid) target_pid = pid;
         return true;
     }
+
+    // Already validated this PID
     if (entry->allowed)
         return true;
 
+    // Try to validate PID against binary path
     char link_path[64];
     snprintf(link_path, sizeof(link_path), "/proc/%u/exe", pid);
     char resolved[PATH_MAX];
     ssize_t n = readlink(link_path, resolved, sizeof(resolved) - 1);
     if (n <= 0) {
-        debug_drop(pid, "readlink failed");
-        entry->allowed = false;
+        // Readlink failed - process may have exited before we could check.
+        // Leave entry in unvalidated state (allowed=false from init).
+        // This is conservative: we reject events from PIDs we can't verify.
+        debug_drop(pid, "readlink failed (process may have exited)");
         return false;
     }
     resolved[n] = '\0';
+
     if (path_equals_binary(resolved)) {
         entry->allowed = true;
-        if (!target_pid) target_pid = pid;
         return true;
     }
+
     entry->allowed = false;
     debug_drop(pid, resolved);
     return false;
@@ -853,6 +929,56 @@ static void mark_reported(__u32 pid, __u64 dst)
     reported_count++;
 }
 
+// Run symbolizer via fork/exec (avoids shell injection)
+static FILE *run_symbolizer(const char *module, __u64 offset) {
+    int pipefd[2];
+    if (pipe(pipefd) == -1)
+        return NULL;
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return NULL;
+    }
+
+    if (pid == 0) {
+        // Child process
+        close(pipefd[0]);  // Close read end
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
+
+        // Redirect stderr to /dev/null
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+
+        char addr_str[32];
+        snprintf(addr_str, sizeof(addr_str), "0x%llx", (unsigned long long)offset);
+
+        // Try llvm-symbolizer first
+        execlp("llvm-symbolizer", "llvm-symbolizer",
+               "--inlining", "--demangle", "--obj", module, addr_str, NULL);
+
+        // Fallback to addr2line
+        execlp("addr2line", "addr2line", "-f", "-C", "-e", module, addr_str, NULL);
+
+        _exit(127);
+    }
+
+    // Parent process
+    close(pipefd[1]);  // Close write end
+    FILE *fp = fdopen(pipefd[0], "r");
+    if (!fp) {
+        close(pipefd[0]);
+        waitpid(pid, NULL, 0);
+        return NULL;
+    }
+    return fp;
+}
+
 static bool symbolize_address(__u32 pid, __u64 addr, struct frame_info *out)
 {
     if (!out) return false;
@@ -870,21 +996,8 @@ static bool symbolize_address(__u32 pid, __u64 addr, struct frame_info *out)
     out->offset = addr - base;
     strncpy(out->module, module, sizeof(out->module) - 1);
 
-    char cmd[PATH_MAX * 2 + 128];
-    // Prefer llvm-symbolizer if available (better demangling and accuracy), fallback to addr2line
-    // Both tools print two lines for a single address when requested this way:
-    //  1) function name
-    //  2) file:path:line[:col] or '??:0:0' on failure
-    snprintf(
-        cmd,
-        sizeof(cmd),
-        "(command -v llvm-symbolizer >/dev/null 2>&1 && llvm-symbolizer --inlining --demangle --obj=%s 0x%llx) || addr2line -f -C -e %s 0x%llx 2>/dev/null",
-        module,
-        (unsigned long long)out->offset,
-        module,
-        (unsigned long long)out->offset
-    );
-    FILE *fp = popen(cmd, "r");
+    // Use fork/exec to avoid shell injection with untrusted module paths
+    FILE *fp = run_symbolizer(module, out->offset);
     if (!fp) {
         snprintf(out->summary, sizeof(out->summary), "%s+0x%llx", module, (unsigned long long)out->offset);
         return false;
@@ -893,11 +1006,15 @@ static bool symbolize_address(__u32 pid, __u64 addr, struct frame_info *out)
     char func[256] = {0};
     char loc[256] = {0};
     if (!fgets(func, sizeof(func), fp) || !fgets(loc, sizeof(loc), fp)) {
-        pclose(fp);
+        fclose(fp);
+        // Reap child process
+        while (wait(NULL) > 0);
         snprintf(out->summary, sizeof(out->summary), "%s+0x%llx", module, (unsigned long long)out->offset);
         return false;
     }
-    pclose(fp);
+    fclose(fp);
+    // Reap child process
+    while (wait(NULL) > 0);
 
     trim_newline(func);
     trim_newline(loc);
@@ -990,7 +1107,19 @@ static size_t json_escape(const char *in, char *out, size_t out_sz)
 
 static void usage(const char *argv0){
     fprintf(stderr,
-        "usage: %s [--heap <heap_tracker.o>] --obj <copy_checker.o> [--sentinel <sentinel.o>] [--binary <path>] [--libc <libc.so>] [--func memcpy] [--out <path>]\n",
+        "usage: %s [--heap <heap_tracker.o>] --obj <copy_checker.o> [--sentinel <sentinel.o>]\n"
+        "       [--binary <path>] [--libc <libc.so>] [--func memcpy]\n"
+        "       [--out <path>] [--crashpack <dir>]\n"
+        "\n"
+        "Options:\n"
+        "  --obj <file>       Required: copy_checker BPF object\n"
+        "  --heap <file>      Optional: heap_tracker BPF object\n"
+        "  --sentinel <file>  Optional: sentinel_extra BPF object\n"
+        "  --binary <path>    Filter events to this binary only\n"
+        "  --libc <path>      Path to libc.so.6 (auto-detected if not specified)\n"
+        "  --func <name>      Filter to specific function (e.g., memcpy)\n"
+        "  --out <path>       Output file for events (default: stdout)\n"
+        "  --crashpack <dir>  Directory for findings (default: ./crashpack)\n",
         argv0);
 }
 
@@ -1013,14 +1142,33 @@ int main(int argc, char **argv){
         else if (strcmp(argv[i],"--func")==0 && i+1<argc) func_filter = argv[++i];
         else if (strcmp(argv[i],"--sentinel")==0 && i+1<argc) sentinel_path = argv[++i];
         else if (strcmp(argv[i],"--out")==0 && i+1<argc) out_path = argv[++i];
+        else if (strcmp(argv[i],"--crashpack")==0 && i+1<argc) crashpack_dir = argv[++i];
         else if (!strcmp(argv[i],"-h") || !strcmp(argv[i],"--help")) { usage(argv[0]); return 1; }
     }
     if (!obj_path){ usage(argv[0]); return 1; }
 
-    self_pid = ( __u32)getpid();
+    self_pid = (__u32)getpid();
 
-    out_fd = open(out_path, O_WRONLY|O_CLOEXEC);
-    if (out_fd < 0) out_fd = STDERR_FILENO;
+    // Setup output: use specified path, or stdout if not specified
+    if (out_path) {
+        out_fd = open(out_path, O_WRONLY|O_CREAT|O_CLOEXEC, 0644);
+        if (out_fd < 0) {
+            fprintf(stderr, "Failed to open output file %s: %s\n", out_path, strerror(errno));
+            out_fd = STDOUT_FILENO;
+        }
+    } else {
+        out_fd = STDOUT_FILENO;
+    }
+
+    // Detect libc path if not specified
+    if (!libc_path) {
+        libc_path = detect_libc_path();
+        if (!libc_path) {
+            fprintf(stderr, "Error: Could not detect libc path. Please specify --libc <path>\n");
+            return 1;
+        }
+        log_line("Detected libc at: %s", libc_path);
+    }
 
     if (binary_path) {
         if (realpath(binary_path, binary_realpath_buf)) {
