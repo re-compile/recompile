@@ -2,8 +2,6 @@
 members = [
   "recc",
   "rerun",
-  "protocols/mcp",
-  "lsp",
   "re-rules",
   "re-crashpack",
   "re-escalate",
