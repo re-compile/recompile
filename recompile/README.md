@@ -83,6 +83,25 @@ sudo setcap 'cap_bpf,cap_perfmon+ep' target/release/rerun
 ./target/release/rerun run --native examples/memcpy_overflow
 ```
 
+### Native Mode In Docker
+
+Native eBPF runs in Docker must share the Linux PID namespace with the traced process.
+Use both `--privileged` and `--pid=host`:
+
+```bash
+docker build -t recompile-bootstrap:host .
+docker run --rm -it --privileged --pid=host \
+  -v "$PWD":/workspace/recompile \
+  recompile-bootstrap:host bash
+```
+
+Then, inside the container:
+
+```bash
+cd /workspace/recompile/recompile
+./target/release/rerun run --native build/examples/memcpy_overflow
+```
+
 ### Escalation Analysis
 
 ```bash

@@ -77,6 +77,26 @@ sudo setcap 'cap_bpf,cap_perfmon+ep' target/release/rerun
 cargo run -p rerun -- run --native examples/memcpy_overflow
 ```
 
+### Native Mode In Docker
+
+For Docker-native tracing, start the container with both `--privileged` and
+`--pid=host`. Without the shared PID namespace, BPF events can be emitted with
+kernel-visible PIDs that do not match the container-local target PID.
+
+```bash
+docker build -t recompile-bootstrap:host .
+docker run --rm -it --privileged --pid=host \
+  -v "$PWD":/workspace/recompile \
+  recompile-bootstrap:host bash
+```
+
+Inside the container:
+
+```bash
+cd /workspace/recompile/recompile
+./target/release/rerun run --native build/examples/memcpy_overflow
+```
+
 ### Custom Output Directory
 
 ```bash

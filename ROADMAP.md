@@ -44,7 +44,7 @@ Before adding features, the system needs to be made consistent and modular.
 - Streaming/debug lines stay in `re-findings.jsonl` only
 - Crashpack generation consumes the canonical findings contract
 - No hardcoded mapping to one example binary or one example source file
-- Native workflow works in Docker with one bootstrap path
+- Native workflow works in Docker with one bootstrap path and shared PID namespace (`--privileged --pid=host`)
 
 ### Work Items
 
@@ -77,6 +77,7 @@ Before adding features, the system needs to be made consistent and modular.
    - Add a supported Docker image / bootstrap path
    - Container startup should install the required Linux/BPF toolchain and prepare the workspace automatically
    - Document one command to get from container boot to runnable native workflow
+   - Make the Docker-native PID namespace requirement explicit
 
 7. **Repair libc uprobe stability**
    - Validate that attaching to `malloc`, `calloc`, `realloc`, `free`, and `memcpy` does not crash traced processes

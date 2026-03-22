@@ -27,6 +27,7 @@ export PATH="/root/.cargo/bin:$PATH"
 
 if [[ "$skip_bootstrap" != "1" ]]; then
     log "recompile bootstrap: preparing native Linux workspace in $project_dir"
+    log "recompile bootstrap: native eBPF runs expect Docker with --privileged --pid=host"
 
     if [[ "$build_native" == "1" ]]; then
         log "recompile bootstrap: generating BPF headers and objects"

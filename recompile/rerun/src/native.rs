@@ -6,16 +6,22 @@
 use anyhow::{Context, Result};
 use re_crashpack::{BinaryInfo, Manifest};
 use serde::Serialize;
+use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
-use serde_json::Value;
 
 #[cfg(target_os = "linux")]
 use libc;
+#[cfg(target_os = "linux")]
+use std::ffi::CString;
+#[cfg(target_os = "linux")]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(target_os = "linux")]
+use std::os::unix::process::ExitStatusExt;
 
 /// Configuration for native mode execution
 struct NativeConfig {
@@ -33,6 +39,27 @@ struct NativeConfig {
 struct NativeRunMetadata {
     binary_path: String,
     args: Vec<String>,
+}
+
+struct TargetProcess {
+    pid: u32,
+}
+
+impl TargetProcess {
+    fn id(&self) -> u32 {
+        self.pid
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait(self) -> Result<ExitStatus> {
+        wait_for_exit(self.pid)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn wait(self) -> Result<ExitStatus> {
+        let _ = self;
+        Err(anyhow::anyhow!("Native mode is only supported on Linux"))
+    }
 }
 
 /// Run analysis in native mode (Linux only)
@@ -84,9 +111,14 @@ pub fn run_native(
     println!("  Crashpack:    {}", config.crashpack_dir.display());
     println!();
 
+    // Start the target in a stopped state so probes are attached before main executes.
+    println!("Starting target in paused state...");
+    let target = start_target_paused(&binary_abs, args)?;
+    println!("✓ Target paused (PID: {})", target.id());
+
     // Start the re-mini agent
     println!("Starting re-mini agent...");
-    let mut agent = start_agent(&config, &binary_abs)?;
+    let mut agent = start_agent(&config, &binary_abs, target.id())?;
 
     // Give the agent time to attach probes
     std::thread::sleep(Duration::from_millis(500));
@@ -107,15 +139,12 @@ pub fn run_native(
         }
     }
 
-    // Run the target binary
+    // Resume the target now that probes are attached.
     println!("\nRunning target binary...");
-    let target_status = Command::new(&binary_abs)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .with_context(|| format!("Failed to execute: {}", binary_abs.display()))?;
+    resume_target(target.id())?;
+    let target_status = target
+        .wait()
+        .with_context(|| format!("Failed while waiting for {}", binary_abs.display()))?;
 
     println!("\nTarget exited with status: {}", target_status);
     append_console_log(
@@ -248,12 +277,14 @@ fn tracefs_has_syscall_tracepoints() -> bool {
 
 /// Detect the path to libc
 fn detect_libc() -> Result<PathBuf> {
-    // Common libc paths for x86_64 Linux
+    // Common libc paths for Linux
     let common_paths = [
         "/lib/x86_64-linux-gnu/libc.so.6",
         "/lib64/libc.so.6",
         "/usr/lib/x86_64-linux-gnu/libc.so.6",
         "/usr/lib64/libc.so.6",
+        "/lib/aarch64-linux-gnu/libc.so.6",
+        "/usr/lib/aarch64-linux-gnu/libc.so.6",
         "/lib/libc.so.6",
     ];
 
@@ -290,7 +321,7 @@ fn detect_libc() -> Result<PathBuf> {
 }
 
 /// Start the re-mini agent process
-fn start_agent(config: &NativeConfig, binary_path: &Path) -> Result<Child> {
+fn start_agent(config: &NativeConfig, binary_path: &Path, target_pid: u32) -> Result<Child> {
     let mut cmd = Command::new(&config.re_mini_path);
     let stdout_log = OpenOptions::new()
         .create(true)
@@ -304,6 +335,7 @@ fn start_agent(config: &NativeConfig, binary_path: &Path) -> Result<Child> {
     cmd.arg("--heap").arg(&config.heap_tracker_path)
        .arg("--obj").arg(&config.copy_checker_path)
        .arg("--binary").arg(binary_path)
+       .arg("--pid").arg(target_pid.to_string())
        .arg("--libc").arg(&config.libc_path)
        .arg("--out").arg(&config.debug_findings_path)
        .arg("--crashpack").arg(&config.crashpack_dir);
@@ -321,6 +353,115 @@ fn start_agent(config: &NativeConfig, binary_path: &Path) -> Result<Child> {
         .with_context(|| format!("Failed to start agent: {}", config.re_mini_path.display()))?;
 
     Ok(child)
+}
+
+#[cfg(target_os = "linux")]
+fn start_target_paused(binary_path: &Path, args: &[String]) -> Result<TargetProcess> {
+    let binary_cstr = CString::new(binary_path.as_os_str().as_bytes())
+        .with_context(|| format!("Binary path contains interior NUL: {}", binary_path.display()))?;
+    let arg_cstrs = args
+        .iter()
+        .map(|arg| CString::new(arg.as_bytes()).context("Argument contains interior NUL"))
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut argv = Vec::with_capacity(arg_cstrs.len() + 2);
+    argv.push(binary_cstr.as_ptr());
+    argv.extend(arg_cstrs.iter().map(|arg| arg.as_ptr()));
+    argv.push(std::ptr::null());
+
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(anyhow::anyhow!(
+            "Failed to fork target {}: {}",
+            binary_path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    if pid == 0 {
+        unsafe {
+            libc::raise(libc::SIGSTOP);
+            libc::execv(binary_cstr.as_ptr(), argv.as_ptr());
+            libc::_exit(127);
+        }
+    }
+
+    wait_for_stop(pid)?;
+    Ok(TargetProcess { pid: pid as u32 })
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_stop(pid: libc::pid_t) -> Result<()> {
+    loop {
+        let mut status = 0;
+        let rc = unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) };
+        if rc == pid {
+            if unsafe { libc::WIFSTOPPED(status) } {
+                return Ok(());
+            }
+
+            if unsafe { libc::WIFEXITED(status) || libc::WIFSIGNALED(status) } {
+                return Err(anyhow::anyhow!(
+                    "Target {} exited before attach: {}",
+                    pid,
+                    ExitStatus::from_raw(status)
+                ));
+            }
+        }
+
+        if rc < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(anyhow::anyhow!(
+                "Failed to wait for target {} to stop: {}",
+                pid,
+                err
+            ));
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn resume_target(pid: u32) -> Result<()> {
+    let rc = unsafe { libc::kill(pid as i32, libc::SIGCONT) };
+    if rc != 0 {
+        return Err(anyhow::anyhow!(
+            "Failed to resume target {}: {}",
+            pid,
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn start_target_paused(_binary_path: &Path, _args: &[String]) -> Result<TargetProcess> {
+    Err(anyhow::anyhow!("Native mode is only supported on Linux"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn resume_target(_pid: u32) -> Result<()> {
+    Err(anyhow::anyhow!("Native mode is only supported on Linux"))
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_exit(pid: u32) -> Result<ExitStatus> {
+    loop {
+        let mut status = 0;
+        let rc = unsafe { libc::waitpid(pid as i32, &mut status, 0) };
+        if rc == pid as i32 {
+            return Ok(ExitStatus::from_raw(status));
+        }
+        if rc < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(anyhow::anyhow!("Failed to wait for target {}: {}", pid, err));
+        }
+    }
 }
 
 fn finalize_findings(crashpack_dir: &Path, binary_path: &Path) -> Result<PathBuf> {

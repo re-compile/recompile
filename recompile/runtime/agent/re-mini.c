@@ -109,6 +109,7 @@ static const char *binary_path = NULL;
 static const char *sentinel_path = NULL;
 static char binary_realpath_buf[PATH_MAX];
 static bool binary_realpath_ok = false;
+static pid_t target_pid = -1;
 static const char *func_filter = NULL;
 static const char *out_path = NULL;  // NULL = stdout, or set via --out
 static const char *crashpack_dir = NULL;  // NULL = cwd/crashpack, or set via --crashpack
@@ -480,7 +481,13 @@ static int on_sentinel_event(void *ctx, void *data, size_t len)
         if (memcpy_finding_emitted)
             return 0;
 
-        if (ev.alloc_size && ev.len <= ev.alloc_size)
+        // Treat heap overflow as a tracked-allocation signal only. Unknown
+        // destination capacity produces too many libc-internal false positives
+        // in the current native pipeline.
+        if (ev.alloc_size == 0)
+            return 0;
+
+        if (ev.len <= ev.alloc_size)
             return 0;
 
         if (already_reported(ev.pid, ev.addr))
@@ -505,6 +512,12 @@ static int on_sentinel_event(void *ctx, void *data, size_t len)
         __u8 status = (ev.errno_code >= 0 && ev.errno_code <= RE_SENTINEL_FREE_INVALID)
                         ? (__u8)ev.errno_code : RE_SENTINEL_FREE_OK;
         if (status == RE_SENTINEL_FREE_OK)
+            return 0;
+
+        // Once we have already reported a heap overflow on this exact
+        // allocation, a later invalid free is usually a secondary symptom of
+        // the same corruption rather than an independent root cause.
+        if (status == RE_SENTINEL_FREE_INVALID && already_reported(ev.pid, ev.addr))
             return 0;
 
         unsigned bit = (status <= 30) ? (1u << status) : (1u << 31);
@@ -538,107 +551,126 @@ struct sym_cache {
     int count;
 };
 
-static size_t find_elf_symbol_offset(const char *path, const char *name, char *impl_name, size_t impl_sz) {
-    if (elf_version(EV_CURRENT) == EV_NONE) return 0;
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) return 0;
-    Elf *e = elf_begin(fd, ELF_C_READ, NULL);
-    if (!e){ close(fd); return 0; }
-
-    size_t shnum=0; if (elf_getshdrnum(e, &shnum) != 0){ elf_end(e); close(fd); return 0; }
-    size_t off = 0;
-    for (int pass=0; pass<2 && !off; ++pass) {
-        for (size_t i=0; i<shnum; ++i) {
-            Elf_Scn *scn = elf_getscn(e, i); if (!scn) continue;
-            GElf_Shdr sh; if (!gelf_getshdr(scn, &sh)) continue;
-            if ((pass==0 && sh.sh_type != SHT_DYNSYM) ||
-                (pass==1 && sh.sh_type != SHT_SYMTAB)) continue;
-            Elf_Data *d = elf_getdata(scn, NULL); if (!d) continue;
-            size_t n = sh.sh_size / sh.sh_entsize;
-            for (size_t j=0; j<n; ++j) {
-                GElf_Sym s; if (!gelf_getsym(d, j, &s)) continue;
-                const char *nm = elf_strptr(e, sh.sh_link, s.st_name);
-                if (!nm) continue;
-                if (strcmp(nm, name)==0 && GELF_ST_TYPE(s.st_info)==STT_FUNC && s.st_value) {
-                    off = (size_t)s.st_value;
-                    if (impl_name && impl_sz) {
-                        strncpy(impl_name, nm, impl_sz - 1);
-                        impl_name[impl_sz - 1] = '\0';
-                    }
-                    break;
-                }
-            }
-            if (off) break;
-        }
+static const char *preferred_symbol_aliases(const char *symbol, int idx)
+{
+    if (strcmp(symbol, "memcpy") == 0) {
+        static const char *aliases[] = {
+            "memcpy@GLIBC_2.2.5",
+            "memcpy",
+            "__memcpy",
+            NULL,
+        };
+        return aliases[idx];
     }
-    elf_end(e); close(fd); return off;
+
+    if (strcmp(symbol, "malloc") == 0) {
+        static const char *aliases[] = {
+            "malloc",
+            "__libc_malloc",
+            NULL,
+        };
+        return aliases[idx];
+    }
+
+    if (strcmp(symbol, "calloc") == 0) {
+        static const char *aliases[] = {
+            "calloc",
+            "__libc_calloc",
+            NULL,
+        };
+        return aliases[idx];
+    }
+
+    if (strcmp(symbol, "realloc") == 0) {
+        static const char *aliases[] = {
+            "realloc",
+            "__libc_realloc",
+            NULL,
+        };
+        return aliases[idx];
+    }
+
+    if (strcmp(symbol, "free") == 0) {
+        static const char *aliases[] = {
+            "free",
+            "__libc_free",
+            NULL,
+        };
+        return aliases[idx];
+    }
+
+    if (idx == 0)
+        return symbol;
+    return NULL;
 }
 
-static size_t find_symbol_offset_rtld(const char *path, const char *name, char *impl_name, size_t impl_sz) {
-    void *handle = dlopen(path, RTLD_LAZY | RTLD_LOCAL);
-    if (!handle) return 0;
+static struct bpf_link *attach_uprobe_by_name(const struct bpf_program *prog, bool retprobe,
+    const char *binary_path, const char *symbol, char *impl_out, size_t impl_sz)
+{
+    for (int i = 0; ; ++i) {
+        const char *candidate = preferred_symbol_aliases(symbol, i);
+        if (!candidate)
+            break;
 
-    void *addr = dlsym(handle, name);
-    if (!addr && strncmp(name, "__GI_", 5) != 0) {
-        char buf[128];
-        snprintf(buf, sizeof(buf), "__GI_%s", name);
-        addr = dlsym(handle, buf);
+        struct bpf_uprobe_opts opts = {};
+        opts.sz = sizeof(opts);
+        opts.retprobe = retprobe;
+        opts.func_name = candidate;
+
+        struct bpf_link *link =
+            bpf_program__attach_uprobe_opts(prog, target_pid, binary_path, 0, &opts);
+        if (!link || libbpf_get_error(link))
+            continue;
+
+        if (impl_out && impl_sz) {
+            strncpy(impl_out, candidate, impl_sz - 1);
+            impl_out[impl_sz - 1] = '\0';
+        }
+        return link;
+    }
+
+    if (strcmp(symbol, "memcpy") != 0)
+        return NULL;
+
+    // IFUNC-backed memcpy on aarch64 glibc can fail name-based attachment.
+    // Resolve the actual implementation address from the loaded libc and
+    // attach by offset as a narrow fallback.
+    void *handle = dlopen(binary_path, RTLD_LAZY | RTLD_LOCAL);
+    if (!handle)
+        return NULL;
+
+    void *addr = dlsym(handle, symbol);
+    if (!addr && strncmp(symbol, "__GI_", 5) != 0) {
+        char gi_name[128];
+        snprintf(gi_name, sizeof(gi_name), "__GI_%s", symbol);
+        addr = dlsym(handle, gi_name);
     }
     if (!addr) {
         dlclose(handle);
-        return 0;
+        return NULL;
     }
 
     Dl_info info;
     if (dladdr(addr, &info) == 0 || !info.dli_fbase) {
         dlclose(handle);
-        return 0;
+        return NULL;
     }
 
-    size_t off = (size_t)((const char *)addr - (const char *)info.dli_fbase);
-    if (impl_name && impl_sz) {
+    size_t offset = (size_t)((const char *)addr - (const char *)info.dli_fbase);
+    struct bpf_link *link = bpf_program__attach_uprobe(prog, retprobe, target_pid, binary_path, offset);
+    if (link && !libbpf_get_error(link) && impl_out && impl_sz) {
         if (info.dli_sname && info.dli_sname[0]) {
-            strncpy(impl_name, info.dli_sname, impl_sz - 1);
-            impl_name[impl_sz - 1] = '\0';
+            strncpy(impl_out, info.dli_sname, impl_sz - 1);
+            impl_out[impl_sz - 1] = '\0';
         } else {
-            snprintf(impl_name, impl_sz, "<anon@0x%zx>", off);
+            snprintf(impl_out, impl_sz, "0x%zx", offset);
         }
+    } else {
+        link = NULL;
     }
+
     dlclose(handle);
-    return off;
-}
-
-static size_t cache_symbol_offset(struct sym_cache *cache, const char *libc_path,
-    const char *symbol, char *impl_out, size_t impl_sz)
-{
-    for (int i = 0; i < cache->count; ++i) {
-        if (strcmp(cache->entries[i].name, symbol) == 0) {
-            if (impl_out && impl_sz) {
-                strncpy(impl_out, cache->entries[i].impl, impl_sz - 1);
-                impl_out[impl_sz - 1] = '\0';
-            }
-            return cache->entries[i].offset;
-        }
-    }
-
-    char impl_name[128] = {0};
-    size_t off = find_elf_symbol_offset(libc_path, symbol, impl_name, sizeof(impl_name));
-    if (!off) {
-        off = find_symbol_offset_rtld(libc_path, symbol, impl_name, sizeof(impl_name));
-    }
-    if (!off) return 0;
-
-    if (cache->count < (int)(sizeof(cache->entries) / sizeof(cache->entries[0]))) {
-        struct sym_entry *e = &cache->entries[cache->count++];
-        strncpy(e->name, symbol, sizeof(e->name) - 1);
-        strncpy(e->impl, impl_name, sizeof(e->impl) - 1);
-        e->offset = off;
-    }
-    if (impl_out && impl_sz) {
-        strncpy(impl_out, impl_name, impl_sz - 1);
-        impl_out[impl_sz - 1] = '\0';
-    }
-    return off;
+    return link;
 }
 
 struct link_vec {
@@ -735,25 +767,15 @@ static int attach_uprobes_for_object(struct bpf_object *obj, const char *libc_pa
         if (filter && strcmp(filter, sym) != 0) continue;
 
         char impl[128] = {0};
-        char sym_buf[128];
-        const char *sym_name = sym;
-        size_t off = cache_symbol_offset(cache, libc_path, sym_name, impl, sizeof(impl));
-        if (!off && sym_name[0] != '_' && sym_name[1] != '_') {
-            snprintf(sym_buf, sizeof(sym_buf), "__%s", sym_name);
-            off = cache_symbol_offset(cache, libc_path, sym_buf, impl, sizeof(impl));
-            if (off)
-                sym_name = sym_buf;
-        }
-        if (!off) {
-            log_line("resolve failed for %s in %s", sym, libc_path);
-            return -1;
-        }
-
         struct bpf_link *link =
-            bpf_program__attach_uprobe(prog, retprobe, -1, libc_path, off);
+            attach_uprobe_by_name(prog, retprobe, libc_path, sym, impl, sizeof(impl));
         if (!link || libbpf_get_error(link)) {
             long rc = libbpf_get_error(link);
-            log_line("attach failed for %s (impl %s): %ld", sym_name, impl, rc);
+            log_line("attach failed for %s%s%s: %ld",
+                sym,
+                impl[0] ? " via " : "",
+                impl[0] ? impl : "",
+                rc);
             return -1;
         }
 
@@ -761,7 +783,7 @@ static int attach_uprobes_for_object(struct bpf_object *obj, const char *libc_pa
             out_links->links[out_links->count++] = link;
         }
 
-        log_line("attached %s (impl %s) at 0x%zx%s", sym_name, impl, off,
+        log_line("attached %s (impl %s)%s", sym, impl[0] ? impl : sym,
             retprobe ? " [ret]" : "");
     }
     return 0;
@@ -808,6 +830,23 @@ static bool ensure_pid_allowed(__u32 pid)
         debug_drop(pid, "self pid");
         entry->allowed = false;
         return false;
+    }
+
+    if (target_pid > 0) {
+        if (pid == (__u32)target_pid) {
+            entry->allowed = true;
+            return true;
+        }
+
+        // Docker/native setups can expose a kernel-visible PID in BPF events
+        // that differs from the process namespace PID we launched. Treat the
+        // configured PID as a fast path, then fall back to binary-path
+        // validation before rejecting the event.
+        if (binary_path == NULL) {
+            entry->allowed = false;
+            debug_drop(pid, "pid does not match target");
+            return false;
+        }
     }
 
     // No --binary filter: allow all PIDs (except self)
@@ -1108,7 +1147,7 @@ static size_t json_escape(const char *in, char *out, size_t out_sz)
 static void usage(const char *argv0){
     fprintf(stderr,
         "usage: %s [--heap <heap_tracker.o>] --obj <copy_checker.o> [--sentinel <sentinel.o>]\n"
-        "       [--binary <path>] [--libc <libc.so>] [--func memcpy]\n"
+        "       [--binary <path>] [--pid <pid>] [--libc <libc.so>] [--func memcpy]\n"
         "       [--out <path>] [--crashpack <dir>]\n"
         "\n"
         "Options:\n"
@@ -1116,6 +1155,7 @@ static void usage(const char *argv0){
         "  --heap <file>      Optional: heap_tracker BPF object\n"
         "  --sentinel <file>  Optional: sentinel_extra BPF object\n"
         "  --binary <path>    Filter events to this binary only\n"
+        "  --pid <pid>        Attach to one target PID only\n"
         "  --libc <path>      Path to libc.so.6 (auto-detected if not specified)\n"
         "  --func <name>      Filter to specific function (e.g., memcpy)\n"
         "  --out <path>       Output file for events (default: stdout)\n"
@@ -1138,6 +1178,7 @@ int main(int argc, char **argv){
         if (strcmp(argv[i],"--obj")==0 && i+1<argc) obj_path = argv[++i];
         else if (strcmp(argv[i],"--heap")==0 && i+1<argc) heap_path = argv[++i];
         else if (strcmp(argv[i],"--binary")==0 && i+1<argc) binary_path = argv[++i];
+        else if (strcmp(argv[i],"--pid")==0 && i+1<argc) target_pid = (pid_t)atoi(argv[++i]);
         else if (strcmp(argv[i],"--libc")==0 && i+1<argc) libc_path = argv[++i];
         else if (strcmp(argv[i],"--func")==0 && i+1<argc) func_filter = argv[++i];
         else if (strcmp(argv[i],"--sentinel")==0 && i+1<argc) sentinel_path = argv[++i];
@@ -1198,7 +1239,7 @@ int main(int argc, char **argv){
             return 1;
         }
 
-        if (attach_uprobes_for_object(heap_obj, libc_path, &cache, &heap_links, NULL) != 0) {
+        if (attach_uprobes_for_object(heap_obj, libc_path, &cache, &heap_links, func_filter) != 0) {
             return 1;
         }
 

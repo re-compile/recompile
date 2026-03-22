@@ -28,24 +28,27 @@ The practical priority is:
 
 These are the issues that currently matter most for the Linux-native MVP.
 
-### Issue #1: libc Uprobe Attachment Is Still Unstable In Docker Native Runs
+### Issue #1: Docker Native Runs Need A Shared PID Namespace
 
 **Location**: `recompile/runtime/agent/re-mini.c`, `recompile/runtime/bpf/*.bpf.c`  
 **Status**: Open  
-**Severity**: Critical
+**Severity**: High
 
-The Linux-native Docker path now boots and loads BPF objects, but attaching the current libc uprobes is still not stable enough to trust.
+The current Linux-native path is now working for the three goldens in a host-native
+arm64 Docker container, but only when the container shares the PID namespace with
+the traced process.
 
 Observed during validation:
 
-- `re-mini` loads and attaches probes successfully
-- traced binaries still crash immediately
-- a control process like `sleep` can also segfault while probes are attached
-- no canonical findings are emitted for the three goldens
+- with the default container PID namespace, `rerun` launches a target with one PID
+  while BPF events arrive with a different kernel-visible PID
+- `re-mini --pid <pid>` then drops the real target events because `/proc/<kernel-pid>`
+  is not visible inside the container namespace
+- running Docker with `--privileged --pid=host` resolves the mismatch and the three
+  goldens now emit differentiated findings
 
-This means the current blocker is no longer “can Docker start native mode?” but “can the attached probes safely observe libc calls without destabilizing the process?”
-
-This must be resolved before the native MVP is considered real.
+This is now an operational/documentation issue more than a probe-attachment crash.
+The supported Docker-native invocation needs to make the shared PID namespace explicit.
 
 ### Issue #2: Readlink Race In PID Validation
 
@@ -206,6 +209,7 @@ What is still required:
 
 - keep the bootstrap path aligned with the actual supported runtime
 - document the exact container invocation as part of the primary dev flow
+- make `--privileged --pid=host` part of the supported Docker-native command
 
 ---
 
