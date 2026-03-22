@@ -13,8 +13,9 @@ log.workspace = true
 env_logger.workspace = true
 chrono = "0.4"
 vm-launcher = { path = "../vm-launcher" }
+re-escalate = { path = "../re-escalate" }
+re-crashpack = { path = "../re-crashpack" }
+tokio = { version = "1.0", features = ["rt-multi-thread"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
-
-

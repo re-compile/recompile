@@ -18,7 +18,7 @@ fn main() -> Result<()> {
     env_logger::init();
     let args = Args::parse();
 
-    let cc = detect_underlying_compiler();
+    let cc = detect_underlying_compiler(&args.rest);
     let mut forwarded = args.rest.clone();
     // Remove wrapper-only flags if they sneaked into forwarded due to trailing var arg
     forwarded.retain(|a| a != "--emit-manifest-only");
@@ -26,8 +26,10 @@ fn main() -> Result<()> {
     // Inject required flags
     forwarded.push(OsString::from("-g"));
     forwarded.push(OsString::from("-fno-omit-frame-pointer"));
-    forwarded.push(OsString::from("-rdynamic"));
-    forwarded.push(OsString::from("-Wl,--export-dynamic"));
+    if cfg!(target_os = "linux") {
+        forwarded.push(OsString::from("-rdynamic"));
+        forwarded.push(OsString::from("-Wl,--export-dynamic"));
+    }
 
     // TODO: add -Xclang -load -Xclang <pass>.so when available
 
@@ -58,11 +60,57 @@ fn main() -> Result<()> {
     std::process::exit(status.code().unwrap_or(1));
 }
 
-fn detect_underlying_compiler() -> String {
-    // Prefer clang++ if present, else g++
-    which::which("clang++")
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "g++".to_string())
+fn detect_underlying_compiler(args: &[OsString]) -> String {
+    let cxx_mode = infer_cxx_mode(args);
+    let candidates = if cxx_mode {
+        ["clang++", "g++"]
+    } else {
+        ["clang", "gcc"]
+    };
+
+    for candidate in candidates {
+        if let Ok(path) = which::which(candidate) {
+            return path.to_string_lossy().into_owned();
+        }
+    }
+
+    if cxx_mode {
+        "c++".to_string()
+    } else {
+        "cc".to_string()
+    }
+}
+
+fn infer_cxx_mode(args: &[OsString]) -> bool {
+    let mut expect_lang = false;
+
+    for arg in args {
+        if expect_lang {
+            let lang = arg.to_string_lossy();
+            if lang.contains("++") {
+                return true;
+            }
+            expect_lang = false;
+            continue;
+        }
+
+        if arg == "-x" {
+            expect_lang = true;
+            continue;
+        }
+
+        let value = arg.to_string_lossy();
+        if value.ends_with(".cc")
+            || value.ends_with(".cpp")
+            || value.ends_with(".cxx")
+            || value.ends_with(".c++")
+            || value.ends_with(".C")
+        {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn detect_output_binary(args: &[OsString]) -> Option<PathBuf> {
@@ -130,6 +178,5 @@ fn detect_build_id(_binary: &Path) -> Result<String> {
     // Week-1: platform-specific. macOS lacks ELF build-id; leave empty.
     Ok(String::new())
 }
-
 
 

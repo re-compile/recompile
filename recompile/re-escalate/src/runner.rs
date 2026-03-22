@@ -4,7 +4,7 @@ use crate::{
     EscalationConfig, EscalationError, EscalationResult, Finding, Result,
 };
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH, Instant};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::process::Command as TokioCommand;
 use tokio::time::{timeout, Duration as TokioDuration};
 use uuid::Uuid;
@@ -77,13 +77,8 @@ impl EscalationRunner {
 
     /// Check if a tool is in cooldown
     fn is_in_cooldown(&self, tool: &str) -> bool {
-        if let Some(last_run) = self.cooldowns.get(tool) {
-            let cooldown_duration = std::time::Duration::from_millis(
-                self.config.cooldowns.per_tool.get(tool)
-                    .copied()
-                    .unwrap_or(self.config.cooldowns.default_ms) as u64
-            );
-            last_run.elapsed() < cooldown_duration
+        if let Some(until) = self.cooldowns.get(tool) {
+            Instant::now() < *until
         } else {
             false
         }
@@ -91,7 +86,17 @@ impl EscalationRunner {
 
     /// Update cooldown for a tool
     fn update_cooldown(&mut self, tool: &str, cooldown_ms: u32) {
-        self.cooldowns.insert(tool.to_string(), Instant::now());
+        let effective_cooldown = if cooldown_ms == 0 {
+            self.config.cooldowns.per_tool.get(tool)
+                .copied()
+                .unwrap_or(self.config.cooldowns.default_ms)
+        } else {
+            cooldown_ms
+        };
+        self.cooldowns.insert(
+            tool.to_string(),
+            Instant::now() + std::time::Duration::from_millis(effective_cooldown as u64),
+        );
     }
 
     /// Run ASan escalation
@@ -201,45 +206,47 @@ impl EscalationRunner {
 
     /// Find source file for a finding
     fn find_source_file(&self, finding: &Finding) -> Result<PathBuf> {
-        // Try to find source file based on finding class
-        let possible_paths = vec![
-            format!("examples/{}.c", finding.class),
-            format!("build/examples/{}.c", finding.class),
-            format!("runtime/examples/{}.c", finding.class),
-        ];
+        if let Some(source_file) = &self.config.source_file {
+            let path = PathBuf::from(source_file);
+            if path.exists() {
+                return Ok(path);
+            }
+        }
+
+        let binary_path = self.find_binary(finding)?;
+        let mut possible_paths = Vec::new();
+        if let Some(parent) = binary_path.parent() {
+            if let Some(stem) = binary_path.file_stem().and_then(|value| value.to_str()) {
+                for ext in ["c", "cc", "cpp", "cxx"] {
+                    possible_paths.push(parent.join(format!("{}.{}", stem, ext)));
+                }
+            }
+        }
 
         for path in possible_paths {
-            let path_buf = PathBuf::from(path);
-            if path_buf.exists() {
-                return Ok(path_buf);
+            if path.exists() {
+                return Ok(path);
             }
         }
 
         Err(EscalationError::Config(format!(
-            "Could not find source file for finding class: {}",
-            finding.class
+            "Could not find source file for finding {}",
+            finding.id
         )))
     }
 
     /// Find binary for a finding
     fn find_binary(&self, finding: &Finding) -> Result<PathBuf> {
-        // Try to find binary based on finding class
-        let possible_paths = vec![
-            format!("build/examples/{}", finding.class),
-            format!("examples/{}", finding.class),
-            format!("runtime/examples/{}", finding.class),
-        ];
-
-        for path in possible_paths {
-            let path_buf = PathBuf::from(path);
-            if path_buf.exists() {
-                return Ok(path_buf);
+        if let Some(binary_path) = &self.config.binary_path {
+            let path = PathBuf::from(binary_path);
+            if path.exists() {
+                return Ok(path);
             }
         }
 
         Err(EscalationError::Config(format!(
-            "Could not find binary for finding class: {}",
-            finding.class
+            "Could not find binary for finding {}",
+            finding.id
         )))
     }
 

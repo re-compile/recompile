@@ -50,6 +50,8 @@ pub struct EscalationConfig {
     pub timeouts: TimeoutConfig,
     pub cooldowns: CooldownConfig,
     pub output_dir: String,
+    pub binary_path: Option<String>,
+    pub source_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +173,8 @@ impl Default for EscalationConfig {
                 per_tool: cooldown_per_tool,
             },
             output_dir: "build/escalations".to_string(),
+            binary_path: None,
+            source_file: None,
         }
     }
 }

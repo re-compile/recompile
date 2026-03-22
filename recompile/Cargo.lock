@@ -814,8 +814,11 @@ dependencies = [
  "env_logger 0.11.8",
  "libc",
  "log",
+ "re-crashpack",
+ "re-escalate",
  "serde",
  "serde_json",
+ "tokio",
  "vm-launcher",
 ]
 
