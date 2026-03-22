@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::fs::{self, File};
+use std::fs;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
@@ -173,4 +173,3 @@ fn which_in_order(candidates: &[&str]) -> Option<String> {
     }
     None
 }
-

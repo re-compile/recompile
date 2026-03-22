@@ -809,7 +809,6 @@ name = "rerun"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chrono",
  "clap",
  "env_logger 0.11.8",
  "libc",
@@ -819,7 +818,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "vm-launcher",
 ]
 
 [[package]]
