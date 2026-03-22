@@ -1,85 +1,157 @@
 //! Crashpack generator binary
-//! 
-//! Generates complete crashpack artifacts from findings and environment data.
+//!
+//! Generates crashpack artifacts from an existing findings file.
 
+use anyhow::{anyhow, Result};
 use re_crashpack::*;
-use std::path::Path;
 use std::fs;
-use serde_json;
+use std::path::{Path, PathBuf};
 
-fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 3 {
-        eprintln!("Usage: {} <findings_file> <output_dir> [console_log]", args[0]);
-        eprintln!("  findings_file: Path to findings.json or re-findings.log");
-        eprintln!("  output_dir: Directory to create crashpack in");
-        eprintln!("  console_log: Optional path to console.log");
-        std::process::exit(1);
+struct Args {
+    findings_file: PathBuf,
+    output_dir: PathBuf,
+    console_log: Option<PathBuf>,
+    binaries: Vec<PathBuf>,
+    inputs: Vec<PathBuf>,
+}
+
+fn main() -> Result<()> {
+    let args = parse_args()?;
+
+    println!(
+        "Generating crashpack from {} to {}",
+        args.findings_file.display(),
+        args.output_dir.display()
+    );
+
+    let findings = parse_findings(&args.findings_file)?;
+    if findings.is_empty() {
+        return Err(anyhow!("no findings were found in the input file"));
     }
 
-    let findings_file = &args[1];
-    let output_dir = &args[2];
-    let console_log = args.get(3).map(|s| s.as_str());
-
-    println!("Generating crashpack from {} to {}", findings_file, output_dir);
-
-    // Create crashpack
     let mut crashpack = Crashpack::new();
-
-    // Parse findings
-    let findings = parse_findings(findings_file)?;
     for finding in findings {
         crashpack.add_finding(finding);
     }
 
-    // Add binary information
-    if let Ok(binary_info) = BinaryInfo::analyze("build/examples/invalid_free") {
-        crashpack.add_binary(binary_info);
+    for binary in &args.binaries {
+        crashpack.add_binary(BinaryInfo::analyze(binary)?);
     }
 
-    // Generate crashpack
-    crashpack.generate(Path::new(output_dir))?;
+    crashpack.generate(&args.output_dir)?;
 
-    // Copy console log if provided
-    if let Some(console_log_path) = console_log {
-        if Path::new(console_log_path).exists() {
-            let dest_console = Path::new(output_dir).join("console.log");
-            fs::copy(console_log_path, dest_console)?;
-            println!("Copied console log to crashpack");
+    if let Some(console_log_path) = args.console_log {
+        copy_file(&console_log_path, &args.output_dir.join("console.log"))?;
+    }
+
+    if !args.inputs.is_empty() {
+        let inputs_dir = args.output_dir.join("inputs");
+        fs::create_dir_all(&inputs_dir)?;
+        for input in &args.inputs {
+            let dest = inputs_dir.join(
+                input
+                    .file_name()
+                    .ok_or_else(|| anyhow!("input path has no file name: {}", input.display()))?,
+            );
+            copy_file(input, &dest)?;
         }
     }
 
-    println!("Crashpack generated successfully with {} findings", crashpack.findings.len());
+    println!(
+        "Crashpack generated successfully with {} findings",
+        crashpack.findings.len()
+    );
     Ok(())
 }
 
-fn parse_findings(findings_file: &str) -> std::result::Result<Vec<Finding>, Box<dyn std::error::Error>> {
-    let content = fs::read_to_string(findings_file)?;
-    let mut findings = Vec::new();
+fn parse_args() -> Result<Args> {
+    let mut it = std::env::args().skip(1);
+    let first = it.next().ok_or_else(|| anyhow!("usage: generate_crashpack <findings_file> <output_dir> [--console-log <path>] [--binary <path> ...] [--input <path> ...]"))?;
+    if first == "--help" || first == "-h" {
+        print_usage();
+        std::process::exit(0);
+    }
 
-    // Try to parse as JSON array first
+    let second = it.next().ok_or_else(|| anyhow!("usage: generate_crashpack <findings_file> <output_dir> [--console-log <path>] [--binary <path> ...] [--input <path> ...]"))?;
+    let mut args = Args {
+        findings_file: PathBuf::from(first),
+        output_dir: PathBuf::from(second),
+        console_log: None,
+        binaries: Vec::new(),
+        inputs: Vec::new(),
+    };
+
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--console-log" => {
+                let value = it.next().ok_or_else(|| anyhow!("--console-log requires a path"))?;
+                args.console_log = Some(PathBuf::from(value));
+            }
+            "--binary" => {
+                let value = it.next().ok_or_else(|| anyhow!("--binary requires a path"))?;
+                args.binaries.push(PathBuf::from(value));
+            }
+            "--input" => {
+                let value = it.next().ok_or_else(|| anyhow!("--input requires a path"))?;
+                args.inputs.push(PathBuf::from(value));
+            }
+            "--help" | "-h" => {
+                print_usage();
+                std::process::exit(0);
+            }
+            other => {
+                return Err(anyhow!("unknown argument: {}", other));
+            }
+        }
+    }
+
+    Ok(args)
+}
+
+fn print_usage() {
+    eprintln!(
+        "usage: generate_crashpack <findings_file> <output_dir> [--console-log <path>] [--binary <path> ...] [--input <path> ...]"
+    );
+}
+
+fn parse_findings(findings_file: &Path) -> Result<Vec<Finding>> {
+    let content = fs::read_to_string(findings_file)?;
+
     if let Ok(json_findings) = serde_json::from_str::<Vec<Finding>>(&content) {
         return Ok(json_findings);
     }
 
-    // Parse as line-delimited JSON (each line is a separate JSON object)
+    if let Ok(finding) = serde_json::from_str::<Finding>(&content) {
+        return Ok(vec![finding]);
+    }
+
+    let mut findings = Vec::new();
     for line in content.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        
-        // Skip RE:FINDING: prefix if present
-        let json_part = if line.starts_with("RE:FINDING: ") {
-            &line[12..]
-        } else {
-            line
-        };
-        
+
+        let json_part = line
+            .strip_prefix("RE:FINDING:")
+            .map(str::trim)
+            .unwrap_or(line);
+
         if let Ok(finding) = serde_json::from_str::<Finding>(json_part) {
             findings.push(finding);
         }
     }
 
     Ok(findings)
+}
+
+fn copy_file(src: &Path, dst: &Path) -> Result<()> {
+    if !src.exists() {
+        return Err(anyhow!("file not found: {}", src.display()));
+    }
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(src, dst)?;
+    Ok(())
 }
