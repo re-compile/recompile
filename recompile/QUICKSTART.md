@@ -4,9 +4,8 @@ Get up and running with RECC Sentinel in 5 minutes!
 
 ## 🚀 Prerequisites
 
-- **Linux** (Ubuntu 20.04+ recommended) or **macOS** for development
+- **Linux** (Ubuntu 20.04+ recommended)
 - **Rust** 1.70+ installed
-- **QEMU** (for VM mode)
 - **Git**
 
 ### Install Dependencies
@@ -14,12 +13,7 @@ Get up and running with RECC Sentinel in 5 minutes!
 **Ubuntu/Debian:**
 ```bash
 sudo apt-get update
-sudo apt-get install -y qemu-system-x86 libelf-dev pkg-config
-```
-
-**macOS:**
-```bash
-brew install qemu libelf pkg-config
+sudo apt-get install -y libelf-dev pkg-config clang llvm libbpf-dev
 ```
 
 ## 📦 Installation
@@ -159,13 +153,6 @@ Each finding contains:
 sudo setcap 'cap_bpf,cap_perfmon+ep' target/release/rerun
 ```
 
-**QEMU not found:**
-```bash
-# Install QEMU
-sudo apt-get install qemu-system-x86  # Ubuntu
-brew install qemu                     # macOS
-```
-
 **No findings detected:**
 ```bash
 # Check if binary has debug symbols
@@ -174,12 +161,6 @@ readelf -S examples/memcpy_overflow | grep debug
 
 # Rebuild with debug info
 cd examples && ./build.sh
-```
-
-**VM timeout issues:**
-```bash
-# Increase timeout in scripts
-# Edit re-qemu.sh and change timeout value
 ```
 
 ### Debug Mode

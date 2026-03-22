@@ -1,4 +1,4 @@
-.PHONY: all vm bpf passes agent toolchain examples
+.PHONY: all bpf passes agent toolchain examples
 
 all: examples
 
@@ -16,11 +16,4 @@ agent:
 
 toolchain:
 	cargo build -p recc -p rerun -p vm-launcher -p agent
-
-vm:
-	./scripts/build-vm.sh
-
-seed:
-	./scripts/make-seed.sh
-
 

@@ -37,7 +37,8 @@ pub fn launch_qemu_and_run(manifest: &Manifest) -> Result<()> {
     if arch == "aarch64" {
         cmd.arg("-cpu").arg("max");
     }
-    // VM assets; scripts/build-vm.sh prepares these
+    // Legacy VM assets. VM mode is deferred and no longer has an active
+    // bootstrap script in the primary workflow.
     let kernel = Path::new("runtime/vm/kernel/vmlinuz");
     let initrd = Path::new("runtime/vm/kernel/initrd");
     let rootfs_overlay = Path::new("runtime/vm/ubuntu-arm64.qcow2");
@@ -172,5 +173,4 @@ fn which_in_order(candidates: &[&str]) -> Option<String> {
     }
     None
 }
-
 

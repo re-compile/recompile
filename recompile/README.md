@@ -12,15 +12,13 @@ Each anomaly produces a structured finding, and RECC generates a self-contained 
 - **Intelligent Rule Engine**: Advanced clustering, deduplication, and Top-K selection
 - **Automatic Escalation**: Smart escalation to ASan, Valgrind, GDB, and sanitizers
 - **Self-contained Crashpacks**: Complete repro harnesses with build scripts
-- **Native & VM Modes**: Run directly on Linux or in isolated QEMU microVM
+- **Linux-Native First**: Native Linux and Docker are the supported execution paths
 - **Production Ready**: Comprehensive CLI with subcommands and error handling
 
 ## 📋 Requirements
 
 ### System Requirements
 - **Linux**: Kernel 4.1+ with BPF support
-- **macOS**: For development and testing (VM mode only)
-- **QEMU**: For VM mode operation
 - **Rust**: 1.70+ for building components
 
 ### Linux Native Mode (Optional)
@@ -40,9 +38,11 @@ cd recompile
 # Build all components
 cargo build --release
 
-# Test with an example
-./scripts/reseed.sh
-./scripts/re-qemu.sh
+# Build examples
+./scripts/build-examples.sh
+
+# Run a native example on Linux
+cargo run -p rerun -- run --native build/examples/memcpy_overflow
 ```
 
 ### Development Setup
@@ -50,7 +50,7 @@ cargo build --release
 ```bash
 # Install dependencies (Ubuntu/Debian)
 sudo apt-get update
-sudo apt-get install -y qemu-system-x86 libelf-dev pkg-config
+sudo apt-get install -y libelf-dev pkg-config clang llvm libbpf-dev
 
 # Build and test
 cargo build
@@ -216,16 +216,16 @@ build/crashpack/
 
 ## 🧪 Testing
 
-### Comprehensive Test Suite
+### Native Verification
 ```bash
-# Run all tests
-./scripts/test_e2e_comprehensive.sh
+# Cargo-level verification
+cargo check
+cargo test -q -p re-rules --lib
 
-# Test native mode (Linux only)
-./scripts/test_native_comprehensive.sh
-
-# Test sanitizer integration
-./scripts/test_sanitizer_integration.sh
+# Native Docker golden checks
+docker run --rm -it --privileged --pid=host \
+  -v "$PWD":/workspace/recompile \
+  recompile-bootstrap:host bash
 ```
 
 ### Individual Component Tests
@@ -285,9 +285,6 @@ runtime_flags = ["abort_on_error=1", "detect_leaks=1"]
 cargo test
 cargo clippy
 cargo fmt
-
-# Test with examples
-./scripts/test_e2e_comprehensive.sh
 ```
 
 ## 📄 License
@@ -298,7 +295,6 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 - **eBPF Community**: For the powerful kernel programming framework
 - **LLVM Project**: For sanitizer and symbolization tools
-- **QEMU Project**: For virtualization support
 - **Rust Community**: For the excellent ecosystem and tooling
 
 ## 📞 Support
