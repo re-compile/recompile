@@ -90,6 +90,9 @@ pub fn run_native(
     #[cfg(target_os = "linux")]
     check_capabilities()?;
 
+    #[cfg(target_os = "linux")]
+    check_pid_namespace()?;
+
     // Create output directory
     std::fs::create_dir_all(output_dir)?;
 
@@ -655,6 +658,21 @@ fn check_capabilities() -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+fn running_in_container() -> Result<bool> {
+    if Path::new("/.dockerenv").exists() || Path::new("/run/.containerenv").exists() {
+        return Ok(true);
+    }
+
+    let cgroup = std::fs::read_to_string("/proc/1/cgroup")
+        .or_else(|_| std::fs::read_to_string("/proc/self/cgroup"))
+        .unwrap_or_default();
+
+    Ok(["docker", "containerd", "kubepods", "libpod", "podman"]
+        .iter()
+        .any(|marker| cgroup.contains(marker)))
+}
+
 /// Check if we can access BPF functionality
 #[cfg(target_os = "linux")]
 fn can_access_bpf() -> Result<bool> {
@@ -670,4 +688,62 @@ fn can_access_bpf() -> Result<bool> {
         Ok(_) => Ok(true),
         Err(_) => Ok(false),
     }
+}
+
+#[cfg(target_os = "linux")]
+fn check_pid_namespace() -> Result<()> {
+    if std::env::var_os("RECOMPILE_ALLOW_PID_NAMESPACE").is_some() {
+        return Ok(());
+    }
+
+    if !running_in_container()? {
+        return Ok(());
+    }
+
+    let init_comm = std::fs::read_to_string("/proc/1/comm")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    let init_cmdline = std::fs::read("/proc/1/cmdline")
+        .ok()
+        .map(|bytes| String::from_utf8_lossy(&bytes).replace('\0', " "))
+        .unwrap_or_default();
+    let proc_count = std::fs::read_dir("/proc")
+        .ok()
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .chars()
+                        .all(|c| c.is_ascii_digit())
+                })
+                .count()
+        })
+        .unwrap_or(0);
+
+    let container_init = matches!(
+        init_comm.as_str(),
+        "bash" | "sh" | "timeout" | "recompile-bootstrap"
+    ) || init_cmdline.contains("recompile-bootstrap")
+        || init_cmdline.contains(" bash")
+        || init_cmdline.starts_with("bash ")
+        || init_cmdline.contains(" sh")
+        || init_cmdline.starts_with("sh ");
+
+    if container_init || proc_count < 64 {
+        return Err(anyhow::anyhow!(
+            "Native mode is running in Docker without a shared host PID namespace.\n\
+             Docker-native eBPF tracing is only supported with a shared host PID namespace.\n\
+             \n\
+             Start the container with:\n\
+             docker run --rm -it --privileged --pid=host -v \"$PWD\":/workspace/recompile recompile-bootstrap:host bash\n\
+             \n\
+             Set RECOMPILE_ALLOW_PID_NAMESPACE=1 only if you are deliberately debugging this unsupported setup."
+        ));
+    }
+
+    Ok(())
 }
