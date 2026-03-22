@@ -1,152 +1,234 @@
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use re_harness::{
-    HarnessGenerator, HarnessConfig, Finding, AnomalyClass, Confidence, Severity,
-    Evidence, MemoryEvidence, SentinelEvent
+    AnomalyClass, Confidence, Evidence, Finding, HarnessConfig, HarnessGenerator,
+    MemoryEvidence, Severity, StackEvidence,
 };
+use serde::Deserialize;
+use serde_json::Value;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug)]
+struct Args {
+    findings_file: PathBuf,
+    output_dir: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+struct InputFinding {
+    id: String,
+    schema_version: String,
+    class: String,
+    confidence: String,
+    severity: String,
+    timestamp: u64,
+    pid: u32,
+    evidence: InputEvidence,
+    escalation: Option<InputEscalationPlan>,
+    related: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InputEvidence {
+    memory: Option<InputMemoryEvidence>,
+    stacks: Option<InputStackEvidence>,
+    alloc_site: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InputMemoryEvidence {
+    ptr: Value,
+    size: u32,
+    alloc_size: u32,
+    operation: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct InputStackEvidence {
+    alloc: Option<Vec<String>>,
+    call: Option<Vec<String>>,
+    alloc_stack: Option<Vec<String>>,
+    call_stack: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InputEscalationPlan {
+    tool: String,
+    reason: String,
+    estimated_cost: String,
+    cooldown_ms: u32,
+}
 
 fn main() -> Result<()> {
     env_logger::init();
-    println!("Testing RECC Harness Generation...");
+    let args = parse_args()?;
 
-    let config = HarnessConfig::default();
-    let mut generator = HarnessGenerator::new(config);
-    generator.load_templates()?;
-
-    // Create a test finding for heap overflow
-    let finding = Finding {
-        id: "test-heap-overflow-001".to_string(),
-        schema_version: "1.0".to_string(),
-        class: AnomalyClass::HeapOverflow,
-        confidence: Confidence::High,
-        severity: Severity::High,
-        timestamp: 1234567890,
-        pid: 1234,
-        evidence: Evidence {
-            memory: Some(MemoryEvidence {
-                ptr: "0x7fff12345678".to_string(),
-                size: 100,
-                alloc_size: 100,
-                operation: "malloc".to_string(),
-            }),
-            stacks: None,
-            alloc_site: None,
-            event_sequence: vec![
-                SentinelEvent {
-                    version: 1,
-                    seq: 1,
-                    pid: 1234,
-                    tid: 1234,
-                    ts_ns: 1234567890000000,
-                    event_type: 1, // Malloc
-                    site_id: 1,
-                    stack_id: 1,
-                    stack_fp: 0x1234,
-                    addr: 0x7fff12345678,
-                    len: 100,
-                    alloc_size: 100,
-                    fd: -1,
-                    bytes_ret: 0,
-                    errno_code: 0,
-                    lock_kind: 0,
-                    lock_addr: 0,
-                    lock_site_id: 0,
-                    flags: 0,
-                    drop_count: 0,
-                    extra_kv: vec![],
-                },
-            ],
-        },
-        escalation: None,
-        related: vec![],
-    };
-
-    println!("Generating harness for finding: {}", finding.id);
-    let output = generator.generate_harness(&finding)?;
-
-    println!("Generated harness:");
-    println!("  Name: {}", output.harness_name);
-    println!("  C file size: {} bytes", output.harness_c.len());
-    println!("  Build script: {}", output.build_script.is_some());
-
-    // Write the harness to a test directory
-    let test_dir = "/tmp/re-harness-test";
-    output.write_files(test_dir)?;
-
-    println!("Harness written to: {}", test_dir);
-    println!("Files created:");
-    println!("  {}/{}.c", test_dir, output.harness_name);
-    if output.build_script.is_some() {
-        println!("  {}/{}.sh", test_dir, output.harness_name);
+    let findings = parse_findings(&args.findings_file)?;
+    if findings.is_empty() {
+        return Err(anyhow!("no findings were found in the input file"));
     }
 
-    // Test with a double free finding
-    let double_free_finding = Finding {
-        id: "test-double-free-002".to_string(),
-        schema_version: "1.0".to_string(),
-        class: AnomalyClass::DoubleFree,
-        confidence: Confidence::Certain,
-        severity: Severity::Critical,
-        timestamp: 1234567891,
-        pid: 1235,
-        evidence: Evidence {
-            memory: Some(MemoryEvidence {
-                ptr: "0x7fff87654321".to_string(),
-                size: 0,
-                alloc_size: 200,
-                operation: "free".to_string(),
-            }),
-            stacks: None,
-            alloc_site: None,
-            event_sequence: vec![],
-        },
-        escalation: None,
-        related: vec![],
-    };
+    let mut generator = HarnessGenerator::new(HarnessConfig::default());
+    generator.load_templates()?;
 
-    println!("\nGenerating harness for double free finding: {}", double_free_finding.id);
-    let double_free_output = generator.generate_harness(&double_free_finding)?;
+    fs::create_dir_all(&args.output_dir)?;
 
-    println!("Generated double free harness:");
-    println!("  Name: {}", double_free_output.harness_name);
-    println!("  C file size: {} bytes", double_free_output.harness_c.len());
+    let mut generated = 0usize;
+    for finding in findings {
+        let output = generator.generate_harness(&finding)?;
+        let harness_dir = args.output_dir.join(&output.harness_name);
+        output.write_files(harness_dir.to_str().ok_or_else(|| anyhow!("invalid output path"))?)?;
+        generated += 1;
+        println!("generated {}", harness_dir.display());
+    }
 
-    double_free_output.write_files(test_dir)?;
-    println!("Double free harness written to: {}", test_dir);
-
-    // Test with an invalid free finding
-    let invalid_free_finding = Finding {
-        id: "test-invalid-free-003".to_string(),
-        schema_version: "1.0".to_string(),
-        class: AnomalyClass::InvalidFree,
-        confidence: Confidence::High,
-        severity: Severity::High,
-        timestamp: 1234567892,
-        pid: 1236,
-        evidence: Evidence {
-            memory: Some(MemoryEvidence {
-                ptr: "0x7fff11111111".to_string(),
-                size: 0,
-                alloc_size: 0,
-                operation: "free".to_string(),
-            }),
-            stacks: None,
-            alloc_site: None,
-            event_sequence: vec![],
-        },
-        escalation: None,
-        related: vec![],
-    };
-
-    println!("\nGenerating harness for invalid free finding: {}", invalid_free_finding.id);
-    let invalid_free_output = generator.generate_harness(&invalid_free_finding)?;
-
-    println!("Generated invalid free harness:");
-    println!("  Name: {}", invalid_free_output.harness_name);
-    println!("  C file size: {} bytes", invalid_free_output.harness_c.len());
-
-    invalid_free_output.write_files(test_dir)?;
-    println!("Invalid free harness written to: {}", test_dir);
-
-    println!("\nAll harness generation tests completed successfully!");
+    println!("Generated {} harness(es)", generated);
     Ok(())
+}
+
+fn parse_args() -> Result<Args> {
+    let mut it = std::env::args().skip(1);
+    let first = it
+        .next()
+        .ok_or_else(|| anyhow!("usage: generate_harness <findings_file> <output_dir>"))?;
+    if first == "--help" || first == "-h" {
+        print_usage();
+        std::process::exit(0);
+    }
+
+    let second = it
+        .next()
+        .ok_or_else(|| anyhow!("usage: generate_harness <findings_file> <output_dir>"))?;
+
+    if let Some(extra) = it.next() {
+        return Err(anyhow!("unexpected argument: {}", extra));
+    }
+
+    Ok(Args {
+        findings_file: PathBuf::from(first),
+        output_dir: PathBuf::from(second),
+    })
+}
+
+fn print_usage() {
+    eprintln!("usage: generate_harness <findings_file> <output_dir>");
+}
+
+fn parse_findings(path: &Path) -> Result<Vec<Finding>> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read findings file: {}", path.display()))?;
+
+    if let Ok(findings) = serde_json::from_str::<Vec<InputFinding>>(&content) {
+        return findings.into_iter().map(convert_finding).collect();
+    }
+
+    if let Ok(finding) = serde_json::from_str::<InputFinding>(&content) {
+        return Ok(vec![convert_finding(finding)?]);
+    }
+
+    let mut findings = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let json_part = line
+            .strip_prefix("RE:FINDING:")
+            .map(str::trim)
+            .unwrap_or(line);
+
+        if let Ok(finding) = serde_json::from_str::<InputFinding>(json_part) {
+            findings.push(convert_finding(finding)?);
+        }
+    }
+
+    Ok(findings)
+}
+
+fn convert_finding(input: InputFinding) -> Result<Finding> {
+    Ok(Finding {
+        id: input.id,
+        schema_version: input.schema_version,
+        class: parse_class(&input.class)?,
+        confidence: parse_confidence(&input.confidence)?,
+        severity: parse_severity(&input.severity)?,
+        timestamp: input.timestamp,
+        pid: input.pid,
+        evidence: Evidence {
+            memory: input.evidence.memory.map(|memory| MemoryEvidence {
+                ptr: value_to_ptr_string(memory.ptr),
+                size: memory.size,
+                alloc_size: memory.alloc_size,
+                operation: memory.operation,
+            }),
+            stacks: input.evidence.stacks.map(|stacks| StackEvidence {
+                alloc_stack: stacks.alloc_stack.or(stacks.alloc).unwrap_or_default(),
+                call_stack: stacks.call_stack.or(stacks.call).unwrap_or_default(),
+            }),
+            alloc_site: input.evidence.alloc_site,
+            event_sequence: Vec::new(),
+        },
+        escalation: input.escalation.map(|esc| re_harness::EscalationPlan {
+            tool: esc.tool,
+            reason: esc.reason,
+            estimated_cost: esc.estimated_cost,
+            cooldown_ms: esc.cooldown_ms,
+        }),
+        related: input.related,
+    })
+}
+
+fn parse_class(class: &str) -> Result<AnomalyClass> {
+    match class {
+        "heap_overflow" | "HeapOverflow" => Ok(AnomalyClass::HeapOverflow),
+        "double_free" | "DoubleFree" => Ok(AnomalyClass::DoubleFree),
+        "invalid_free" | "InvalidFree" => Ok(AnomalyClass::InvalidFree),
+        "use_after_free" | "UseAfterFree" => Ok(AnomalyClass::UseAfterFree),
+        "uninit_to_io" | "UninitToIo" => Ok(AnomalyClass::UninitToIo),
+        "lock_cycle" | "LockCycle" => Ok(AnomalyClass::LockCycle),
+        "undefined_behavior" | "UndefinedBehavior" => Ok(AnomalyClass::UndefinedBehavior),
+        "memory_leak" | "MemoryLeak" => Ok(AnomalyClass::MemoryLeak),
+        other => Err(anyhow!("unknown anomaly class: {}", other)),
+    }
+}
+
+fn parse_confidence(confidence: &str) -> Result<Confidence> {
+    match confidence {
+        "low" | "Low" => Ok(Confidence::Low),
+        "medium" | "Medium" => Ok(Confidence::Medium),
+        "high" | "High" => Ok(Confidence::High),
+        "certain" | "Certain" => Ok(Confidence::Certain),
+        other => Err(anyhow!("unknown confidence level: {}", other)),
+    }
+}
+
+fn parse_severity(severity: &str) -> Result<Severity> {
+    match severity {
+        "low" | "Low" => Ok(Severity::Low),
+        "medium" | "Medium" => Ok(Severity::Medium),
+        "high" | "High" => Ok(Severity::High),
+        "critical" | "Critical" => Ok(Severity::Critical),
+        "warning" | "Warning" => Ok(Severity::Medium),
+        "error" | "Error" => Ok(Severity::High),
+        other => Err(anyhow!("unknown severity level: {}", other)),
+    }
+}
+
+fn value_to_ptr_string(value: Value) -> String {
+    match value {
+        Value::String(s) => s,
+        Value::Number(n) => {
+            if let Some(u) = n.as_u64() {
+                format!("0x{:x}", u)
+            } else if let Some(i) = n.as_i64() {
+                format!("0x{:x}", i)
+            } else if let Some(f) = n.as_f64() {
+                format!("{}", f)
+            } else {
+                "0x0".to_string()
+            }
+        }
+        other => other.to_string(),
+    }
 }
