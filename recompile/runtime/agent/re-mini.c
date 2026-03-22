@@ -109,6 +109,9 @@ static const char *binary_path = NULL;
 static const char *sentinel_path = NULL;
 static char binary_realpath_buf[PATH_MAX];
 static bool binary_realpath_ok = false;
+static dev_t binary_dev = 0;
+static ino_t binary_ino = 0;
+static bool binary_stat_ok = false;
 static pid_t target_pid = -1;
 static const char *func_filter = NULL;
 static const char *out_path = NULL;  // NULL = stdout, or set via --out
@@ -809,6 +812,33 @@ static bool path_equals_binary(const char *path)
     return strcmp(path, binary_path) == 0;
 }
 
+static bool exe_matches_binary(__u32 pid, const char *proc_exe_path)
+{
+    if (!binary_path || !proc_exe_path)
+        return false;
+
+    if (binary_stat_ok) {
+        struct stat st;
+        if (stat(proc_exe_path, &st) == 0) {
+            if (st.st_dev == binary_dev && st.st_ino == binary_ino)
+                return true;
+        }
+    }
+
+    char resolved[PATH_MAX];
+    ssize_t n = readlink(proc_exe_path, resolved, sizeof(resolved) - 1);
+    if (n < 0) {
+        debug_drop(pid, "readlink failed (process may have exited)");
+        return false;
+    }
+    if ((size_t)n >= sizeof(resolved) - 1) {
+        debug_drop(pid, "readlink truncated");
+        return false;
+    }
+    resolved[n] = '\0';
+    return path_equals_binary(resolved);
+}
+
 static struct pid_entry *get_pid_entry(__u32 pid)
 {
     for (int i = 0; i < tracked_pid_count; ++i) {
@@ -862,24 +892,13 @@ static bool ensure_pid_allowed(__u32 pid)
     // Try to validate PID against binary path
     char link_path[64];
     snprintf(link_path, sizeof(link_path), "/proc/%u/exe", pid);
-    char resolved[PATH_MAX];
-    ssize_t n = readlink(link_path, resolved, sizeof(resolved) - 1);
-    if (n <= 0) {
-        // Readlink failed - process may have exited before we could check.
-        // Leave entry in unvalidated state (allowed=false from init).
-        // This is conservative: we reject events from PIDs we can't verify.
-        debug_drop(pid, "readlink failed (process may have exited)");
-        return false;
-    }
-    resolved[n] = '\0';
-
-    if (path_equals_binary(resolved)) {
+    if (exe_matches_binary(pid, link_path)) {
         entry->allowed = true;
         return true;
     }
 
     entry->allowed = false;
-    debug_drop(pid, resolved);
+    debug_drop(pid, "exe does not match target binary");
     return false;
 }
 
@@ -1216,6 +1235,14 @@ int main(int argc, char **argv){
             binary_realpath_ok = true;
         } else {
             log_line("warning: realpath failed for %s", binary_path);
+        }
+        struct stat st;
+        if (stat(binary_path, &st) == 0) {
+            binary_dev = st.st_dev;
+            binary_ino = st.st_ino;
+            binary_stat_ok = true;
+        } else {
+            log_line("warning: stat failed for %s", binary_path);
         }
     }
 
