@@ -167,7 +167,7 @@ cargo run -p rerun -- crashpack validate build/crashpack
 
 5. **CLI Interface** (`rerun/`)
    - Subcommand-based interface (`run`, `escalate`, `crashpack`)
-   - Native and VM mode support
+   - Linux-native execution as the primary supported path
    - Comprehensive error handling
 
 ## 📊 Example Output

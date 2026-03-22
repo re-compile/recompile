@@ -34,31 +34,31 @@ cargo run -p rerun -- --help
 
 ```bash
 # Analyze a heap overflow example
-cargo run -p rerun -- run examples/memcpy_overflow
+cargo run -p rerun -- run examples/memcpy_overflow --output build/my-analysis
 
 # Check the results
-ls build/crashpack/
-cat build/crashpack/README.md
+ls build/my-analysis/
+cat build/my-analysis/findings.json | jq .
 ```
 
 ### 2. View the Crashpack
 
 ```bash
 # Open crashpack summary
-cargo run -p rerun -- crashpack open build/crashpack
+cargo run -p rerun -- crashpack open build/my-analysis
 
 # View findings
-cat build/crashpack/findings.json | jq .
+cat build/my-analysis/findings.json | jq .
 ```
 
 ### 3. Run with Escalation
 
 ```bash
 # Analyze with automatic escalation to ASan
-cargo run -p rerun -- run examples/double_free --escalate always
+cargo run -p rerun -- run examples/double_free --escalate always --output build/double-free-analysis
 
 # Check escalation results
-ls build/crashpack/escalation/
+ls build/double-free-analysis/
 ```
 
 ## 🔧 Advanced Usage
@@ -102,10 +102,10 @@ cargo run -p rerun -- run examples/invalid_free --output /tmp/my-analysis
 
 ```bash
 # Use specific tool
-cargo run -p rerun -- escalate build/crashpack --tool valgrind
+cargo run -p rerun -- escalate build/my-analysis --tool valgrind
 
 # Run escalation on existing findings
-cargo run -p rerun -- escalate build/crashpack
+cargo run -p rerun -- escalate build/my-analysis
 ```
 
 ## 🧪 Test Examples
@@ -192,8 +192,8 @@ cargo run -p re-escalate --bin run_escalation -- /path/to/finding.json
 ## 💡 Tips
 
 - **Start Simple**: Begin with the provided examples
-- **Use VM Mode**: More reliable for initial testing
-- **Check Logs**: Always review `console.log` and `re-findings.log`
+- **Use Native Docker**: Prefer the documented `--privileged --pid=host` container path
+- **Check Logs**: Always review `console.log` and `re-findings.jsonl`
 - **Validate Results**: Use `crashpack validate` to check output
 - **Performance**: Native mode is faster but requires Linux capabilities
 

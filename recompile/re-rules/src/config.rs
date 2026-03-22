@@ -92,7 +92,7 @@ impl Default for Config {
                 max_frames: 5,
                 redact_paths: vec!["/workspace".to_string(), "/tmp".to_string()],
             },
-            mode: Mode::Vm,
+            mode: Mode::Native,
         }
     }
 }
@@ -146,8 +146,9 @@ impl Config {
 
         if let Ok(val) = std::env::var("RE_MODE") {
             self.mode = match val.to_lowercase().as_str() {
+                "vm" => Mode::Vm,
                 "native" => Mode::Native,
-                _ => Mode::Vm,
+                _ => Mode::Native,
             };
         }
 

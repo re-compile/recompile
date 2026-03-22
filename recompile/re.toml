@@ -1,4 +1,4 @@
-mode = "Vm"
+mode = "Native"
 
 [rules]
 debounce_ms = 1500
