@@ -114,16 +114,16 @@ RECC Sentinel comes with several example programs to test different memory error
 
 ```bash
 # Build all examples
-cd examples && ./build.sh
+./scripts/build-examples.sh
 
 # Test heap overflow detection
-cargo run -p rerun -- run examples/memcpy_overflow
+cargo run -p rerun -- run build/examples/memcpy_overflow
 
 # Test double free detection  
-cargo run -p rerun -- run examples/double_free
+cargo run -p rerun -- run build/examples/double_free
 
 # Test invalid free detection
-cargo run -p rerun -- run examples/invalid_free
+cargo run -p rerun -- run build/examples/invalid_free
 ```
 
 ## 📊 Understanding Output
@@ -156,18 +156,18 @@ sudo setcap 'cap_bpf,cap_perfmon+ep' target/release/rerun
 **No findings detected:**
 ```bash
 # Check if binary has debug symbols
-file examples/memcpy_overflow
-readelf -S examples/memcpy_overflow | grep debug
+file build/examples/memcpy_overflow
+readelf -S build/examples/memcpy_overflow | grep debug
 
 # Rebuild with debug info
-cd examples && ./build.sh
+./scripts/build-examples.sh
 ```
 
 ### Debug Mode
 
 ```bash
 # Enable verbose logging
-RUST_LOG=debug cargo run -p rerun -- run examples/memcpy_overflow
+RUST_LOG=debug cargo run -p rerun -- run build/examples/memcpy_overflow
 
 # Check individual components
 cargo run -p re-rules --bin test_clustering
@@ -186,7 +186,7 @@ cargo run -p re-escalate --bin run_escalation -- /path/to/finding.json
 
 - **Full Documentation**: [README.md](README.md)
 - **Architecture Deep Dive**: [ARCHITECTURE.md](ARCHITECTURE.md)
-- **Configuration Reference**: [re.toml.example](re.toml.example)
+- **Configuration Reference**: [re.toml](re.toml)
 - **Example Programs**: [examples/](examples/)
 
 ## 💡 Tips
