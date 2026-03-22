@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use std::fs;
 
 use crate::native::run_native;
-use crate::vm::run_vm;
 
 #[derive(Deserialize)]
 struct NativeRunMetadata {
@@ -23,7 +22,8 @@ pub fn handle_run_command(matches: &ArgMatches) -> Result<()> {
     let binary = matches.get_one::<String>("binary").unwrap();
     let binary_path = PathBuf::from(binary);
     
-    let native_mode = matches.get_flag("native");
+    let vm_mode = matches.get_flag("vm");
+    let native_mode = !vm_mode;
     let escalate_mode = matches.get_one::<String>("escalate").unwrap();
     let output_dir = matches.get_one::<String>("output")
         .map(|s| PathBuf::from(s))
@@ -35,16 +35,19 @@ pub fn handle_run_command(matches: &ArgMatches) -> Result<()> {
 
     println!("RECC Sentinel v0.1.0");
     println!("Analyzing binary: {}", binary_path.display());
-    println!("Mode: {}", if native_mode { "native" } else { "VM" });
+    println!("Mode: {}", if native_mode { "native" } else { "VM (deferred)" });
     println!("Escalation: {}", escalate_mode);
     println!("Symbolizer: {}", symbolizer_tool);
     println!("Output: {}", output_dir.display());
 
-    if native_mode {
-        run_native(&binary_path, &output_dir, escalate_mode, symbolizer_tool, &args)?;
-    } else {
-        run_vm(&binary_path, &output_dir, escalate_mode, symbolizer_tool, &args)?;
+    if vm_mode {
+        return Err(anyhow::anyhow!(
+            "VM mode is deferred and not part of the supported workflow.\n\
+             Use `re run --native <binary>` on Linux, or run inside the documented Docker-native environment."
+        ));
     }
+
+    run_native(&binary_path, &output_dir, escalate_mode, symbolizer_tool, &args)?;
 
     println!("Analysis completed. Results saved to: {}", output_dir.display());
     Ok(())

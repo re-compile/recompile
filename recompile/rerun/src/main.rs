@@ -1,12 +1,8 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Arg, ArgAction, Command};
-use std::fs;
-use std::path::PathBuf;
-use vm_launcher::{launch_qemu_and_run, Manifest};
 
 mod cli;
 mod native;
-mod vm;
 
 use cli::*;
 
@@ -29,7 +25,12 @@ fn main() -> Result<()> {
                 .arg(Arg::new("native")
                     .long("native")
                     .action(ArgAction::SetTrue)
-                    .help("Run in native mode (Linux only, requires CAP_BPF)"))
+                    .help("Native mode is now the default on Linux; kept for compatibility"))
+                .arg(Arg::new("vm")
+                    .long("vm")
+                    .action(ArgAction::SetTrue)
+                    .conflicts_with("native")
+                    .help("VM mode is deferred and not part of the supported workflow"))
                 .arg(Arg::new("escalate")
                     .long("escalate")
                     .value_name("MODE")
@@ -104,27 +105,14 @@ fn main() -> Result<()> {
 fn handle_legacy_run(matches: &clap::ArgMatches) -> Result<()> {
     let binary = matches.get_one::<String>("binary");
     if let Some(bin) = binary {
-        let bin_path: PathBuf = bin.into();
-        let manifest_cli: Option<&String> = matches.get_one::<String>("manifest");
-        let mut candidates = Vec::new();
-        if let Some(m) = manifest_cli { candidates.push(PathBuf::from(m)); }
-        candidates.push(bin_path.parent().unwrap_or_else(|| std::path::Path::new(".")).join(".re/manifest.json"));
-        candidates.push(PathBuf::from("build/.re/manifest.json"));
-
-        let found = candidates.into_iter().find(|p| p.exists());
-        if let Some(manifest) = found {
-            let s = fs::read_to_string(&manifest)?;
-            eprintln!("re: using manifest {}", manifest.display());
-            let m: Manifest = serde_json::from_str(&s).context("parse manifest")?;
-            launch_qemu_and_run(&m)?;
-        } else {
-            eprintln!("re: manifest not found in default locations; run recc to generate one.");
-        }
+        return Err(anyhow::anyhow!(
+            "Legacy manifest-driven VM launch is no longer part of the supported workflow.\n\
+             Use `re run --native {}` on Linux, or start the documented Docker-native environment first.",
+            bin
+        ));
     } else {
         eprintln!("re: no binary specified. Use 're run <binary>' or see 're --help' for more options.");
     }
     Ok(())
 }
-
-
 

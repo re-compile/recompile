@@ -61,6 +61,8 @@ cargo test
 
 ### Basic Analysis
 
+On Linux, `re run` now defaults to the native path.
+
 ```bash
 # Analyze a binary with eBPF monitoring
 cargo run -p rerun -- run examples/memcpy_overflow
@@ -75,7 +77,7 @@ cargo run -p rerun -- run examples/invalid_free --escalate always
 ### Native Mode (Linux)
 
 ```bash
-# Run with native eBPF (requires capabilities)
+# Run with native eBPF explicitly (optional; native is already the default on Linux)
 cargo run -p rerun -- run --native examples/memcpy_overflow
 
 # Set capabilities for unprivileged access

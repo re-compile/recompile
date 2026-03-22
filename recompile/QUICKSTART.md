@@ -33,7 +33,7 @@ cargo run -p rerun -- --help
 ### 1. Run a Simple Example
 
 ```bash
-# Analyze a heap overflow example
+# Analyze a heap overflow example (native is the default on Linux)
 cargo run -p rerun -- run examples/memcpy_overflow --output build/my-analysis
 
 # Check the results
@@ -66,7 +66,7 @@ ls build/double-free-analysis/
 ### Native Mode (Linux Only)
 
 ```bash
-# Run with native eBPF (faster, requires capabilities)
+# Run with native eBPF explicitly (optional; native is already the default on Linux)
 sudo setcap 'cap_bpf,cap_perfmon+ep' target/release/rerun
 cargo run -p rerun -- run --native examples/memcpy_overflow
 ```
