@@ -17,11 +17,16 @@ if [[ ! -d "$repo_dir" ]]; then
     exec "$@"
 fi
 
-cd "$repo_dir"
+project_dir="$repo_dir"
+if [[ -f "$repo_dir/recompile/Cargo.toml" ]]; then
+    project_dir="$repo_dir/recompile"
+fi
+
+cd "$project_dir"
 export PATH="/root/.cargo/bin:$PATH"
 
 if [[ "$skip_bootstrap" != "1" ]]; then
-    log "recompile bootstrap: preparing native Linux workspace"
+    log "recompile bootstrap: preparing native Linux workspace in $project_dir"
 
     if [[ "$build_native" == "1" ]]; then
         log "recompile bootstrap: generating BPF headers and objects"

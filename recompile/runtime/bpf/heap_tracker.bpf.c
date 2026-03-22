@@ -431,7 +431,9 @@ int BPF_KPROBE(u_free_enter)
     if (!st)
         return 0;
 
-    if (!(st->flags & RE_SENTINEL_STATE_ARMED))
+    // Invalid and double frees must still be reported even when this PID never
+    // performed a tracked allocation. Keep the arming gate only for benign frees.
+    if (!(st->flags & RE_SENTINEL_STATE_ARMED) && status == RE_SENTINEL_FREE_OK)
         return 0;
 
     int stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);

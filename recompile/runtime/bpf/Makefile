@@ -5,6 +5,8 @@
 
 # Detect LLVM toolchain (prefer system clang on Linux, Homebrew on macOS)
 UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
+
 ifeq ($(UNAME_S),Darwin)
   LLVM_PREFIX ?= /opt/homebrew/opt/llvm
   CLANG       ?= $(LLVM_PREFIX)/bin/clang
@@ -13,7 +15,14 @@ ifeq ($(UNAME_S),Darwin)
 else
   CLANG       ?= clang
   OBJDUMP     ?= llvm-objdump
-  TARGET_ARCH ?= x86
+  # Auto-detect architecture from kernel (critical for Docker on Apple Silicon)
+  ifeq ($(UNAME_M),aarch64)
+    TARGET_ARCH ?= arm64
+  else ifeq ($(UNAME_M),arm64)
+    TARGET_ARCH ?= arm64
+  else
+    TARGET_ARCH ?= x86
+  endif
 endif
 
 BPF_DIR     := $(abspath .)
@@ -31,59 +40,88 @@ BPF_CFLAGS := -target bpf -D__TARGET_ARCH_$(TARGET_ARCH) -O2 -g \
   -Wno-unused-function \
   $(BPF_INCLUDES)
 
-BPF_SRCS := copy_checker.bpf.c heap_tracker.bpf.c sentinel_extra.bpf.c
+CORE_BPF_SRCS := copy_checker.bpf.c heap_tracker.bpf.c
+EXTRA_BPF_SRCS := sentinel_extra.bpf.c
+BPF_SRCS := $(CORE_BPF_SRCS) $(EXTRA_BPF_SRCS)
 BPF_OBJS := $(BPF_SRCS:.c=.o)
+CORE_BPF_OBJS := $(CORE_BPF_SRCS:.c=.o)
+EXTRA_BPF_OBJS := $(EXTRA_BPF_SRCS:.c=.o)
+VMLINUX_OUT ?= vmlinux.h
 
-.PHONY: all clean clang-version check-btf vmlinux-regen vmlinux-minimal help
+.PHONY: all clean clang-version check-btf vmlinux-regen vmlinux-minimal vmlinux-sync help
 
-all: $(BPF_OBJS)
+all: vmlinux-sync
+	@$(MAKE) --no-print-directory $(CORE_BPF_OBJS)
+	@if grep -q "Minimal vmlinux.h" vmlinux.h; then \
+	  echo "Skipping sentinel_extra.bpf.o (minimal vmlinux.h does not include tracepoint types)"; \
+	else \
+	  $(MAKE) --no-print-directory $(EXTRA_BPF_OBJS); \
+	fi
 
 %.bpf.o: %.bpf.c vmlinux.h
 	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
 
-# Auto-generate vmlinux.h if it doesn't exist
-# Tries bpftool first, falls back to minimal inline header for uprobe-only programs
-vmlinux.h:
-	@echo "Generating vmlinux.h..."
-	@if [ -f /sys/kernel/btf/vmlinux ] && command -v bpftool >/dev/null 2>&1; then \
-	  echo "Using bpftool to generate from kernel BTF..."; \
-	  bpftool btf dump file /sys/kernel/btf/vmlinux format c > $@; \
+# Refresh vmlinux.h from the current kernel when possible. This avoids silently
+# reusing a stale header generated on a different architecture.
+vmlinux-sync:
+	@tmp_file=$$(mktemp "$(BPF_DIR)/vmlinux.h.XXXXXX"); \
+	if [ -f /sys/kernel/btf/vmlinux ] && command -v bpftool >/dev/null 2>&1 && \
+	   bpftool btf dump file /sys/kernel/btf/vmlinux format c > "$$tmp_file" 2>/dev/null && \
+	   grep -q "struct pt_regs" "$$tmp_file"; then \
+	  echo "Syncing vmlinux.h from kernel BTF..."; \
 	else \
 	  echo "bpftool or BTF not available, generating minimal vmlinux.h for uprobes..."; \
-	  $(MAKE) vmlinux-minimal; \
+	  $(MAKE) --no-print-directory vmlinux-minimal VMLINUX_OUT="$$tmp_file"; \
+	fi; \
+	if [ ! -f vmlinux.h ] || ! cmp -s "$$tmp_file" vmlinux.h; then \
+	  mv "$$tmp_file" vmlinux.h; \
+	  echo "vmlinux.h updated"; \
+	else \
+	  rm -f "$$tmp_file"; \
+	  echo "vmlinux.h already current"; \
 	fi
-	@echo "vmlinux.h generated successfully"
+
+vmlinux.h: vmlinux-sync
+	@true
 
 # Generate minimal vmlinux.h (sufficient for uprobe-based BPF programs)
 vmlinux-minimal:
-	@echo '/* Minimal vmlinux.h for uprobe-based BPF programs */' > vmlinux.h
-	@echo '#ifndef __VMLINUX_H__' >> vmlinux.h
-	@echo '#define __VMLINUX_H__' >> vmlinux.h
-	@echo '' >> vmlinux.h
-	@echo '#pragma clang attribute push (__attribute__((preserve_access_index)), apply_to = record)' >> vmlinux.h
-	@echo '' >> vmlinux.h
-	@echo 'typedef unsigned char __u8;' >> vmlinux.h
-	@echo 'typedef short unsigned int __u16;' >> vmlinux.h
-	@echo 'typedef unsigned int __u32;' >> vmlinux.h
-	@echo 'typedef unsigned long long __u64;' >> vmlinux.h
-	@echo 'typedef signed char __s8;' >> vmlinux.h
-	@echo 'typedef short int __s16;' >> vmlinux.h
-	@echo 'typedef int __s32;' >> vmlinux.h
-	@echo 'typedef long long __s64;' >> vmlinux.h
-	@echo 'typedef __u8 u8; typedef __u16 u16; typedef __u32 u32; typedef __u64 u64;' >> vmlinux.h
-	@echo 'typedef __s8 s8; typedef __s16 s16; typedef __s32 s32; typedef __s64 s64;' >> vmlinux.h
-	@echo 'typedef _Bool bool;' >> vmlinux.h
-	@echo '#define true 1' >> vmlinux.h
-	@echo '#define false 0' >> vmlinux.h
-	@echo '' >> vmlinux.h
-	@echo '#if defined(__TARGET_ARCH_x86) || defined(__x86_64__)' >> vmlinux.h
-	@echo 'struct pt_regs { unsigned long r15,r14,r13,r12,bp,bx,r11,r10,r9,r8,ax,cx,dx,si,di,orig_ax,ip,cs,flags,sp,ss; };' >> vmlinux.h
-	@echo '#elif defined(__TARGET_ARCH_arm64) || defined(__aarch64__)' >> vmlinux.h
-	@echo 'struct pt_regs { __u64 regs[31]; __u64 sp; __u64 pc; __u64 pstate; };' >> vmlinux.h
-	@echo '#endif' >> vmlinux.h
-	@echo '' >> vmlinux.h
-	@echo '#pragma clang attribute pop' >> vmlinux.h
-	@echo '#endif /* __VMLINUX_H__ */' >> vmlinux.h
+	@echo '/* Minimal vmlinux.h for uprobe-based BPF programs */' > $(VMLINUX_OUT)
+	@echo '#ifndef __RE_MINIMAL_VMLINUX_H__' >> $(VMLINUX_OUT)
+	@echo '#define __RE_MINIMAL_VMLINUX_H__' >> $(VMLINUX_OUT)
+	@echo '' >> $(VMLINUX_OUT)
+	@echo 'typedef unsigned char __u8;' >> $(VMLINUX_OUT)
+	@echo 'typedef short unsigned int __u16;' >> $(VMLINUX_OUT)
+	@echo 'typedef unsigned int __u32;' >> $(VMLINUX_OUT)
+	@echo 'typedef unsigned long long __u64;' >> $(VMLINUX_OUT)
+	@echo 'typedef signed char __s8;' >> $(VMLINUX_OUT)
+	@echo 'typedef short int __s16;' >> $(VMLINUX_OUT)
+	@echo 'typedef int __s32;' >> $(VMLINUX_OUT)
+	@echo 'typedef long long __s64;' >> $(VMLINUX_OUT)
+	@echo 'typedef __u16 __be16; typedef __u32 __be32; typedef __u64 __be64;' >> $(VMLINUX_OUT)
+	@echo 'typedef __u16 __le16; typedef __u32 __le32; typedef __u64 __le64;' >> $(VMLINUX_OUT)
+	@echo 'typedef __u32 __wsum;' >> $(VMLINUX_OUT)
+	@echo 'typedef __u8 u8; typedef __u16 u16; typedef __u32 u32; typedef __u64 u64;' >> $(VMLINUX_OUT)
+	@echo 'typedef __s8 s8; typedef __s16 s16; typedef __s32 s32; typedef __s64 s64;' >> $(VMLINUX_OUT)
+	@echo 'typedef _Bool bool;' >> $(VMLINUX_OUT)
+	@echo '#define true 1' >> $(VMLINUX_OUT)
+	@echo '#define false 0' >> $(VMLINUX_OUT)
+	@echo '#define BPF_MAP_TYPE_HASH 1' >> $(VMLINUX_OUT)
+	@echo '#define BPF_MAP_TYPE_PERCPU_ARRAY 6' >> $(VMLINUX_OUT)
+	@echo '#define BPF_MAP_TYPE_STACK_TRACE 7' >> $(VMLINUX_OUT)
+	@echo '#define BPF_MAP_TYPE_LRU_HASH 9' >> $(VMLINUX_OUT)
+	@echo '#define BPF_MAP_TYPE_RINGBUF 27' >> $(VMLINUX_OUT)
+	@echo '#define BPF_ANY 0' >> $(VMLINUX_OUT)
+	@echo '#define BPF_NOEXIST 1' >> $(VMLINUX_OUT)
+	@echo '#define BPF_F_USER_STACK (1ULL << 8)' >> $(VMLINUX_OUT)
+	@echo '' >> $(VMLINUX_OUT)
+	@echo '#if defined(__TARGET_ARCH_x86) || defined(__x86_64__)' >> $(VMLINUX_OUT)
+	@echo 'struct pt_regs { unsigned long r15,r14,r13,r12,rbp,rbx,r11,r10,r9,r8,rax,rcx,rdx,rsi,rdi,orig_rax,rip,cs,eflags,rsp,ss; };' >> $(VMLINUX_OUT)
+	@echo '#elif defined(__TARGET_ARCH_arm64) || defined(__aarch64__)' >> $(VMLINUX_OUT)
+	@echo 'struct pt_regs { __u64 regs[31]; __u64 sp; __u64 pc; __u64 pstate; };' >> $(VMLINUX_OUT)
+	@echo '#endif' >> $(VMLINUX_OUT)
+	@echo '' >> $(VMLINUX_OUT)
+	@echo '#endif /* __RE_MINIMAL_VMLINUX_H__ */' >> $(VMLINUX_OUT)
 
 # Regenerate vmlinux.h from system BTF (requires bpftool + BTF-enabled kernel)
 vmlinux-regen:

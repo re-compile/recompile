@@ -5,7 +5,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
-    bpftool \
     build-essential \
     ca-certificates \
     clang \
@@ -16,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libbpf-dev \
     libelf-dev \
     lld \
+    linux-tools-common \
     llvm \
     make \
     pkg-config \
