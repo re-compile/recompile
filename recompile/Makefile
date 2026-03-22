@@ -15,5 +15,4 @@ agent:
 	cargo build -p agent
 
 toolchain:
-	cargo build -p recc -p rerun -p vm-launcher -p agent
 

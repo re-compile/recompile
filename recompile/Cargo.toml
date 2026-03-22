@@ -2,7 +2,6 @@
 members = [
   "recc",
   "rerun",
-  "vm-launcher",
   "runtime/agent",
   "protocols/mcp",
   "lsp"
