@@ -45,6 +45,36 @@ pub trait Symbolizer {
     fn symbolize_single(&mut self, binary: &str, address: u64) -> Result<Vec<Frame>>;
 }
 
+fn parse_symbolized_frame(function_line: &str, location_line: &str) -> Frame {
+    let mut frame = Frame {
+        module: String::new(),
+        function: function_line.to_string(),
+        offset: 0,
+        source_file: None,
+        source_line: None,
+        source_column: None,
+    };
+
+    if let Some(colon_pos) = location_line.find(':') {
+        let file_part = &location_line[..colon_pos];
+        let rest = &location_line[colon_pos + 1..];
+
+        frame.source_file = Some(file_part.to_string());
+
+        if let Some(second_colon_pos) = rest.find(':') {
+            let line_part = &rest[..second_colon_pos];
+            let column_part = &rest[second_colon_pos + 1..];
+
+            frame.source_line = u32::from_str(line_part).ok();
+            frame.source_column = u32::from_str(column_part).ok();
+        } else {
+            frame.source_line = u32::from_str(rest).ok();
+        }
+    }
+
+    frame
+}
+
 /// LLVM Symbolizer implementation
 pub struct LlvmSymbolizer {
     config: SymbolizerConfig,
@@ -97,80 +127,29 @@ impl LlvmSymbolizer {
 
     fn parse_llvm_output(&self, output: &str, num_addresses: usize) -> Result<Vec<Vec<Frame>>> {
         let mut results = Vec::new();
-        let lines: Vec<&str> = output.lines().collect();
-        
-        let _i = 0;
-        let mut current_frames = Vec::new();
-        
-        for line in lines {
-            if line.trim().is_empty() {
-                // Empty line indicates end of frames for current address
-                if !current_frames.is_empty() {
-                    results.push(current_frames);
-                    current_frames = Vec::new();
-                }
-            } else {
-                // Parse frame line
-                if let Some(frame) = self.parse_llvm_frame_line(line) {
-                    current_frames.push(frame);
-                }
+        let mut lines = output.lines().map(str::trim).peekable();
+
+        while let Some(function_line) = lines.next() {
+            if function_line.is_empty() {
+                continue;
             }
+
+            let location_line = match lines.next() {
+                Some(line) if !line.is_empty() => line,
+                _ => {
+                    results.push(Vec::new());
+                    continue;
+                }
+            };
+
+            results.push(vec![parse_symbolized_frame(function_line, location_line)]);
         }
-        
-        // Don't forget the last set of frames
-        if !current_frames.is_empty() {
-            results.push(current_frames);
-        }
-        
-        // Ensure we have the right number of results
+
         while results.len() < num_addresses {
             results.push(Vec::new());
         }
-        
-        Ok(results)
-    }
 
-    fn parse_llvm_frame_line(&self, line: &str) -> Option<Frame> {
-        // LLVM symbolizer output format:
-        // function_name
-        // source_file:line:column
-        
-        let parts: Vec<&str> = line.split('\n').collect();
-        if parts.len() < 2 {
-            return None;
-        }
-        
-        let function_line = parts[0].trim();
-        let location_line = parts[1].trim();
-        
-        let mut frame = Frame {
-            module: String::new(),
-            function: function_line.to_string(),
-            offset: 0,
-            source_file: None,
-            source_line: None,
-            source_column: None,
-        };
-        
-        // Parse location line: file:line:column
-        if let Some(colon_pos) = location_line.find(':') {
-            let file_part = &location_line[..colon_pos];
-            let rest = &location_line[colon_pos + 1..];
-            
-            frame.source_file = Some(file_part.to_string());
-            
-            if let Some(second_colon_pos) = rest.find(':') {
-                let line_part = &rest[..second_colon_pos];
-                let column_part = &rest[second_colon_pos + 1..];
-                
-                frame.source_line = u32::from_str(line_part).ok();
-                frame.source_column = u32::from_str(column_part).ok();
-            } else {
-                frame.source_line = u32::from_str(rest).ok();
-            }
-        }
-        
-        Some(frame)
+        Ok(results)
     }
 }
 
@@ -179,33 +158,53 @@ impl Symbolizer for LlvmSymbolizer {
         if !Self::check_llvm_symbolizer() {
             return Err(anyhow!("llvm-symbolizer not available"));
         }
-        
-        let mut results = Vec::new();
-        
-        for addr in addresses {
+
+        let mut results = Vec::with_capacity(addresses.len());
+        let mut missing = Vec::new();
+        let mut missing_idx = Vec::new();
+
+        for (idx, addr) in addresses.iter().enumerate() {
             let cache_key = (binary.to_string(), *addr);
-            
             if let Some(cached) = self.cache.get(&cache_key) {
                 results.push(cached.clone());
-                continue;
+            } else {
+                results.push(Vec::new());
+                missing.push(*addr);
+                missing_idx.push(idx);
             }
-            
-            let frames = self.symbolize_single(binary, *addr)?;
-            
-            // Cache the result
-            if self.cache.len() < self.config.cache_size {
-                self.cache.insert(cache_key, frames.clone());
-            }
-            
-            results.push(frames);
         }
-        
+
+        if !missing.is_empty() {
+            let fresh = self.symbolize_with_llvm(binary, &missing)?;
+            for (pos, addr) in missing.iter().copied().enumerate() {
+                let idx = missing_idx[pos];
+                let frames = fresh.get(pos).cloned().unwrap_or_default();
+                if self.cache.len() < self.config.cache_size {
+                    self.cache.insert((binary.to_string(), addr), frames.clone());
+                }
+                results[idx] = frames;
+            }
+        }
+
         Ok(results)
     }
 
     fn symbolize_single(&mut self, binary: &str, address: u64) -> Result<Vec<Frame>> {
-        let results = self.symbolize(binary, &[address])?;
-        Ok(results.into_iter().next().unwrap_or_default())
+        if !Self::check_llvm_symbolizer() {
+            return Err(anyhow!("llvm-symbolizer not available"));
+        }
+
+        let cache_key = (binary.to_string(), address);
+        if let Some(cached) = self.cache.get(&cache_key) {
+            return Ok(cached.clone());
+        }
+
+        let results = self.symbolize_with_llvm(binary, &[address])?;
+        let frames = results.into_iter().next().unwrap_or_default();
+        if self.cache.len() < self.config.cache_size {
+            self.cache.insert(cache_key, frames.clone());
+        }
+        Ok(frames)
     }
 }
 
@@ -257,43 +256,28 @@ impl Addr2lineSymbolizer {
 
     fn parse_addr2line_output(&self, output: &str, num_addresses: usize) -> Result<Vec<Vec<Frame>>> {
         let mut results = Vec::new();
-        let lines: Vec<&str> = output.lines().collect();
-        
-        // Addr2line outputs function name and location in pairs
-        for i in (0..lines.len()).step_by(2) {
-            if i + 1 >= lines.len() {
-                break;
+        let mut lines = output.lines().map(str::trim).peekable();
+
+        while let Some(function_line) = lines.next() {
+            if function_line.is_empty() {
+                continue;
             }
-            
-            let function_line = lines[i].trim();
-            let location_line = lines[i + 1].trim();
-            
-            let mut frame = Frame {
-                module: String::new(),
-                function: function_line.to_string(),
-                offset: 0,
-                source_file: None,
-                source_line: None,
-                source_column: None,
+
+            let location_line = match lines.next() {
+                Some(line) if !line.is_empty() => line,
+                _ => {
+                    results.push(Vec::new());
+                    continue;
+                }
             };
-            
-            // Parse location line: file:line
-            if let Some(colon_pos) = location_line.find(':') {
-                let file_part = &location_line[..colon_pos];
-                let line_part = &location_line[colon_pos + 1..];
-                
-                frame.source_file = Some(file_part.to_string());
-                frame.source_line = u32::from_str(line_part).ok();
-            }
-            
-            results.push(vec![frame]);
+
+            results.push(vec![parse_symbolized_frame(function_line, location_line)]);
         }
-        
-        // Ensure we have the right number of results
+
         while results.len() < num_addresses {
             results.push(Vec::new());
         }
-        
+
         Ok(results)
     }
 }
@@ -303,33 +287,53 @@ impl Symbolizer for Addr2lineSymbolizer {
         if !Self::check_addr2line() {
             return Err(anyhow!("addr2line not available"));
         }
-        
-        let mut results = Vec::new();
-        
-        for addr in addresses {
+
+        let mut results = Vec::with_capacity(addresses.len());
+        let mut missing = Vec::new();
+        let mut missing_idx = Vec::new();
+
+        for (idx, addr) in addresses.iter().enumerate() {
             let cache_key = (binary.to_string(), *addr);
-            
             if let Some(cached) = self.cache.get(&cache_key) {
                 results.push(cached.clone());
-                continue;
+            } else {
+                results.push(Vec::new());
+                missing.push(*addr);
+                missing_idx.push(idx);
             }
-            
-            let frames = self.symbolize_single(binary, *addr)?;
-            
-            // Cache the result
-            if self.cache.len() < self.config.cache_size {
-                self.cache.insert(cache_key, frames.clone());
-            }
-            
-            results.push(frames);
         }
-        
+
+        if !missing.is_empty() {
+            let fresh = self.symbolize_with_addr2line(binary, &missing)?;
+            for (pos, addr) in missing.iter().copied().enumerate() {
+                let idx = missing_idx[pos];
+                let frames = fresh.get(pos).cloned().unwrap_or_default();
+                if self.cache.len() < self.config.cache_size {
+                    self.cache.insert((binary.to_string(), addr), frames.clone());
+                }
+                results[idx] = frames;
+            }
+        }
+
         Ok(results)
     }
 
     fn symbolize_single(&mut self, binary: &str, address: u64) -> Result<Vec<Frame>> {
-        let results = self.symbolize(binary, &[address])?;
-        Ok(results.into_iter().next().unwrap_or_default())
+        if !Self::check_addr2line() {
+            return Err(anyhow!("addr2line not available"));
+        }
+
+        let cache_key = (binary.to_string(), address);
+        if let Some(cached) = self.cache.get(&cache_key) {
+            return Ok(cached.clone());
+        }
+
+        let results = self.symbolize_with_addr2line(binary, &[address])?;
+        let frames = results.into_iter().next().unwrap_or_default();
+        if self.cache.len() < self.config.cache_size {
+            self.cache.insert(cache_key, frames.clone());
+        }
+        Ok(frames)
     }
 }
 
@@ -371,8 +375,19 @@ impl Symbolizer for CompositeSymbolizer {
     }
 
     fn symbolize_single(&mut self, binary: &str, address: u64) -> Result<Vec<Frame>> {
-        let results = self.symbolize(binary, &[address])?;
-        Ok(results.into_iter().next().unwrap_or_default())
+        if self.config.use_llvm_symbolizer {
+            if let Ok(frames) = self.llvm.symbolize_single(binary, address) {
+                return Ok(frames);
+            }
+        }
+
+        if self.config.use_addr2line {
+            if let Ok(frames) = self.addr2line.symbolize_single(binary, address) {
+                return Ok(frames);
+            }
+        }
+
+        Ok(Vec::new())
     }
 }
 
