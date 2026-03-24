@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use re_crashpack::{BinaryInfo, Manifest};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Write};
@@ -38,6 +38,7 @@ struct NativeConfig {
 #[derive(Serialize)]
 struct NativeRunMetadata {
     binary_path: String,
+    source_path: Option<String>,
     args: Vec<String>,
 }
 
@@ -188,46 +189,71 @@ fn locate_components(output_dir: &Path) -> Result<NativeConfig> {
             PathBuf::from("recompile/runtime/agent/re-mini"),
             PathBuf::from("../runtime/agent/re-mini"),
             // Relative to executable
-            exe_dir.as_ref().map(|d| d.join("../runtime/agent/re-mini")).unwrap_or_default(),
+            exe_dir
+                .as_ref()
+                .map(|d| d.join("../runtime/agent/re-mini"))
+                .unwrap_or_default(),
             // System paths
             PathBuf::from("/usr/local/bin/re-mini"),
             PathBuf::from("/usr/bin/re-mini"),
         ],
-    ).ok_or_else(|| anyhow::anyhow!(
-        "Could not find re-mini agent. Build it with:\n\
+    )
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "Could not find re-mini agent. Build it with:\n\
          cd runtime/agent && clang -O2 -g -o re-mini re-mini.c -lelf -lz -lbpf -ldl"
-    ))?;
+        )
+    })?;
 
     // Look for BPF objects
     let bpf_search_paths = vec![
         PathBuf::from("runtime/bpf"),
         PathBuf::from("recompile/runtime/bpf"),
         PathBuf::from("../runtime/bpf"),
-        exe_dir.as_ref().map(|d| d.join("../runtime/bpf")).unwrap_or_default(),
+        exe_dir
+            .as_ref()
+            .map(|d| d.join("../runtime/bpf"))
+            .unwrap_or_default(),
         PathBuf::from("/usr/local/share/recompile/bpf"),
     ];
 
     let heap_tracker_path = find_file_in_paths(
         "heap_tracker.bpf.o",
-        &bpf_search_paths.iter().map(|p| p.join("heap_tracker.bpf.o")).collect::<Vec<_>>(),
-    ).ok_or_else(|| anyhow::anyhow!(
-        "Could not find heap_tracker.bpf.o. Build BPF objects with:\n\
+        &bpf_search_paths
+            .iter()
+            .map(|p| p.join("heap_tracker.bpf.o"))
+            .collect::<Vec<_>>(),
+    )
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "Could not find heap_tracker.bpf.o. Build BPF objects with:\n\
          cd runtime/bpf && make"
-    ))?;
+        )
+    })?;
 
     let copy_checker_path = find_file_in_paths(
         "copy_checker.bpf.o",
-        &bpf_search_paths.iter().map(|p| p.join("copy_checker.bpf.o")).collect::<Vec<_>>(),
-    ).ok_or_else(|| anyhow::anyhow!(
-        "Could not find copy_checker.bpf.o. Build BPF objects with:\n\
+        &bpf_search_paths
+            .iter()
+            .map(|p| p.join("copy_checker.bpf.o"))
+            .collect::<Vec<_>>(),
+    )
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "Could not find copy_checker.bpf.o. Build BPF objects with:\n\
          cd runtime/bpf && make"
-    ))?;
+        )
+    })?;
 
     // Sentinel tracepoints are optional and should only be enabled when tracefs is available.
     let sentinel_path = find_file_in_paths(
         "sentinel_extra.bpf.o",
-        &bpf_search_paths.iter().map(|p| p.join("sentinel_extra.bpf.o")).collect::<Vec<_>>(),
-    ).filter(|_| tracefs_has_syscall_tracepoints());
+        &bpf_search_paths
+            .iter()
+            .map(|p| p.join("sentinel_extra.bpf.o"))
+            .collect::<Vec<_>>(),
+    )
+    .filter(|_| tracefs_has_syscall_tracepoints());
 
     // Detect libc path
     let libc_path = detect_libc()?;
@@ -335,13 +361,20 @@ fn start_agent(config: &NativeConfig, binary_path: &Path, target_pid: u32) -> Re
         .try_clone()
         .with_context(|| format!("Failed to clone {}", config.console_log_path.display()))?;
 
-    cmd.arg("--heap").arg(&config.heap_tracker_path)
-       .arg("--obj").arg(&config.copy_checker_path)
-       .arg("--binary").arg(binary_path)
-       .arg("--pid").arg(target_pid.to_string())
-       .arg("--libc").arg(&config.libc_path)
-       .arg("--out").arg(&config.debug_findings_path)
-       .arg("--crashpack").arg(&config.crashpack_dir);
+    cmd.arg("--heap")
+        .arg(&config.heap_tracker_path)
+        .arg("--obj")
+        .arg(&config.copy_checker_path)
+        .arg("--binary")
+        .arg(binary_path)
+        .arg("--pid")
+        .arg(target_pid.to_string())
+        .arg("--libc")
+        .arg(&config.libc_path)
+        .arg("--out")
+        .arg(&config.debug_findings_path)
+        .arg("--crashpack")
+        .arg(&config.crashpack_dir);
 
     // Add sentinel if available
     if let Some(ref sentinel) = config.sentinel_path {
@@ -349,10 +382,11 @@ fn start_agent(config: &NativeConfig, binary_path: &Path, target_pid: u32) -> Re
     }
 
     cmd.stdin(Stdio::null())
-       .stdout(Stdio::from(stdout_log))
-       .stderr(Stdio::from(stderr_log));
+        .stdout(Stdio::from(stdout_log))
+        .stderr(Stdio::from(stderr_log));
 
-    let child = cmd.spawn()
+    let child = cmd
+        .spawn()
         .with_context(|| format!("Failed to start agent: {}", config.re_mini_path.display()))?;
 
     Ok(child)
@@ -360,8 +394,12 @@ fn start_agent(config: &NativeConfig, binary_path: &Path, target_pid: u32) -> Re
 
 #[cfg(target_os = "linux")]
 fn start_target_paused(binary_path: &Path, args: &[String]) -> Result<TargetProcess> {
-    let binary_cstr = CString::new(binary_path.as_os_str().as_bytes())
-        .with_context(|| format!("Binary path contains interior NUL: {}", binary_path.display()))?;
+    let binary_cstr = CString::new(binary_path.as_os_str().as_bytes()).with_context(|| {
+        format!(
+            "Binary path contains interior NUL: {}",
+            binary_path.display()
+        )
+    })?;
     let arg_cstrs = args
         .iter()
         .map(|arg| CString::new(arg.as_bytes()).context("Argument contains interior NUL"))
@@ -462,18 +500,25 @@ fn wait_for_exit(pid: u32) -> Result<ExitStatus> {
             if err.raw_os_error() == Some(libc::EINTR) {
                 continue;
             }
-            return Err(anyhow::anyhow!("Failed to wait for target {}: {}", pid, err));
+            return Err(anyhow::anyhow!(
+                "Failed to wait for target {}: {}",
+                pid,
+                err
+            ));
         }
     }
 }
 
 fn finalize_findings(crashpack_dir: &Path, binary_path: &Path) -> Result<PathBuf> {
     let findings_path = crashpack_dir.join("findings.json");
+    let copied_binary_path = write_binary_artifacts(crashpack_dir, binary_path)?;
     let findings = if findings_path.exists() {
         let content = std::fs::read_to_string(&findings_path)
             .with_context(|| format!("Failed to read {}", findings_path.display()))?;
-        parse_findings_content(&content)
-            .with_context(|| format!("Failed to normalize {}", findings_path.display()))?
+        let mut findings = parse_findings_content(&content)
+            .with_context(|| format!("Failed to normalize {}", findings_path.display()))?;
+        attach_finding_provenance(&mut findings, binary_path, &copied_binary_path);
+        findings
     } else {
         Vec::new()
     };
@@ -481,15 +526,19 @@ fn finalize_findings(crashpack_dir: &Path, binary_path: &Path) -> Result<PathBuf
     std::fs::write(&findings_path, serde_json::to_vec_pretty(&findings)?)
         .with_context(|| format!("Failed to rewrite {}", findings_path.display()))?;
     write_manifest(crashpack_dir, &findings)?;
-    write_binary_artifacts(crashpack_dir, binary_path)?;
 
     println!("\nFindings saved to: {}", findings_path.display());
     Ok(findings_path)
 }
 
-fn write_analysis_metadata(crashpack_dir: &Path, binary_path: &Path, args: &[String]) -> Result<()> {
+fn write_analysis_metadata(
+    crashpack_dir: &Path,
+    binary_path: &Path,
+    args: &[String],
+) -> Result<()> {
     let metadata = NativeRunMetadata {
         binary_path: binary_path.display().to_string(),
+        source_path: None,
         args: args.to_vec(),
     };
     let metadata_path = crashpack_dir.join("analysis.json");
@@ -535,9 +584,10 @@ fn parse_findings_content(content: &str) -> Result<Vec<Value>> {
             .strip_prefix("RE:FINDING:")
             .map(str::trim)
             .unwrap_or(candidate);
-        findings.push(serde_json::from_str::<Value>(json).with_context(|| {
-            format!("Failed to parse finding line: {}", json)
-        })?);
+        findings.push(
+            serde_json::from_str::<Value>(json)
+                .with_context(|| format!("Failed to parse finding line: {}", json))?,
+        );
     }
 
     Ok(findings)
@@ -574,22 +624,80 @@ fn write_manifest(crashpack_dir: &Path, findings: &[Value]) -> Result<()> {
     Ok(())
 }
 
-fn write_binary_artifacts(crashpack_dir: &Path, binary_path: &Path) -> Result<()> {
-    let binary_info = BinaryInfo::analyze(binary_path)
-        .map_err(|error| anyhow::anyhow!("Failed to analyze {}: {}", binary_path.display(), error))?;
+fn write_binary_artifacts(crashpack_dir: &Path, binary_path: &Path) -> Result<PathBuf> {
+    let binary_info = BinaryInfo::analyze(binary_path).map_err(|error| {
+        anyhow::anyhow!("Failed to analyze {}: {}", binary_path.display(), error)
+    })?;
     let bins_dir = crashpack_dir.join("bins");
     std::fs::create_dir_all(&bins_dir)?;
 
-    let file_name = binary_path
-        .file_name()
-        .ok_or_else(|| anyhow::anyhow!("Binary path has no file name: {}", binary_path.display()))?;
+    let file_name = binary_path.file_name().ok_or_else(|| {
+        anyhow::anyhow!("Binary path has no file name: {}", binary_path.display())
+    })?;
     let copied_binary = bins_dir.join(file_name);
     std::fs::copy(binary_path, &copied_binary)
         .with_context(|| format!("Failed to copy binary to {}", copied_binary.display()))?;
 
     let metadata_path = copied_binary.with_extension("json");
     std::fs::write(metadata_path, serde_json::to_vec_pretty(&binary_info)?)?;
-    Ok(())
+    Ok(copied_binary)
+}
+
+fn attach_finding_provenance(
+    findings: &mut [Value],
+    original_binary_path: &Path,
+    copied_binary_path: &Path,
+) {
+    for finding in findings {
+        let Some(object) = finding.as_object_mut() else {
+            continue;
+        };
+        let source_path = extract_source_path(object);
+
+        let provenance_value = object
+            .entry("provenance".to_string())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !provenance_value.is_object() {
+            *provenance_value = Value::Object(Map::new());
+        }
+        let provenance = provenance_value
+            .as_object_mut()
+            .expect("provenance object inserted above");
+
+        provenance
+            .entry("binary_path".to_string())
+            .or_insert_with(|| Value::String(copied_binary_path.display().to_string()));
+        provenance
+            .entry("original_binary_path".to_string())
+            .or_insert_with(|| Value::String(original_binary_path.display().to_string()));
+
+        if !provenance.contains_key("source_path") {
+            if let Some(source_path) = source_path {
+                provenance.insert("source_path".to_string(), Value::String(source_path));
+            }
+        }
+    }
+}
+
+fn extract_source_path(finding: &Map<String, Value>) -> Option<String> {
+    if let Some(source_path) = finding
+        .get("evidence")
+        .and_then(|value| value.get("alloc_site"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "unknown")
+    {
+        return Some(source_path.to_string());
+    }
+
+    finding
+        .get("primaryLocation")
+        .and_then(|value| value.get("uri"))
+        .and_then(|value| value.as_str())
+        .and_then(|uri| uri.strip_prefix("file://"))
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "unknown")
+        .map(str::to_string)
 }
 
 /// Display findings from the findings file
@@ -602,11 +710,17 @@ fn display_findings(path: &Path) -> Result<()> {
         println!("\n--- Finding #{} ---", index + 1);
         println!(
             "  Class:     {}",
-            finding.get("class").and_then(|v| v.as_str()).unwrap_or("unknown")
+            finding
+                .get("class")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
         );
         println!(
             "  Severity:  {}",
-            finding.get("severity").and_then(|v| v.as_str()).unwrap_or("unknown")
+            finding
+                .get("severity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
         );
         println!(
             "  Confidence:{}",

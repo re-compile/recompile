@@ -1,5 +1,5 @@
 //! RECC Crashpack Generator
-//! 
+//!
 //! Creates self-contained crashpack artifacts with findings, logs, and repro harnesses.
 
 use serde::{Deserialize, Serialize};
@@ -9,13 +9,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use uuid::Uuid;
 
-pub mod writer;
 pub mod capture;
 pub mod manifest;
+pub mod writer;
 
-pub use writer::*;
 pub use capture::*;
 pub use manifest::*;
+pub use writer::*;
 
 /// Main crashpack structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,7 +41,19 @@ pub struct Finding {
     pub pid: u32,
     pub evidence: Evidence,
     pub escalation: Option<EscalationPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<FindingProvenance>,
     pub related: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FindingProvenance {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_binary_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,14 +224,15 @@ impl Crashpack {
     pub fn generate(&mut self, output_dir: &Path) -> Result<()> {
         // Update manifest with current state
         self.manifest.total_findings = self.findings.len();
-        self.manifest.high_confidence_findings = self.findings
+        self.manifest.high_confidence_findings = self
+            .findings
             .iter()
             .filter(|f| f.confidence == "high" || f.confidence == "certain")
             .count();
 
         // Create crashpack writer
         let writer = CrashpackWriter::new(output_dir)?;
-        
+
         // Write all artifacts
         writer.write_findings(&self.findings)?;
         writer.write_environment(&self.environment)?;
