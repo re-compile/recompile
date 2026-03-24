@@ -147,8 +147,8 @@ This is now a real CLI shape and no longer tied to one example.
 ### Issue #8: `recc` Is Not Yet A Reliable Native Wrapper
 
 **Location**: `recompile/recc/src/main.rs`  
-**Status**: Open  
-**Severity**: High
+**Status**: Deferred
+**Severity**: Medium
 
 `recc` currently:
 
@@ -159,7 +159,7 @@ Relevant code:
 - compiler detection at `recompile/recc/src/main.rs:61`
 - linker flag injection at `recompile/recc/src/main.rs:30`
 
-This already failed in local validation on macOS, and it needs to be made Linux-native correct before it can be trusted as the default wrapper path.
+This is still incomplete, but it is no longer on the critical path for the Linux-native MVP. The supported workflow is currently `rerun` against already-built Linux binaries. `recc` should be revisited only after the native runtime, crashpack, and escalation path are clean.
 
 ### Issue #9: Symbolizer Logic And Tests Are Not Sound
 

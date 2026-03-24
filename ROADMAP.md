@@ -38,7 +38,6 @@ Before adding features, the system needs to be made consistent and modular.
 
 ### Acceptance Criteria
 
-- `recc` can compile binaries correctly on Linux
 - `rerun run --native <binary>` works for all three goldens
 - Findings persist canonically as `findings.json`
 - Streaming/debug lines stay in `re-findings.jsonl` only
@@ -89,6 +88,7 @@ Before adding features, the system needs to be made consistent and modular.
 - Rust agent
 - macOS-first development
 - VM parity
+- `recc` as a required compile-wrapper path
 - LSP/MCP work
 - CI hardening
 - new detection classes
@@ -106,6 +106,7 @@ Before adding features, the system needs to be made consistent and modular.
 - Stable JSON findings contract
 - Basic crashpack output
 - Minimal but real escalation entry point
+- `recc` optional, not required for the MVP
 
 ### Acceptance Criteria
 
@@ -137,6 +138,7 @@ These should be planned only after the core native contract is stable.
 - VM mode as a first-class workflow
 - macOS support
 - Rust runtime agent
+- `recc` default-wrapper hardening
 - LLVM pass wiring
 - LSP/MCP
 - CI rollout
