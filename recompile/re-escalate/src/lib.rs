@@ -1,22 +1,18 @@
 //! RECC Escalation Runner
-//! 
+//!
 //! Automatically escalates findings to appropriate debugging tools (ASan, TSan, MSan, Valgrind, GDB)
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-use uuid::Uuid;
 
+pub mod config;
 pub mod runner;
 pub mod tools;
-pub mod config;
 
+pub use config::*;
 pub use runner::*;
 pub use tools::*;
-pub use config::*;
 
 /// Escalation result
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,7 +37,7 @@ pub struct EscalationPlan {
 }
 
 /// Finding from the rule engine (re-exported from re-crashpack for consistency)
-pub use re_crashpack::{Finding, Evidence, MemoryEvidence, StackEvidence};
+pub use re_crashpack::{Evidence, Finding, FindingProvenance, MemoryEvidence, StackEvidence};
 
 /// Escalation runner configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

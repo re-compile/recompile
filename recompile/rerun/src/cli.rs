@@ -5,14 +5,16 @@ use clap::ArgMatches;
 use re_crashpack::EscalationPlan as FindingEscalationPlan;
 use re_escalate::{EscalationConfig, EscalationRunner, Finding};
 use serde::Deserialize;
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
 
 use crate::native::run_native;
 
 #[derive(Deserialize)]
 struct NativeRunMetadata {
     binary_path: String,
+    #[serde(default)]
+    source_path: Option<String>,
     #[serde(rename = "args")]
     _args: Vec<String>,
 }
@@ -21,21 +23,30 @@ struct NativeRunMetadata {
 pub fn handle_run_command(matches: &ArgMatches) -> Result<()> {
     let binary = matches.get_one::<String>("binary").unwrap();
     let binary_path = PathBuf::from(binary);
-    
+
     let vm_mode = matches.get_flag("vm");
     let native_mode = !vm_mode;
     let escalate_mode = matches.get_one::<String>("escalate").unwrap();
-    let output_dir = matches.get_one::<String>("output")
+    let output_dir = matches
+        .get_one::<String>("output")
         .map(|s| PathBuf::from(s))
         .unwrap_or_else(|| PathBuf::from("build/crashpack"));
     let symbolizer_tool = matches.get_one::<String>("symbolizer").unwrap();
-    let args: Vec<String> = matches.get_many::<String>("args")
+    let args: Vec<String> = matches
+        .get_many::<String>("args")
         .map(|args| args.map(|s| s.to_string()).collect())
         .unwrap_or_default();
 
     println!("RECC Sentinel v0.1.0");
     println!("Analyzing binary: {}", binary_path.display());
-    println!("Mode: {}", if native_mode { "native" } else { "VM (deferred)" });
+    println!(
+        "Mode: {}",
+        if native_mode {
+            "native"
+        } else {
+            "VM (deferred)"
+        }
+    );
     println!("Escalation: {}", escalate_mode);
     println!("Symbolizer: {}", symbolizer_tool);
     println!("Output: {}", output_dir.display());
@@ -47,9 +58,18 @@ pub fn handle_run_command(matches: &ArgMatches) -> Result<()> {
         ));
     }
 
-    run_native(&binary_path, &output_dir, escalate_mode, symbolizer_tool, &args)?;
+    run_native(
+        &binary_path,
+        &output_dir,
+        escalate_mode,
+        symbolizer_tool,
+        &args,
+    )?;
 
-    println!("Analysis completed. Results saved to: {}", output_dir.display());
+    println!(
+        "Analysis completed. Results saved to: {}",
+        output_dir.display()
+    );
     Ok(())
 }
 
@@ -80,7 +100,7 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
     let mut config = EscalationConfig::default();
     config.output_dir = crashpack_dir.join("escalations").display().to_string();
     config.binary_path = Some(analysis.binary_path.clone());
-    config.source_file = infer_source_file(&analysis.binary_path);
+    config.source_file = analysis.source_path.clone();
 
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
@@ -101,12 +121,18 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
                 println!("Escalating finding {} with tool {}", finding.id, plan.tool);
                 let result = runner.escalate(&finding).await?;
                 if result.success {
-                    println!("✓ Escalation successful: {} ({}ms)", result.tool, result.duration_ms);
+                    println!(
+                        "✓ Escalation successful: {} ({}ms)",
+                        result.tool, result.duration_ms
+                    );
                     if let Some(output_path) = result.output_path {
                         println!("  Output: {}", output_path);
                     }
                 } else {
-                    println!("✗ Escalation failed: {} ({}ms)", result.tool, result.duration_ms);
+                    println!(
+                        "✗ Escalation failed: {} ({}ms)",
+                        result.tool, result.duration_ms
+                    );
                     if let Some(error) = result.error {
                         println!("  Error: {}", error);
                     }
@@ -150,45 +176,32 @@ fn load_findings(path: &PathBuf) -> Result<Vec<Finding>> {
             "{} must contain a JSON array of findings",
             path.display()
         )),
-        Err(error) => Err(anyhow::anyhow!("Failed to parse {}: {}", path.display(), error)),
+        Err(error) => Err(anyhow::anyhow!(
+            "Failed to parse {}: {}",
+            path.display(),
+            error
+        )),
     }
 }
 
 fn load_analysis_metadata(crashpack_dir: &PathBuf) -> Result<NativeRunMetadata> {
     let path = crashpack_dir.join("analysis.json");
-    let content = fs::read_to_string(&path).map_err(|error| {
-        anyhow::anyhow!("Failed to read {}: {}", path.display(), error)
-    })?;
-    serde_json::from_str::<NativeRunMetadata>(&content).map_err(|error| {
-        anyhow::anyhow!("Failed to parse {}: {}", path.display(), error)
-    })
-}
-
-fn infer_source_file(binary_path: &str) -> Option<String> {
-    let binary = PathBuf::from(binary_path);
-    let parent = binary.parent()?;
-    let stem = binary.file_stem()?.to_str()?;
-
-    for extension in ["c", "cc", "cpp", "cxx"] {
-        let candidate = parent.join(format!("{}.{}", stem, extension));
-        if candidate.exists() {
-            return Some(candidate.display().to_string());
-        }
-    }
-
-    None
+    let content = fs::read_to_string(&path)
+        .map_err(|error| anyhow::anyhow!("Failed to read {}: {}", path.display(), error))?;
+    serde_json::from_str::<NativeRunMetadata>(&content)
+        .map_err(|error| anyhow::anyhow!("Failed to parse {}: {}", path.display(), error))
 }
 
 /// Open and display crashpack summary
 fn open_crashpack(path: &str) -> Result<()> {
     let crashpack_path = PathBuf::from(path);
-    
+
     if !crashpack_path.exists() {
         return Err(anyhow::anyhow!("Crashpack not found: {}", path));
     }
 
     println!("Crashpack: {}", crashpack_path.display());
-    
+
     // Check for manifest
     let manifest_path = crashpack_path.join("manifest.json");
     if manifest_path.exists() {
@@ -212,7 +225,7 @@ fn open_crashpack(path: &str) -> Result<()> {
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.file_name().to_string_lossy().to_string())
             .collect();
-        
+
         if !harness_files.is_empty() {
             println!("\nGenerated harnesses:");
             for harness in harness_files {
@@ -227,13 +240,13 @@ fn open_crashpack(path: &str) -> Result<()> {
 /// Validate crashpack structure and contents
 fn validate_crashpack(path: &str) -> Result<()> {
     let crashpack_path = PathBuf::from(path);
-    
+
     if !crashpack_path.exists() {
         return Err(anyhow::anyhow!("Crashpack not found: {}", path));
     }
 
     println!("Validating crashpack: {}", crashpack_path.display());
-    
+
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
@@ -250,26 +263,27 @@ fn validate_crashpack(path: &str) -> Result<()> {
     let manifest_path = crashpack_path.join("manifest.json");
     if manifest_path.exists() {
         match fs::read_to_string(&manifest_path) {
-            Ok(content) => {
-                match serde_json::from_str::<serde_json::Value>(&content) {
-                    Ok(manifest) => {
-                        if let Some(tool_version) = manifest.get("recc_version").or_else(|| manifest.get("tool_version")) {
-                            println!("Tool version: {}", tool_version);
-                        } else {
-                            warnings.push("Manifest missing recc_version");
-                        }
-                        
-                        if let Some(schema_version) = manifest.get("schema_version") {
-                            println!("Schema version: {}", schema_version);
-                        } else {
-                            warnings.push("Manifest missing schema_version");
-                        }
+            Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+                Ok(manifest) => {
+                    if let Some(tool_version) = manifest
+                        .get("recc_version")
+                        .or_else(|| manifest.get("tool_version"))
+                    {
+                        println!("Tool version: {}", tool_version);
+                    } else {
+                        warnings.push("Manifest missing recc_version");
                     }
-                    Err(e) => {
-                        errors.push(format!("Invalid manifest.json: {}", e));
+
+                    if let Some(schema_version) = manifest.get("schema_version") {
+                        println!("Schema version: {}", schema_version);
+                    } else {
+                        warnings.push("Manifest missing schema_version");
                     }
                 }
-            }
+                Err(e) => {
+                    errors.push(format!("Invalid manifest.json: {}", e));
+                }
+            },
             Err(e) => {
                 errors.push(format!("Cannot read manifest.json: {}", e));
             }
@@ -280,20 +294,18 @@ fn validate_crashpack(path: &str) -> Result<()> {
     let findings_path = crashpack_path.join("findings.json");
     if findings_path.exists() {
         match fs::read_to_string(&findings_path) {
-            Ok(content) => {
-                match serde_json::from_str::<serde_json::Value>(&content) {
-                    Ok(findings) => {
-                        if findings.is_array() {
-                            println!("Findings: {} entries", findings.as_array().unwrap().len());
-                        } else {
-                            errors.push("findings.json must be a JSON array".to_string());
-                        }
-                    }
-                    Err(e) => {
-                        errors.push(format!("Invalid findings.json: {}", e));
+            Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+                Ok(findings) => {
+                    if findings.is_array() {
+                        println!("Findings: {} entries", findings.as_array().unwrap().len());
+                    } else {
+                        errors.push("findings.json must be a JSON array".to_string());
                     }
                 }
-            }
+                Err(e) => {
+                    errors.push(format!("Invalid findings.json: {}", e));
+                }
+            },
             Err(e) => {
                 errors.push(format!("Cannot read findings.json: {}", e));
             }
@@ -312,7 +324,7 @@ fn validate_crashpack(path: &str) -> Result<()> {
                 }
             })
             .count();
-        
+
         if harness_count > 0 {
             println!("Harnesses: {} generated", harness_count);
         }
@@ -328,7 +340,7 @@ fn validate_crashpack(path: &str) -> Result<()> {
                 println!("  {}", error);
             }
         }
-        
+
         if !warnings.is_empty() {
             println!("⚠️  Validation warnings:");
             for warning in warnings {
