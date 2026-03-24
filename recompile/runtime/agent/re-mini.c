@@ -121,6 +121,7 @@ static int ustacks_fd = -1;
 static __u32 self_pid = 0;
 static bool memcpy_finding_emitted = false;
 static unsigned free_finding_mask = 0;
+static bool symbolize_debug = false;
 
 #define MAX_TRACKED_PIDS 32
 struct pid_entry { __u32 pid; bool allowed; };
@@ -144,10 +145,14 @@ struct frame_info {
 
 static size_t json_escape(const char *in, char *out, size_t out_sz);
 static bool ensure_pid_allowed(__u32 pid);
+static bool exe_matches_binary(__u32 pid, const char *proc_exe_path);
 static void debug_drop(__u32 pid, const char *reason);
+static void debug_symbolize(const char *fmt, ...);
 static bool already_reported(__u32 pid, __u64 dst);
 static void mark_reported(__u32 pid, __u64 dst);
 static int collect_call_frames(__u32 pid, __s32 stack_id, struct frame_info *frames, int max_frames);
+static struct module_cache *get_module_cache(__u32 pid);
+static void build_module_cache(struct module_cache *cache);
 
 static const struct frame_info *select_primary(const struct frame_info *frames, int count)
 {
@@ -167,6 +172,28 @@ static const struct frame_info *select_primary(const struct frame_info *frames, 
     if (!primary && count > 0)
         primary = &frames[0];
     return primary;
+}
+
+static bool frame_has_user_source(const struct frame_info *frame)
+{
+    if (!frame || !frame->has_symbol || !frame->file[0])
+        return false;
+    return strstr(frame->file, "/usr/") == NULL;
+}
+
+static const struct frame_info *choose_primary_frame(
+    const struct frame_info *call_primary,
+    const struct frame_info *alloc_primary)
+{
+    if (frame_has_user_source(call_primary))
+        return call_primary;
+    if (frame_has_user_source(alloc_primary))
+        return alloc_primary;
+    if (alloc_primary && alloc_primary->has_symbol)
+        return alloc_primary;
+    if (call_primary && call_primary->has_symbol)
+        return call_primary;
+    return call_primary ? call_primary : alloc_primary;
 }
 
 static void build_stack_json(const struct frame_info *frames, int count, char *out, size_t out_sz)
@@ -261,7 +288,7 @@ static void emit_memcpy_finding(const struct re_sentinel_event *ev,
 {
     const struct frame_info *primary_call = select_primary(call_frames, call_count);
     const struct frame_info *primary_alloc = select_primary(alloc_frames, alloc_count);
-    const struct frame_info *primary = primary_call ? primary_call : primary_alloc;
+    const struct frame_info *primary = choose_primary_frame(primary_call, primary_alloc);
 
     bool known_cap = ev->alloc_size > 0;
     bool hard_overflow = known_cap && ev->len > ev->alloc_size;
@@ -359,7 +386,7 @@ static void emit_free_finding(const struct re_sentinel_event *ev, __u8 status,
 {
     const struct frame_info *primary_call = select_primary(free_frames, free_count);
     const struct frame_info *primary_alloc = select_primary(alloc_frames, alloc_count);
-    const struct frame_info *primary = primary_call ? primary_call : primary_alloc;
+    const struct frame_info *primary = choose_primary_frame(primary_call, primary_alloc);
 
     const char *kind = (status == RE_SENTINEL_FREE_DOUBLE) ? "double_free" : "invalid_free";
 
@@ -693,6 +720,7 @@ static int reported_count = 0;
 struct module_range {
     __u64 start;
     __u64 end;
+    __u64 file_offset;
     char path[PATH_MAX];
 };
 
@@ -705,6 +733,40 @@ struct module_cache {
 
 static struct module_cache module_caches[MAX_TRACKED_PIDS];
 
+static void snapshot_module_cache(__u32 pid)
+{
+    struct module_cache *cache = get_module_cache(pid);
+    if (!cache)
+        return;
+    if (!cache->built)
+        build_module_cache(cache);
+}
+
+static void maybe_snapshot_target_modules(void)
+{
+    if (target_pid <= 0 || !binary_path)
+        return;
+
+    struct module_cache *cache = get_module_cache((__u32)target_pid);
+    if (!cache || cache->built)
+        return;
+
+    char link_path[64];
+    snprintf(link_path, sizeof(link_path), "/proc/%u/exe", (__u32)target_pid);
+    if (exe_matches_binary((__u32)target_pid, link_path)) {
+        build_module_cache(cache);
+        if (cache->built)
+            debug_symbolize("snapshotted modules pid=%u ranges=%d", (__u32)target_pid, cache->count);
+    }
+}
+
+static bool pid_still_alive(pid_t pid)
+{
+    if (pid <= 0)
+        return false;
+    return kill(pid, 0) == 0 || errno == EPERM;
+}
+
 static void debug_drop(__u32 pid, const char *reason)
 {
     if (reason && strcmp(reason, last_drop_reason) == 0)
@@ -714,6 +776,25 @@ static void debug_drop(__u32 pid, const char *reason)
     else
         last_drop_reason[0] = '\0';
     log_line("drop pid=%u: %s", pid, reason ? reason : "");
+}
+
+static void debug_symbolize(const char *fmt, ...)
+{
+    if (!symbolize_debug)
+        return;
+
+    va_list ap;
+    va_start(ap, fmt);
+    if (out_fd >= 0) {
+        dprintf(out_fd, "RE:SYMBOLIZE: ");
+        vdprintf(out_fd, fmt, ap);
+        dprintf(out_fd, "\n");
+    } else {
+        fprintf(stderr, "RE:SYMBOLIZE: ");
+        vfprintf(stderr, fmt, ap);
+        fputc('\n', stderr);
+    }
+    va_end(ap);
 }
 
 static int attach_uprobes_for_object(struct bpf_object *obj, const char *libc_path,
@@ -865,6 +946,7 @@ static bool ensure_pid_allowed(__u32 pid)
     if (target_pid > 0) {
         if (pid == (__u32)target_pid) {
             entry->allowed = true;
+            snapshot_module_cache(pid);
             return true;
         }
 
@@ -894,6 +976,7 @@ static bool ensure_pid_allowed(__u32 pid)
     snprintf(link_path, sizeof(link_path), "/proc/%u/exe", pid);
     if (exe_matches_binary(pid, link_path)) {
         entry->allowed = true;
+        snapshot_module_cache(pid);
         return true;
     }
 
@@ -923,10 +1006,10 @@ static void build_module_cache(struct module_cache *cache)
     char path[64];
     snprintf(path, sizeof(path), "/proc/%u/maps", cache->pid);
     FILE *fp = fopen(path, "r");
-    if (!fp) {
-        cache->built = true;
+    if (!fp)
         return;
-    }
+
+    cache->count = 0;
 
     char line[512];
     while (fgets(line, sizeof(line), fp)) {
@@ -941,6 +1024,7 @@ static void build_module_cache(struct module_cache *cache)
         if (cache->count >= (int)(sizeof(cache->ranges)/sizeof(cache->ranges[0]))) continue;
         cache->ranges[cache->count].start = start;
         cache->ranges[cache->count].end = end;
+        cache->ranges[cache->count].file_offset = offset;
         cache->ranges[cache->count].path[0] = '\0';
         if (scanned == 7) {
             strncpy(cache->ranges[cache->count].path, map_path, sizeof(cache->ranges[cache->count].path) - 1);
@@ -963,7 +1047,7 @@ static int find_module_for_addr(__u32 pid, __u64 addr, char *path_out, size_t pa
                 strncpy(path_out, p, path_sz - 1);
                 path_out[path_sz - 1] = '\0';
             }
-            if (base_out) *base_out = cache->ranges[i].start;
+            if (base_out) *base_out = cache->ranges[i].start - cache->ranges[i].file_offset;
             return 1;
         }
     }
@@ -1045,6 +1129,7 @@ static bool symbolize_address(__u32 pid, __u64 addr, struct frame_info *out)
     char module[PATH_MAX];
     __u64 base = 0;
     if (!find_module_for_addr(pid, addr, module, sizeof(module), &base)) {
+        debug_symbolize("no module pid=%u addr=0x%llx", pid, (unsigned long long)addr);
         out->address = addr;
         snprintf(out->summary, sizeof(out->summary), "0x%llx", (unsigned long long)addr);
         return false;
@@ -1057,6 +1142,7 @@ static bool symbolize_address(__u32 pid, __u64 addr, struct frame_info *out)
     // Use fork/exec to avoid shell injection with untrusted module paths
     FILE *fp = run_symbolizer(module, out->offset);
     if (!fp) {
+        debug_symbolize("spawn failed module=%s offset=0x%llx", module, (unsigned long long)out->offset);
         snprintf(out->summary, sizeof(out->summary), "%s+0x%llx", module, (unsigned long long)out->offset);
         return false;
     }
@@ -1064,6 +1150,7 @@ static bool symbolize_address(__u32 pid, __u64 addr, struct frame_info *out)
     char func[256] = {0};
     char loc[256] = {0};
     if (!fgets(func, sizeof(func), fp) || !fgets(loc, sizeof(loc), fp)) {
+        debug_symbolize("empty output module=%s offset=0x%llx", module, (unsigned long long)out->offset);
         fclose(fp);
         // Reap child process
         while (wait(NULL) > 0);
@@ -1107,6 +1194,14 @@ static bool symbolize_address(__u32 pid, __u64 addr, struct frame_info *out)
         out->has_symbol = false;
     else
         out->has_symbol = true;
+
+    if (!out->has_symbol) {
+        debug_symbolize("unknown symbol module=%s offset=0x%llx func=%s loc=%s",
+            module,
+            (unsigned long long)out->offset,
+            func[0] ? func : "<empty>",
+            loc[0] ? loc : "<empty>");
+    }
 
     if (out->has_symbol) {
         snprintf(out->summary, sizeof(out->summary), "%s (%s:%d)",
@@ -1208,6 +1303,7 @@ int main(int argc, char **argv){
     if (!obj_path){ usage(argv[0]); return 1; }
 
     self_pid = (__u32)getpid();
+    symbolize_debug = getenv("RE_SYMBOLIZE_DEBUG") != NULL;
 
     // Setup output: use specified path, or stdout if not specified
     if (out_path) {
@@ -1432,6 +1528,14 @@ int main(int argc, char **argv){
 
     signal(SIGINT, on_sig); signal(SIGTERM, on_sig);
     while (!stop) {
+        maybe_snapshot_target_modules();
+        if (target_pid > 0) {
+            struct module_cache *cache = get_module_cache((__u32)target_pid);
+            if (cache && !cache->built && pid_still_alive(target_pid)) {
+                usleep(5 * 1000);
+                continue;
+            }
+        }
         if (rb) ring_buffer__poll(rb, 250);
         else    usleep(200*1000);
     }

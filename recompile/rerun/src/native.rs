@@ -421,29 +421,37 @@ fn start_target_paused(binary_path: &Path, args: &[String]) -> Result<TargetProc
 
     if pid == 0 {
         unsafe {
-            libc::raise(libc::SIGSTOP);
+            if libc::ptrace(
+                libc::PTRACE_TRACEME,
+                0,
+                std::ptr::null_mut::<libc::c_void>(),
+                std::ptr::null_mut::<libc::c_void>(),
+            ) != 0
+            {
+                libc::_exit(126);
+            }
             libc::execv(binary_cstr.as_ptr(), argv.as_ptr());
             libc::_exit(127);
         }
     }
 
-    wait_for_stop(pid)?;
+    wait_for_exec_stop(pid)?;
     Ok(TargetProcess { pid: pid as u32 })
 }
 
 #[cfg(target_os = "linux")]
-fn wait_for_stop(pid: libc::pid_t) -> Result<()> {
+fn wait_for_exec_stop(pid: libc::pid_t) -> Result<()> {
     loop {
         let mut status = 0;
-        let rc = unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) };
+        let rc = unsafe { libc::waitpid(pid, &mut status, 0) };
         if rc == pid {
-            if unsafe { libc::WIFSTOPPED(status) } {
+            if libc::WIFSTOPPED(status) {
                 return Ok(());
             }
 
-            if unsafe { libc::WIFEXITED(status) || libc::WIFSIGNALED(status) } {
+            if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
                 return Err(anyhow::anyhow!(
-                    "Target {} exited before attach: {}",
+                    "Target {} exited before post-exec stop: {}",
                     pid,
                     ExitStatus::from_raw(status)
                 ));
@@ -466,7 +474,14 @@ fn wait_for_stop(pid: libc::pid_t) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn resume_target(pid: u32) -> Result<()> {
-    let rc = unsafe { libc::kill(pid as i32, libc::SIGCONT) };
+    let rc = unsafe {
+        libc::ptrace(
+            libc::PTRACE_DETACH,
+            pid as i32,
+            std::ptr::null_mut::<libc::c_void>(),
+            std::ptr::null_mut::<libc::c_void>(),
+        )
+    };
     if rc != 0 {
         return Err(anyhow::anyhow!(
             "Failed to resume target {}: {}",
