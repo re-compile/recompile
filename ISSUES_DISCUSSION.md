@@ -1,333 +1,154 @@
 # re:compile Issues Discussion
 
-*Updated after codebase audit and validation run. This document is for planning, not as a claim that all items below are already fixed.*
+*Updated after the Linux-native stabilization pass and Docker validation of the three goldens.*
 
 ---
 
 ## Summary
 
-The codebase is not blocked by the same set of issues it had earlier.
+The old blockers are no longer the main story.
 
-Several previously reported `re-mini.c` problems have already been fixed. The larger problem now is **integration correctness**:
+The active Linux-native path is now working on the supported Docker flow:
 
-- contracts do not line up across crates
-- native and VM paths expect different output shapes
-- escalation and crashpack logic still contain hardcoded example assumptions
-- some “production” binaries are still demo/test drivers
+- `memcpy_overflow` -> `heap_overflow`
+- `double_free` -> `double_free`
+- `invalid_free` -> `invalid_free`
 
-The practical priority is:
+The remaining work is mostly **release-candidate cleanup**, not broad architecture repair.
 
-1. native Linux stabilization
-2. contract cleanup
-3. de-hardcoding
-4. only then feature work
+What still matters now:
+
+1. keep the Docker-native workflow explicit and repeatable
+2. add regression coverage for the three goldens
+3. remove stale code and warnings from active crates
+4. keep symbolization good enough for user-visible primary locations
 
 ---
 
-## Part 1: Still-Open Blocking Issues
+## Part 1: Current Issues And Constraints
 
-These are the issues that currently matter most for the Linux-native MVP.
+### Issue #1: Docker Native Requires Shared PID Namespace
 
-### Issue #1: Docker Native Runs Need A Shared PID Namespace
+**Location**: `recompile/rerun/src/native.rs`, `recompile/runtime/agent/re-mini.c`
+**Status**: Known constraint
+**Severity**: High operationally
 
-**Location**: `recompile/runtime/agent/re-mini.c`, `recompile/runtime/bpf/*.bpf.c`  
-**Status**: Open  
-**Severity**: High
+The supported native Docker flow requires `--privileged --pid=host`.
 
-The current Linux-native path is now working for the three goldens in a host-native
-arm64 Docker container, but only when the container shares the PID namespace with
-the traced process.
+Without a shared PID namespace:
 
-Observed during validation:
+- the launched target PID seen by `rerun` and the kernel-visible PID seen by BPF events diverge
+- PID-scoped filtering drops the real events
+- the analysis can appear to succeed while producing no findings
 
-- with the default container PID namespace, `rerun` launches a target with one PID
-  while BPF events arrive with a different kernel-visible PID
-- `re-mini --pid <pid>` then drops the real target events because `/proc/<kernel-pid>`
-  is not visible inside the container namespace
-- running Docker with `--privileged --pid=host` resolves the mismatch and the three
-  goldens now emit differentiated findings
+This is no longer a hidden correctness bug. It is now a documented support constraint and the code errors early in the unsupported case.
 
-This is now an operational/documentation issue more than a probe-attachment crash.
-The supported Docker-native invocation needs to make the shared PID namespace explicit.
+### Issue #2: `invalid_free` Source Location May Still Be Missing
 
-### Issue #2: Readlink Race In PID Validation
-
-**Location**: `recompile/runtime/agent/re-mini.c`  
-**Status**: Open  
-**Severity**: High
-
-`re-mini` still validates filtered PIDs by reading `/proc/<pid>/exe`. If the process exits quickly, `readlink` fails and the event is dropped.
-
-Relevant code:
-- `ensure_pid_allowed()` at `recompile/runtime/agent/re-mini.c:803`
-- `readlink()` at `recompile/runtime/agent/re-mini.c:827`
-
-This is still a real source of missed findings for short-lived programs.
-
-### Issue #3: Findings Contract Mismatch Across Components
-
-**Location**: multiple crates  
-**Status**: Open  
-**Severity**: Critical
-
-Different components disagree on what the canonical findings format is.
-
-Examples:
-- `re-mini` appends line-oriented findings to `findings.json` in `recompile/runtime/agent/re-mini.c:224`
-- native mode writes streaming output to `re-findings.jsonl` in `recompile/rerun/src/native.rs:196`
-- crashpack validation expects `findings.json` to parse as object or array in `recompile/rerun/src/cli.rs:172`
-
-Decision now made:
-- canonical persisted format should be `findings.json`
-- `RE:FINDING:` and `re-findings.jsonl` are streaming/debug only
-
-This needs to be enforced everywhere.
-
-### Issue #4: VM And Native Orchestration Use Different Assumptions
-
-**Location**: `recompile/vm-launcher/src/lib.rs`, `recompile/rerun/src/vm.rs`  
-**Status**: Open  
-**Severity**: High
-
-`vm-launcher` writes raw findings to `build/re-findings.log`, while `rerun` post-processing expects `output_dir/findings.json`.
-
-Relevant code:
-- `build/re-findings.log` at `recompile/vm-launcher/src/lib.rs:78`
-- `last_finding.json` write at `recompile/vm-launcher/src/lib.rs:109`
-- `output_dir/findings.json` expectation at `recompile/rerun/src/vm.rs:85`
-
-This is one reason VM mode is not trustworthy as the primary path.
-
-### Issue #5: `rerun` Uses Broken Subprocess Wiring For Escalation And Harnesses
-
-**Location**: `recompile/rerun/src/vm.rs`  
-**Status**: Open  
-**Severity**: Critical
-
-`rerun` shells out to binaries with arguments they do not support.
-
-Examples:
-- escalation call at `recompile/rerun/src/vm.rs:130`
-- harness call at `recompile/rerun/src/vm.rs:193`
-- escalation binary only supports `<findings_file> [config_file]` at `recompile/re-escalate/src/bin/run_escalation.rs:15`
-
-This should be replaced with direct library integration.
-
-### Issue #6: Escalation Is Hardcoded To Example Names
-
-**Location**: `recompile/re-escalate/src/runner.rs`  
-**Status**: Open  
-**Severity**: High
-
-Escalation resolves source files and binaries by interpolating `finding.class` into paths like `examples/<class>.c`.
-
-Relevant code:
-- source lookup at `recompile/re-escalate/src/runner.rs:203`
-- binary lookup at `recompile/re-escalate/src/runner.rs:225`
-
-This is not modular and breaks immediately for real binaries or even the current goldens (`heap_overflow` is not a filename).
-
-### Issue #7: Crashpack Generation Still Assumes A Specific Example Binary
-
-**Location**: `recompile/re-crashpack/src/bin/generate_crashpack.rs`  
-**Status**: Fixed  
-**Severity**: Resolved
-
-This was previously hardcoded to analyze `build/examples/invalid_free`.
-
-Current code accepts explicit inputs:
-
-- `<findings_file> <output_dir>`
-- optional `--binary <path>`
-- optional `--console-log <path>`
-- optional `--input <path>`
-
-This is now a real CLI shape and no longer tied to one example.
-
-### Issue #8: `recc` Is Not Yet A Reliable Native Wrapper
-
-**Location**: `recompile/recc/src/main.rs`  
-**Status**: Deferred
+**Location**: `recompile/runtime/agent/re-mini.c`, native Docker arm64 builds
+**Status**: Known limitation
 **Severity**: Medium
 
-`recc` currently:
+After the symbolization and launch fixes:
 
-- prefers `clang++` or `g++` unconditionally
-- injects `-Wl,--export-dynamic`
+- `memcpy_overflow` and `double_free` resolve user-code source paths correctly
+- `invalid_free` still may not resolve beyond a raw binary offset / `_start` frame on the current arm64 Docker build
 
-Relevant code:
-- compiler detection at `recompile/recc/src/main.rs:61`
-- linker flag injection at `recompile/recc/src/main.rs:30`
+This does **not** block the finding class, severity, or provenance. It is a symbol-quality limitation, not a contract or plumbing failure.
 
-This is still incomplete, but it is no longer on the critical path for the Linux-native MVP. The supported workflow is currently `rerun` against already-built Linux binaries. `recc` should be revisited only after the native runtime, crashpack, and escalation path are clean.
+### Issue #3: Active Crates Still Have Warning-Level Stale Code
 
-### Issue #9: Symbolizer Logic And Tests Are Not Sound
+**Location**: `recompile/re-crashpack`, `recompile/re-escalate`, `recompile/re-rules`
+**Status**: Open
+**Severity**: Medium
 
-**Location**: `recompile/re-rules/src/symbolizer.rs`  
-**Status**: Fixed  
-**Severity**: Resolved
+`cargo check` on the active workspace still reports warning-level dead code and unused imports.
 
-This was failing during the initial audit. It has since been repaired and the targeted test suite now passes.
+Examples seen in the current state:
 
-Relevant code:
-- LLVM implementation at `recompile/re-rules/src/symbolizer.rs:177`
-- LLVM single lookup at `recompile/re-rules/src/symbolizer.rs:206`
-- addr2line implementation at `recompile/re-rules/src/symbolizer.rs:301`
-- addr2line single lookup at `recompile/re-rules/src/symbolizer.rs:330`
-- tests at `recompile/re-rules/src/symbolizer.rs:399`
+- unused re-exports/imports in `re-crashpack/src/lib.rs`
+- unused config re-export and parameter in `re-escalate`
+- dead code and unused imports in `re-rules`, especially the test/demo binary path
 
-### Issue #10: Harness Binary Is Still A Demo Driver
+These are not blocking correctness issues, but they still make the supported OSS path look rough.
 
-**Location**: `recompile/re-harness/src/bin/generate_harness.rs`  
-**Status**: Fixed  
-**Severity**: Resolved
+### Issue #4: Regression Coverage Is Still Ad Hoc
 
-This was previously a demo driver. It now accepts a findings file and output directory as explicit inputs.
+**Location**: repo workflow / Docker validation path
+**Status**: Open
+**Severity**: Medium
 
-Relevant code:
-- main function at `recompile/re-harness/src/bin/generate_harness.rs:55`
+The three-golden native path has now been validated manually in Docker, but the regression path is still ad hoc.
 
-It is still not fully wired into the top-level supported flow, but it is no longer a hardcoded `/tmp` demo binary.
+What is missing:
 
-### Issue #11: Docker Bootstrap Is Missing
-
-**Location**: repo root / dev workflow  
-**Status**: Open  
-**Severity**: High
-
-This was true at the start of the audit. It is now partially addressed, but still needs to be treated as a supported workflow and kept in sync with the real runtime.
-
-We do have a partial helper:
-- `scripts/docker-setup.sh`
-
-What changed:
-
-- a repo `Dockerfile` now exists
-- `scripts/docker-setup.sh` now prepares the native workspace automatically
-
-What is still required:
-
-- keep the bootstrap path aligned with the actual supported runtime
-- document the exact container invocation as part of the primary dev flow
-- make `--privileged --pid=host` part of the supported Docker-native command
+- one clearly supported command/script for the three-golden validation pass
+- documentation that treats that pass as the release-candidate regression baseline
 
 ---
 
-## Part 2: Previously Reported Issues That Are Now Fixed
+## Part 2: Issues That Are Now Resolved
 
-These should not continue to drive planning as if they were still open.
+### Resolved: Findings Contract Mismatch Across Components
 
-### Fixed: Single-PID Locking In `re-mini`
+The code now treats:
 
-Old concern: agent locked onto the first PID and dropped the rest.
+- `findings.json` as the canonical persisted format
+- `RE:FINDING:` and `re-findings.jsonl` as streaming/debug only
 
-Current code tracks multiple PIDs:
-- `tracked_pids` at `recompile/runtime/agent/re-mini.c:120`
-- `get_pid_entry()` at `recompile/runtime/agent/re-mini.c:782`
+This is now aligned across the active native/crashpack/escalation flow.
 
-Status: fixed.
+### Resolved: VM And Native Mixed Assumptions In The Supported Path
 
-### Fixed: Hardcoded ARM64 `libc.so.6` In `re-mini`
+VM mode is no longer treated as part of the supported workflow.
 
-Current code now searches common libc paths and detects a usable path at runtime:
-- search paths at `recompile/runtime/agent/re-mini.c:33`
-- detection at `recompile/runtime/agent/re-mini.c:69`
+The stale VM launcher path and related stub/deferred code were removed from the active workspace path, and `rerun` is native-first.
 
-Status: fixed.
+### Resolved: Broken Subprocess Wiring For Escalation And Harnesses
 
-### Fixed: Hardcoded VM Output Path In `re-mini`
+The active path no longer depends on the old VM-era subprocess orchestration.
 
-Current code defaults output to stdout unless `--out` is provided:
-- `out_path` declaration at `recompile/runtime/agent/re-mini.c:113`
+The supported flow now uses direct library wiring in the active native path.
 
-Status: fixed.
+### Resolved: Escalation Guessing Source/Binary Paths From Example Names
 
-### Fixed: `system("mkdir -p ...")` Injection Risk
+Escalation now consumes explicit finding provenance instead of inferring file paths from `finding.class` or binary basenames.
 
-Current code uses `mkdir_p()`:
-- helper at `recompile/runtime/agent/re-mini.c:45`
-- finding emission path at `recompile/runtime/agent/re-mini.c:213`
+### Resolved: Crashpack Generation Assuming One Example Binary
 
-Status: fixed.
+Crashpack generation now accepts real inputs and no longer assumes one fixed example.
 
-### Fixed: `popen()` Symbolizer Injection Risk
+### Resolved: Symbolizer Test Failures In `re-rules`
 
-Current code uses fork/exec for symbolization:
-- `run_symbolizer()` at `recompile/runtime/agent/re-mini.c:933`
+The earlier symbolizer recursion/test failures were repaired and the targeted tests pass.
 
-Status: fixed.
+### Resolved: Demo/Stale Workspace Components In The Active Path
 
-### Fixed: `vmlinux.h` Autogeneration In BPF Makefile
+The following stale or deferred components were removed from the active workspace path:
 
-Current code autogenerates `vmlinux.h` and can fall back to a minimal header:
-- `vmlinux.h` target at `recompile/runtime/bpf/Makefile:55`
-
-Status: fixed.
-
-### Fixed: Hardcoded Crashpack Output Path In `re-mini`
-
-Current code takes `--crashpack` and defaults to `./crashpack`:
-- option help at `recompile/runtime/agent/re-mini.c:1122`
-- arg parse at `recompile/runtime/agent/re-mini.c:1145`
-
-Status: fixed.
+- `vm-launcher`
+- Rust agent stubs
+- VM runtime remnants
+- LSP/MCP stubs
+- stale helper/generated assets tied to removed workflows
 
 ---
 
-## Part 3: Hardcoded Or Hotfixed Areas To Remove
+## Part 3: Recommended Next Order
 
-These are the areas most likely to produce “all goldens report the same thing” or other cooked behavior.
-
-### A. Example-Coupled Escalation
-
-- `recompile/re-escalate/src/runner.rs:206`
-- `recompile/re-escalate/src/runner.rs:228`
-
-This is not robust and can silently route unrelated findings into the wrong file/binary lookup.
-
-### B. Hardcoded Crashpack Example Binary
-
-- `recompile/re-crashpack/src/bin/generate_crashpack.rs:36`
-
-This is direct example coupling.
-
-### C. Stub Agent That Emits A Fake Sample Finding
-
-- `recompile/runtime/agent/src/main.rs:28`
-
-This is not the active runtime path for native work, but it is still misleading and should not be mistaken for production behavior.
-
-### D. Demo Harness Binary Used As If It Were Production
-
-- `recompile/re-harness/src/bin/generate_harness.rs:7`
-
-The library may be useful; the current binary is a demo/test program.
-
-### E. Script Layer With Overlapping “happy path” Assumptions
-
-There are many scripts that appear to validate the system while depending on stale or partial plumbing.
-
-This should be cleaned up only after the native path is stable.
+1. Keep the supported Docker-native invocation explicit everywhere
+2. Add one repeatable regression path for the three goldens
+3. Clean warning-level stale code from active crates
+4. Polish symbolization only where it improves user-visible findings
+5. Then decide what belongs in Phase 2 versus remaining deferred
 
 ---
 
-## Part 4: Recommended Fix Order
+## Part 4: What We Are Explicitly Deferring
 
-1. Canonical findings contract
-2. Native `rerun --native` stabilization for the three goldens
-3. Remove hardcoded example coupling from escalation and crashpack
-4. Replace cargo-in-cargo orchestration with library calls
-5. Fix `recc` wrapper correctness for Linux-native use
-6. Add Docker bootstrap automation
-7. Clean up scripts
-8. Only then move to CI and feature work
-
----
-
-## Part 5: What We Are Explicitly Deferring
-
-- Rust agent
-- macOS-first support
 - VM-first support
-- CI rollout
+- macOS-first support
+- Rust runtime agent
+- `recc` as a required MVP path
+- CI rollout before the regression path is locked
 - broader Phase 2 observability work

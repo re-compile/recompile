@@ -4,14 +4,16 @@
 
 The project is now **Linux-native first**.
 
-We are explicitly **not** treating macOS VM mode as the primary development path anymore. The macOS VM path has too many host/guest mismatches:
+The supported MVP path is:
 
-- Apple clang vs Linux clang
-- Mach-O vs ELF binaries
-- ARM64 guest assumptions leaking into the host workflow
-- cloud-init and QEMU setup overhead obscuring real native progress
+- Linux-native execution inside Docker
+- `rerun run --native <binary>`
+- the C runtime agent at `recompile/runtime/agent/re-mini.c`
+- canonical persisted output in `findings.json`
 
-The immediate goal is a **real native Linux MVP running inside Docker on Linux** with the three goldens:
+We are explicitly **not** treating VM mode, macOS-first development, or the Rust agent as part of the current delivery path.
+
+The validated goldens are:
 
 - `memcpy_overflow`
 - `double_free`
@@ -21,87 +23,49 @@ The immediate goal is a **real native Linux MVP running inside Docker on Linux**
 
 ## Principles
 
-Before adding features, the system needs to be made consistent and modular.
+Before adding features, keep the core path modular and honest.
 
 - No hardcoded golden-specific behavior
 - No cargo-in-cargo runtime orchestration
-- No “test passes because paths happen to line up” integrations
 - One canonical persisted findings format
-- One supported dev path for the MVP
+- One supported native workflow for the MVP
+- Planning docs must match what the repo actually does
 
 ---
 
 ## Phase 0 - Native Stabilization
 
-**Status**: Current priority  
-**Goal**: make native Linux deterministic and reproducible before any Phase 2 feature work
+**Status**: Exit criteria met on the supported Docker-native path
+**Goal**: make native Linux deterministic and reproducible before release-candidate work
 
-### Acceptance Criteria
+### Exit Criteria Met
 
 - `rerun run --native <binary>` works for all three goldens
 - Findings persist canonically as `findings.json`
 - Streaming/debug lines stay in `re-findings.jsonl` only
 - Crashpack generation consumes the canonical findings contract
-- No hardcoded mapping to one example binary or one example source file
+- Escalation uses explicit provenance instead of example-name guessing
+- No known golden-specific hardcoding remains in the active runtime path
 - Native workflow works in Docker with one bootstrap path and shared PID namespace (`--privileged --pid=host`)
+- libc uprobes no longer crash the validated native golden runs
 
-### Work Items
+### Notes
 
-1. **Canonicalize findings contracts**
-   - Persist `findings.json` as the canonical JSON array
-   - Treat `RE:FINDING:` lines and `re-findings.jsonl` as streaming/debug only
-   - Make native, crashpack, escalation, and validation consume the same schema
-
-2. **Stabilize native execution path**
-   - Make `rerun --native` the primary supported path
-   - Validate the C agent (`re-mini`) as the only runtime agent for now
-   - Ensure no event-routing assumptions depend on VM-only paths
-
-3. **Remove hardcoded example coupling**
-   - Eliminate class-to-example path assumptions in escalation
-   - Eliminate hardcoded crashpack binary assumptions
-   - Remove stub/demo binaries from runtime code paths
-
-4. **Repair integration plumbing**
-   - Replace cargo-in-cargo subprocess orchestration with direct library wiring
-   - Implement `rerun escalate` properly
-   - Align crashpack generation, escalation, and harness generation around shared inputs
-
-5. **Fix correctness bugs exposed by tests**
-   - Fix symbolizer test failure
-   - Fix schema/format mismatches
-   - Fix any cases where all goldens converge to the same finding due to bad plumbing
-
-6. **Docker bootstrap**
-   - Add a supported Docker image / bootstrap path
-   - Container startup should install the required Linux/BPF toolchain and prepare the workspace automatically
-   - Document one command to get from container boot to runnable native workflow
-   - Make the Docker-native PID namespace requirement explicit
-
-7. **Repair libc uprobe stability**
-   - Validate that attaching to `malloc`, `calloc`, `realloc`, `free`, and `memcpy` does not crash traced processes
-   - Eliminate any brittle symbol/offset attachment logic
-   - Do not accept a native MVP until the three goldens produce differentiated findings without probe-induced crashes
-
-### Non-Goals In Phase 0
-
-- Rust agent
-- macOS-first development
-- VM parity
-- `recc` as a required compile-wrapper path
-- LSP/MCP work
-- CI hardening
-- new detection classes
+- User-code source locations now resolve for the useful cases (`memcpy_overflow`, `double_free`).
+- `invalid_free` still may not resolve to a user source file on the current arm64 Docker build, but the finding class and provenance are correct.
+- VM mode, Rust agent, and `recc` are not part of this phase gate.
 
 ---
 
 ## Phase 1 - Native MVP Release Candidate
 
-**Goal**: a small but honest OSS release candidate
+**Status**: Current priority
+**Goal**: turn the working native path into a small but honest OSS release candidate
 
 ### Scope
 
 - Native Linux only
+- Docker-native workflow as the supported dev/test path
 - Three validated goldens
 - Stable JSON findings contract
 - Basic crashpack output
@@ -110,26 +74,47 @@ Before adding features, the system needs to be made consistent and modular.
 
 ### Acceptance Criteria
 
-- Docker-native setup is documented and repeatable
-- The three goldens produce the correct finding classes
-- There is no known golden-specific hardcoding in the runtime path
-- Docs match actual behavior
+- Docs match actual behavior and the supported Docker invocation
+- The three goldens produce the correct finding classes in the supported container flow
+- Findings include explicit provenance and are consumable by escalation/crashpack without guessing
+- There is no known golden-specific hardcoding in the active path
+- The active crates and scripts are trimmed enough that the supported workflow is obvious
+
+### Current Work Items
+
+1. **Lock the supported Docker-native workflow**
+   - keep `Dockerfile`, bootstrap script, and docs aligned
+   - make the `--privileged --pid=host` requirement impossible to miss
+
+2. **Add regression coverage for the three goldens**
+   - one repeatable validation path for `memcpy_overflow`, `double_free`, and `invalid_free`
+   - keep this lightweight for now; CI can follow later
+
+3. **Clean the active path**
+   - remove or trim remaining stale code and warnings in active crates
+   - keep the supported workflow obvious to OSS users
+
+4. **Polish symbolization where it matters**
+   - keep user-code primary locations strong
+   - treat unresolved libc/system frames as secondary unless they break findings quality
+
+5. **Prepare release-candidate documentation**
+   - make quickstart, architecture, and roadmap agree on the real supported path
 
 ---
 
 ## Phase 2 - Feature Expansion
 
-Only start this once Phase 0 and Phase 1 are stable.
+Only start this after the Phase 1 release candidate is stable.
 
 ### Candidate Work
 
-- Use-after-free improvements
-- Memory leak detection
+- use-after-free improvements
+- memory leak detection
 - FD leak detection
-- Better symbolization
-- Better escalation adapters
-
-These should be planned only after the core native contract is stable.
+- better symbolization beyond primary user frames
+- better escalation adapters
+- `recc` hardening and LLVM pass wiring
 
 ---
 
@@ -138,8 +123,7 @@ These should be planned only after the core native contract is stable.
 - VM mode as a first-class workflow
 - macOS support
 - Rust runtime agent
-- `recc` default-wrapper hardening
-- LLVM pass wiring
+- `recc` as a required compile-wrapper path
 - LSP/MCP
 - CI rollout
 - broader observability features
@@ -148,10 +132,8 @@ These should be planned only after the core native contract is stable.
 
 ## Immediate Execution Order
 
-1. Canonical findings contract
-2. Native path stabilization for the three goldens
-3. Repair libc uprobe stability
-4. Remove hardcoded/example-specific behavior
-5. Fix crashpack/escalation/harness plumbing
-6. Add Docker bootstrap automation
-7. Then document and test
+1. Lock the Docker-native release-candidate workflow in docs and scripts
+2. Add a repeatable native regression path for the three goldens
+3. Remove remaining stale code and warnings in active crates
+4. Polish symbolization only where it improves user-visible findings quality
+5. Then decide what enters Phase 2
