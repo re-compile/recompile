@@ -10,6 +10,7 @@
 - Findings are normalized into canonical `findings.json` arrays while debug output stays in `re-findings.jsonl`.
 - Phase 1 now has a canonical regression entry point: `recompile/scripts/validate-phase1.sh` and `make phase1`.
 - Default bootstrap/toolchain helper paths now build only the active Phase 1 crates.
+- Active-path workspace `cargo check` is now clean for the supported Phase 1 crates.
 
 ### Fixed
 - PID-scoped native runs no longer depend on the old shell-wrapper launch path.

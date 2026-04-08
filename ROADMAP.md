@@ -59,7 +59,7 @@ Before adding features, keep the core path modular and honest.
 
 ## Phase 1 - Native MVP Release Candidate
 
-**Status**: Current priority
+**Status**: In progress; baseline and cleanup slices landed
 **Goal**: turn the working native path into a small but honest OSS release candidate
 
 ### Scope
@@ -80,27 +80,31 @@ Before adding features, keep the core path modular and honest.
 - There is no known golden-specific hardcoding in the active path
 - The active crates and scripts are trimmed enough that the supported workflow is obvious
 
+### Progress So Far
+
+- canonical regression path exists: `recompile/scripts/validate-phase1.sh`
+- equivalent make target exists: `cd recompile && make phase1`
+- active-path `cargo check` is clean for `rerun`, `re-escalate`, `re-crashpack`, `re-harness`, and `re-rules`
+- bootstrap/docs/scripts now align around the supported Docker-native path
+- the remaining limitation is symbol quality for `invalid_free` on the current arm64 Docker build, not core pipeline correctness
+
 ### Current Work Items
 
-1. **Lock the supported Docker-native workflow**
-   - keep `Dockerfile`, bootstrap script, and docs aligned
-   - make the `--privileged --pid=host` requirement impossible to miss
+1. **Keep the baseline honest**
+   - keep `recompile/scripts/validate-phase1.sh` and `make phase1` passing
+   - do not reintroduce parallel happy-path scripts that drift from the canonical baseline
 
-2. **Add regression coverage for the three goldens**
-   - supported command: `recompile/scripts/validate-phase1.sh`
-   - supported make target: `cd recompile && make phase1`
-   - keep this lightweight for now; CI can follow later
-
-3. **Clean the active path**
-   - remove or trim remaining stale code and warnings in active crates
-   - keep the supported workflow obvious to OSS users
-
-4. **Polish symbolization where it matters**
+2. **Polish symbolization where it matters**
    - keep user-code primary locations strong
    - treat unresolved libc/system frames as secondary unless they break findings quality
 
-5. **Prepare release-candidate documentation**
-   - make quickstart, architecture, and roadmap agree on the real supported path
+3. **Prepare release-candidate documentation**
+   - keep quickstart, architecture, roadmap, and root README aligned
+   - make the Docker requirement and the Linux-only scope impossible to miss
+
+4. **Make the release decision**
+   - if no new correctness regressions appear, Phase 1 can be called ready for the current MVP scope
+   - remaining improvements after that should be treated as post-RC polish or Phase 2 input
 
 ---
 
@@ -134,7 +138,7 @@ Only start this after the Phase 1 release candidate is stable.
 ## Immediate Execution Order
 
 1. Keep the Docker-native release-candidate workflow aligned in docs and scripts
-2. Keep `recompile/scripts/validate-phase1.sh` passing for the three goldens
-3. Remove remaining stale code and warnings in active crates
-4. Polish symbolization only where it improves user-visible findings quality
+2. Keep `recompile/scripts/validate-phase1.sh` and `make phase1` passing for the three goldens
+3. Decide whether the current symbolization limitation for `invalid_free` is acceptable for the MVP
+4. If yes, call Phase 1 ready for the current scope
 5. Then decide what enters Phase 2

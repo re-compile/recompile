@@ -20,8 +20,8 @@ What still matters now:
 
 1. keep the Docker-native workflow explicit and repeatable
 2. add regression coverage for the three goldens
-3. remove stale code and warnings from active crates
-4. keep symbolization good enough for user-visible primary locations
+3. keep symbolization good enough for user-visible primary locations
+4. decide whether the remaining arm64 `invalid_free` source-location gap is acceptable for the MVP
 
 ---
 
@@ -56,21 +56,22 @@ After the symbolization and launch fixes:
 
 This does **not** block the finding class, severity, or provenance. It is a symbol-quality limitation, not a contract or plumbing failure.
 
-### Issue #3: Active Crates Still Have Warning-Level Stale Code
+### Issue #3: Phase 1 Readiness Is Mostly A Scope Decision Now
 
-**Location**: `recompile/re-crashpack`, `recompile/re-escalate`, `recompile/re-rules`
+**Location**: roadmap / release criteria
 **Status**: Open
 **Severity**: Medium
 
-`cargo check` on the active workspace still reports warning-level dead code and unused imports.
+The major technical blockers for the current MVP scope are no longer open.
 
-Examples seen in the current state:
+What remains is mostly a release-boundary decision:
 
-- unused re-exports/imports in `re-crashpack/src/lib.rs`
-- unused config re-export and parameter in `re-escalate`
-- dead code and unused imports in `re-rules`, especially the test/demo binary path
+- the baseline regression path exists and passes
+- the active-path crate warnings have been trimmed
+- docs/scripts now point at the same supported flow
+- the main remaining limitation is `invalid_free` source resolution on the current arm64 Docker build
 
-These are not blocking correctness issues, but they still make the supported OSS path look rough.
+For the current MVP definition, this looks acceptable unless we want user-code source paths for all three goldens as a hard gate.
 
 ### Issue #4: Regression Coverage Needs To Stay Canonical
 
@@ -140,9 +141,9 @@ The following stale or deferred components were removed from the active workspac
 ## Part 3: Recommended Next Order
 
 1. Keep the supported Docker-native invocation explicit everywhere
-2. Add one repeatable regression path for the three goldens
-3. Clean warning-level stale code from active crates
-4. Polish symbolization only where it improves user-visible findings
+2. Keep `recompile/scripts/validate-phase1.sh` and `make phase1` as the canonical regression path
+3. Decide whether `invalid_free` source-path resolution is a release gate or post-RC polish
+4. If it is not a release gate, call Phase 1 ready for the current MVP scope
 5. Then decide what belongs in Phase 2 versus remaining deferred
 
 ---

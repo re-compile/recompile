@@ -13,6 +13,7 @@ Current supported path:
 ## Status
 
 Phase 0 is complete on the supported path.
+Phase 1 now has a canonical regression baseline and a cleaned active-path build.
 
 Validated native findings in Docker:
 
@@ -20,7 +21,7 @@ Validated native findings in Docker:
 - `double_free` -> `double_free`
 - `invalid_free` -> `invalid_free`
 
-Current priority is Phase 1: turn the working Linux-native path into a clean MVP release candidate.
+Current priority is Phase 1: finalize the MVP release-candidate decision for the Linux-native path.
 
 ## Supported Environment
 
