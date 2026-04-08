@@ -1,124 +1,128 @@
-# RECC Sentinel Architecture
+# Architecture
 
-## Current Scope
+## Supported Flow
 
-RECC Sentinel is currently a Linux-native runtime analysis toolchain.
+`re:compile` is currently a Linux-native runtime analysis pipeline.
 
-The supported path is:
-- build or provide a Linux ELF binary
-- run `rerun --native`
-- attach the C `re-mini` agent to libc allocation/copy functions
-- persist canonical findings to `findings.json`
-- keep streaming/debug output in `re-findings.jsonl`
-
-VM mode still exists in the repo, but it is deferred and not part of the primary workflow.
-
-## Primary Flow
+Supported execution path:
 
 ```text
-Target Binary
-  -> rerun --native
-  -> re-mini (C agent)
-  -> eBPF uprobes on malloc/calloc/realloc/free/memcpy
-  -> ring buffer events
-  -> finding normalization
+Target ELF binary
+  -> rerun run --native
+  -> paused post-exec target attach
+  -> re-mini (C runtime agent)
+  -> eBPF uprobes on libc allocation/copy functions
+  -> event normalization
   -> findings.json + crashpack artifacts
 ```
+
+The current release path is Docker-native or Linux-host-native. VM mode is deferred.
 
 ## Main Components
 
 ### `rerun/`
 
-Top-level CLI.
+Top-level CLI and native orchestration.
 
-Current responsibilities:
-- native execution orchestration
-- paused-target launch so probes attach before user code runs
-- canonical findings normalization into `findings.json`
-- crashpack manifest/binary artifact generation
+Responsibilities:
+
+- launch the target in a stopped post-exec state
+- start and stop the agent
+- normalize findings into canonical `findings.json`
+- assemble crashpack metadata and binary artifacts
+- invoke escalation and crashpack commands against the canonical output
 
 ### `runtime/agent/re-mini.c`
 
 Current runtime source of truth.
 
 Responsibilities:
+
 - load BPF objects
-- attach uprobes to libc functions
-- filter events to the target process
+- attach uprobes to `malloc`, `calloc`, `realloc`, `free`, and `memcpy`
+- filter to the target process
+- snapshot module mappings for short-lived processes
 - symbolize stack frames when possible
-- emit `RE:FINDING:` debug lines
-- write v1 findings used by the native crashpack flow
+- emit v1 findings and debug lines
 
 ### `runtime/bpf/`
 
-Current BPF programs.
+BPF programs used by the native runtime.
 
-Important objects:
+Current important objects:
+
 - `heap_tracker.bpf.c`
 - `copy_checker.bpf.c`
-- `sentinel_extra.bpf.c` is optional and not part of the Linux-native MVP path
 
-### `re-rules/`
+`sentinel_extra.bpf.c` is optional and not part of the current MVP gate.
 
-Shared configuration and rule-engine logic.
+### `re-crashpack/`
 
-Current role in the repo:
-- config/types support
-- symbolizer support
-- rule-engine groundwork
+Helpers for canonical findings, manifests, and captured binary metadata.
 
 ### `re-escalate/`
 
 Escalation adapters.
 
-Current state:
-- library and CLI shape exist
-- plumbing is still being stabilized around the native findings contract
-- not yet the release gate for the Linux-native MVP
-
-### `re-crashpack/`
-
-Crashpack helpers for findings/manifests/binary metadata.
-
 Current expectation:
-- consume canonical `findings.json`
-- avoid relying on debug-stream formats as primary input
+
+- consume explicit finding provenance
+- avoid guessing paths from example names or finding classes
 
 ### `re-harness/`
 
 Harness generation utilities.
 
-Current state:
-- CLI/library exist
-- not the current blocker
-- should consume the same canonical crashpack inputs as the rest of the pipeline
+This is not the current blocker, but it should continue consuming the same canonical crashpack inputs.
+
+### `re-rules/`
+
+Shared config/types plus symbolization support used by the broader pipeline.
 
 ## Contracts
 
-### Canonical persisted output
+### Canonical persisted contract
+
 - `findings.json`
 - JSON array
-- this is the source of truth for downstream tools
+- source of truth for downstream tools
 
-### Debug/streaming output
+### Debug contract
+
 - `re-findings.jsonl`
 - `RE:FINDING:` lines
-- useful for inspection, not the canonical persisted contract
+- useful for inspection, not canonical input
 
-## Supported Development Environment
+### Provenance
 
-Primary supported environment:
+Findings can include explicit provenance for:
+
+- analyzed binary path
+- original binary path
+- source path when available
+
+Escalation should use provenance first.
+
+## Environment Requirements
+
+Supported environments:
+
 - Linux host, or
 - Docker with `--privileged --pid=host`
 
-Important constraint:
-- native eBPF tracing in Docker must share the host PID namespace
-- otherwise the target PID seen by `rerun` and the kernel-visible PID seen by BPF can diverge
+Why the PID namespace matters:
 
-## Near-Term Priorities
+- `rerun` filters findings to the launched target PID
+- BPF events use the kernel-visible PID
+- without `--pid=host`, those can diverge in Docker and valid events get dropped
 
-1. keep the native Linux path deterministic
-2. remove remaining example-specific plumbing
-3. finish crashpack/escalation integration against canonical findings
-4. improve symbolization quality
-5. keep docs aligned with the actual supported workflow
+## Current Priorities
+
+Phase 0 is complete.
+
+Current Phase 1 priorities:
+
+1. keep the supported Docker-native path obvious and repeatable
+2. add a repeatable regression path for the three goldens
+3. remove remaining warning-level stale code in active crates
+4. polish symbolization only where it materially improves user-visible findings

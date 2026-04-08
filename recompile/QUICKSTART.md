@@ -1,81 +1,10 @@
-# RECC Sentinel Quickstart Guide
+# Quickstart
 
-Get up and running with RECC Sentinel in 5 minutes!
+This quickstart covers the only supported workflow right now: Linux-native analysis, preferably inside Docker.
 
-## 🚀 Prerequisites
+## Option 1: Docker-native
 
-- **Linux** (Ubuntu 20.04+ recommended)
-- **Rust** 1.70+ installed
-- **Git**
-
-### Install Dependencies
-
-**Ubuntu/Debian:**
-```bash
-sudo apt-get update
-sudo apt-get install -y libelf-dev pkg-config clang llvm libbpf-dev
-```
-
-## 📦 Installation
-
-```bash
-# Clone and build
-git clone <repository-url>
-cd recompile
-cargo build --release
-
-# Verify installation
-cargo run -p rerun -- --help
-```
-
-## 🎯 Your First Analysis
-
-### 1. Run a Simple Example
-
-```bash
-# Analyze a heap overflow example (native is the default on Linux)
-cargo run -p rerun -- run examples/memcpy_overflow --output build/my-analysis
-
-# Check the results
-ls build/my-analysis/
-cat build/my-analysis/findings.json | jq .
-```
-
-### 2. View the Crashpack
-
-```bash
-# Open crashpack summary
-cargo run -p rerun -- crashpack open build/my-analysis
-
-# View findings
-cat build/my-analysis/findings.json | jq .
-```
-
-### 3. Run with Escalation
-
-```bash
-# Analyze with automatic escalation to ASan
-cargo run -p rerun -- run examples/double_free --escalate always --output build/double-free-analysis
-
-# Check escalation results
-ls build/double-free-analysis/
-```
-
-## 🔧 Advanced Usage
-
-### Native Mode (Linux Only)
-
-```bash
-# Run with native eBPF explicitly (optional; native is already the default on Linux)
-sudo setcap 'cap_bpf,cap_perfmon+ep' target/release/rerun
-cargo run -p rerun -- run --native examples/memcpy_overflow
-```
-
-### Native Mode In Docker
-
-For Docker-native tracing, start the container with both `--privileged` and
-`--pid=host`. Without the shared PID namespace, BPF events can be emitted with
-kernel-visible PIDs that do not match the container-local target PID.
+From the repo root:
 
 ```bash
 docker build -t recompile-bootstrap:host .
@@ -88,115 +17,49 @@ Inside the container:
 
 ```bash
 cd /workspace/recompile/recompile
-./target/release/rerun run --native build/examples/memcpy_overflow
-```
-
-### Custom Output Directory
-
-```bash
-# Specify custom output location
-cargo run -p rerun -- run examples/invalid_free --output /tmp/my-analysis
-```
-
-### Escalation Options
-
-```bash
-# Use specific tool
-cargo run -p rerun -- escalate build/my-analysis --tool valgrind
-
-# Run escalation on existing findings
-cargo run -p rerun -- escalate build/my-analysis
-```
-
-## 🧪 Test Examples
-
-RECC Sentinel comes with several example programs to test different memory errors:
-
-```bash
-# Build all examples
 ./scripts/build-examples.sh
-
-# Test heap overflow detection
-cargo run -p rerun -- run build/examples/memcpy_overflow
-
-# Test double free detection  
-cargo run -p rerun -- run build/examples/double_free
-
-# Test invalid free detection
-cargo run -p rerun -- run build/examples/invalid_free
+cargo run -p rerun -- run --native build/examples/memcpy_overflow --output build/memcpy-demo
+jq . build/memcpy-demo/findings.json
 ```
 
-## 📊 Understanding Output
+## Option 2: Native Linux host
 
-### Finding Structure
-Each finding contains:
-- **Class**: Type of anomaly (HeapOverflow, DoubleFree, InvalidFree)
-- **Confidence**: Detection confidence (High, Medium, Low)
-- **Severity**: Impact severity (Critical, High, Medium, Low)
-- **Evidence**: Memory addresses, stack traces, call sites
-- **Escalation**: Recommended debugging tool and reasoning
-
-### Crashpack Contents
-- `findings.json`: All detected anomalies
-- `harnesses/`: Minimal repro harnesses
-- `escalation/`: Results from debugging tools
-- `manifest.json`: Build and environment metadata
-- `README.md`: Human-readable summary
-
-## 🚨 Troubleshooting
-
-### Common Issues
-
-**"Permission denied" errors:**
 ```bash
-# Set capabilities for native mode
-sudo setcap 'cap_bpf,cap_perfmon+ep' target/release/rerun
-```
-
-**No findings detected:**
-```bash
-# Check if binary has debug symbols
-file build/examples/memcpy_overflow
-readelf -S build/examples/memcpy_overflow | grep debug
-
-# Rebuild with debug info
+cd recompile
+cargo build --release -p rerun
 ./scripts/build-examples.sh
+./target/release/rerun run --native build/examples/double_free --output build/double-free-demo
+jq . build/double-free-demo/findings.json
 ```
 
-### Debug Mode
+## Golden Regression Set
 
-```bash
-# Enable verbose logging
-RUST_LOG=debug cargo run -p rerun -- run build/examples/memcpy_overflow
+The current baseline goldens are:
 
-# Check individual components
-cargo run -p re-rules --bin test_clustering
-cargo run -p re-escalate --bin run_escalation -- /path/to/finding.json
-```
+- `build/examples/memcpy_overflow`
+- `build/examples/double_free`
+- `build/examples/invalid_free`
 
-## 🎓 Next Steps
+Expected findings:
 
-1. **Read the Architecture**: Check out [ARCHITECTURE.md](ARCHITECTURE.md)
-2. **Configure Rules**: Customize detection in `re.toml`
-3. **Integrate with CI**: Add to your build pipeline
-4. **Extend Rules**: Add custom detection patterns
-5. **Join Community**: Contribute and get support
+- `memcpy_overflow` -> `heap_overflow`
+- `double_free` -> `double_free`
+- `invalid_free` -> `invalid_free`
 
-## 📚 Additional Resources
+## Output Contract
 
-- **Full Documentation**: [README.md](README.md)
-- **Architecture Deep Dive**: [ARCHITECTURE.md](ARCHITECTURE.md)
-- **Configuration Reference**: [re.toml](re.toml)
-- **Example Programs**: [examples/](examples/)
+Canonical persisted output:
 
-## 💡 Tips
+- `findings.json`
 
-- **Start Simple**: Begin with the provided examples
-- **Use Native Docker**: Prefer the documented `--privileged --pid=host` container path
-- **Check Logs**: Always review `console.log` and `re-findings.jsonl`
-- **Validate Results**: Use `crashpack validate` to check output
-- **Performance**: Native mode is faster but requires Linux capabilities
+Debug/streaming output only:
 
----
+- `re-findings.jsonl`
+- `RE:FINDING:` lines in logs
 
-**Ready to dive deeper?** Check out the [full documentation](README.md) and [architecture guide](ARCHITECTURE.md)!
+## Known Constraints
+
+- Docker-native tracing requires `--privileged --pid=host`
+- `invalid_free` may not resolve to a user source file on the current arm64 Docker build even though the finding class is correct
+- VM mode is deferred
+- macOS-first development is deferred
