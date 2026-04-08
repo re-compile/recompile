@@ -50,6 +50,12 @@ Run them together with:
 ./scripts/validate-phase1.sh
 ```
 
+Or from `recompile/`:
+
+```bash
+make phase1
+```
+
 ## Output Contract
 
 Canonical persisted output:

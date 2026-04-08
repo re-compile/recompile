@@ -84,6 +84,12 @@ cargo run -p rerun -- crashpack validate build/invalid-free
 ./scripts/validate-phase1.sh
 ```
 
+Or:
+
+```bash
+make phase1
+```
+
 ## Active Components
 
 - `rerun/` - native CLI/orchestration

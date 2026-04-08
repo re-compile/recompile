@@ -81,6 +81,7 @@ These are not blocking correctness issues, but they still make the supported OSS
 The repo now has a supported regression script:
 
 - `recompile/scripts/validate-phase1.sh`
+- `cd recompile && make phase1`
 
 That fixes the worst ad hoc problem, but the discipline still matters:
 

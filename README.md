@@ -80,3 +80,10 @@ The current release-candidate regression command is:
 cd recompile
 ./scripts/validate-phase1.sh
 ```
+
+Equivalent Make target:
+
+```bash
+cd recompile
+make phase1
+```

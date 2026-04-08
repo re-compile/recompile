@@ -88,6 +88,7 @@ Before adding features, keep the core path modular and honest.
 
 2. **Add regression coverage for the three goldens**
    - supported command: `recompile/scripts/validate-phase1.sh`
+   - supported make target: `cd recompile && make phase1`
    - keep this lightweight for now; CI can follow later
 
 3. **Clean the active path**

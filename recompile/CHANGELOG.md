@@ -8,6 +8,8 @@
 - `rerun --native` now launches the target in a stopped state so probes attach before execution continues.
 - `re-mini` now handles arm64 `memcpy` attachment with a runtime-offset fallback when symbol-name attach fails.
 - Findings are normalized into canonical `findings.json` arrays while debug output stays in `re-findings.jsonl`.
+- Phase 1 now has a canonical regression entry point: `recompile/scripts/validate-phase1.sh` and `make phase1`.
+- Default bootstrap/toolchain helper paths now build only the active Phase 1 crates.
 
 ### Fixed
 - PID-scoped native runs no longer depend on the old shell-wrapper launch path.
