@@ -606,7 +606,7 @@ impl GdbTool {
     }
 
     /// Generate dynamic GDB script based on finding type
-    fn generate_gdb_script(&self, binary_path: &Path) -> Result<String> {
+    fn generate_gdb_script(&self, _binary_path: &Path) -> Result<String> {
         let mut script = Vec::new();
         
         // Basic setup

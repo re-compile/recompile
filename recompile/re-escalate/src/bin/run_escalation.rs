@@ -3,7 +3,6 @@
 //! Runs escalation on findings from a crashpack
 
 use re_escalate::{EscalationConfig, EscalationRunner, Finding};
-use std::path::Path;
 use std::fs;
 
 #[tokio::main]

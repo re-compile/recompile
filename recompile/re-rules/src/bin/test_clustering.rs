@@ -1,8 +1,7 @@
 //! Test script for clustering functionality
 
 use re_rules::{
-    Config, RuleEngine, SentinelEvent, EventType, AnomalyClass, 
-    Confidence, Severity, Finding
+    Config, RuleEngine, SentinelEvent, EventType
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -40,6 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== Final Statistics ===");
     println!("Total events processed: {}", stats.total_events);
     println!("Total findings generated: {}", stats.total_findings);
+    println!("Total findings observed in this run: {}", total_findings);
     println!("Active clusters: {}", stats.active_clusters);
     println!("Findings by class: {:?}", stats.findings_by_class);
     

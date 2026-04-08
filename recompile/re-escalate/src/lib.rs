@@ -10,7 +10,6 @@ pub mod config;
 pub mod runner;
 pub mod tools;
 
-pub use config::*;
 pub use runner::*;
 pub use tools::*;
 
