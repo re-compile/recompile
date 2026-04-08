@@ -17,9 +17,7 @@ Inside the container:
 
 ```bash
 cd /workspace/recompile/recompile
-./scripts/build-examples.sh
-cargo run -p rerun -- run --native build/examples/memcpy_overflow --output build/memcpy-demo
-jq . build/memcpy-demo/findings.json
+./scripts/validate-phase1.sh
 ```
 
 ## Option 2: Native Linux host
@@ -45,6 +43,12 @@ Expected findings:
 - `memcpy_overflow` -> `heap_overflow`
 - `double_free` -> `double_free`
 - `invalid_free` -> `invalid_free`
+
+Run them together with:
+
+```bash
+./scripts/validate-phase1.sh
+```
 
 ## Output Contract
 

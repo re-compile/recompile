@@ -72,18 +72,20 @@ Examples seen in the current state:
 
 These are not blocking correctness issues, but they still make the supported OSS path look rough.
 
-### Issue #4: Regression Coverage Is Still Ad Hoc
+### Issue #4: Regression Coverage Needs To Stay Canonical
 
 **Location**: repo workflow / Docker validation path
-**Status**: Open
+**Status**: Reduced
 **Severity**: Medium
 
-The three-golden native path has now been validated manually in Docker, but the regression path is still ad hoc.
+The repo now has a supported regression script:
 
-What is missing:
+- `recompile/scripts/validate-phase1.sh`
 
-- one clearly supported command/script for the three-golden validation pass
-- documentation that treats that pass as the release-candidate regression baseline
+That fixes the worst ad hoc problem, but the discipline still matters:
+
+- docs should keep pointing at that one command
+- future cleanup should not reintroduce parallel “happy path” scripts that drift from it
 
 ---
 

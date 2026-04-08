@@ -39,9 +39,7 @@ Inside the container:
 
 ```bash
 cd /workspace/recompile/recompile
-./scripts/build-examples.sh
-cargo run -p rerun -- run --native build/examples/memcpy_overflow --output build/demo
-jq . build/demo/findings.json
+./scripts/validate-phase1.sh
 ```
 
 ### Native Linux host
@@ -78,6 +76,12 @@ cargo run -p rerun -- escalate build/invalid-free --tool asan
 
 ```bash
 cargo run -p rerun -- crashpack validate build/invalid-free
+```
+
+### Run the Phase 1 regression baseline
+
+```bash
+./scripts/validate-phase1.sh
 ```
 
 ## Active Components

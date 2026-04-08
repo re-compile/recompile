@@ -46,9 +46,7 @@ Inside the container:
 
 ```bash
 cd /workspace/recompile/recompile
-./scripts/build-examples.sh
-cargo run -p rerun -- run --native build/examples/memcpy_overflow --output build/demo
-jq . build/demo/findings.json
+./scripts/validate-phase1.sh
 ```
 
 ## Repo Layout
@@ -73,3 +71,12 @@ jq . build/demo/findings.json
 - Rust runtime agent
 - `recc` as a required MVP path
 - CI as a release gate
+
+## Phase 1 Baseline
+
+The current release-candidate regression command is:
+
+```bash
+cd recompile
+./scripts/validate-phase1.sh
+```

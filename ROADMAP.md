@@ -87,7 +87,7 @@ Before adding features, keep the core path modular and honest.
    - make the `--privileged --pid=host` requirement impossible to miss
 
 2. **Add regression coverage for the three goldens**
-   - one repeatable validation path for `memcpy_overflow`, `double_free`, and `invalid_free`
+   - supported command: `recompile/scripts/validate-phase1.sh`
    - keep this lightweight for now; CI can follow later
 
 3. **Clean the active path**
@@ -132,8 +132,8 @@ Only start this after the Phase 1 release candidate is stable.
 
 ## Immediate Execution Order
 
-1. Lock the Docker-native release-candidate workflow in docs and scripts
-2. Add a repeatable native regression path for the three goldens
+1. Keep the Docker-native release-candidate workflow aligned in docs and scripts
+2. Keep `recompile/scripts/validate-phase1.sh` passing for the three goldens
 3. Remove remaining stale code and warnings in active crates
 4. Polish symbolization only where it improves user-visible findings quality
 5. Then decide what enters Phase 2
