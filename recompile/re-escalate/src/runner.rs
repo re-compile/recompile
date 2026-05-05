@@ -1,6 +1,8 @@
 //! Escalation runner - orchestrates tool execution
 
-use crate::{EscalationConfig, EscalationError, EscalationResult, Finding, Result};
+use crate::{
+    parse_valgrind_output, EscalationConfig, EscalationError, EscalationResult, Finding, Result,
+};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::process::Command as TokioCommand;
@@ -46,35 +48,22 @@ impl EscalationRunner {
         let start_time = Instant::now();
         let escalation_id = Uuid::new_v4().to_string();
 
+        let duration_start = start_time;
         let result = match escalation_plan.tool.as_str() {
-            "asan" => self.run_asan_escalation(finding, &escalation_id).await,
+            "asan" => self.run_asan_result(finding, &escalation_id).await,
             "valgrind" => self.run_valgrind_escalation(finding, &escalation_id).await,
-            "gdb" => self.run_gdb_escalation(finding, &escalation_id).await,
-            tool => Err(EscalationError::Config(format!(
-                "Unknown escalation tool: {}",
-                tool
-            ))),
+            "gdb" => self.run_gdb_result(finding, &escalation_id).await,
+            tool => Ok(self.failure_result(
+                finding,
+                &escalation_id,
+                tool,
+                false,
+                duration_start.elapsed().as_millis() as u64,
+                format!("Unknown escalation tool: {}", tool),
+            )),
         };
 
-        let duration = start_time.elapsed();
-        let (success, output_path, error) = match result {
-            Ok(path) => (true, Some(path), None),
-            Err(err) => (false, None, Some(err.to_string())),
-        };
-
-        let escalation_result = EscalationResult {
-            id: escalation_id,
-            tool: escalation_plan.tool.clone(),
-            success,
-            duration_ms: duration.as_millis() as u64,
-            output_path,
-            error,
-            findings_detected: Vec::new(), // Will be populated by tool-specific results
-            timestamp: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        };
+        let escalation_result = result?;
 
         // Update cooldown
         self.update_cooldown(&escalation_plan.tool, escalation_plan.cooldown_ms);
@@ -107,6 +96,113 @@ impl EscalationRunner {
             tool.to_string(),
             Instant::now() + std::time::Duration::from_millis(effective_cooldown as u64),
         );
+    }
+
+    async fn run_asan_result(
+        &self,
+        finding: &Finding,
+        escalation_id: &str,
+    ) -> Result<EscalationResult> {
+        let start_time = Instant::now();
+        let result = self.run_asan_escalation(finding, escalation_id).await;
+        let duration_ms = start_time.elapsed().as_millis() as u64;
+
+        match result {
+            Ok(path) => Ok(EscalationResult {
+                id: escalation_id.to_string(),
+                finding_id: finding.id.clone(),
+                tool: "asan".to_string(),
+                success: true,
+                tool_available: true,
+                duration_ms,
+                output_path: Some(path),
+                stdout_path: None,
+                stderr_path: None,
+                report_path: None,
+                command: Vec::new(),
+                exit_code: None,
+                confirmed: false,
+                error: None,
+                findings_detected: Vec::new(),
+                timestamp: unix_timestamp(),
+            }),
+            Err(error) => Ok(self.failure_result(
+                finding,
+                escalation_id,
+                "asan",
+                true,
+                duration_ms,
+                error.to_string(),
+            )),
+        }
+    }
+
+    async fn run_gdb_result(
+        &self,
+        finding: &Finding,
+        escalation_id: &str,
+    ) -> Result<EscalationResult> {
+        let start_time = Instant::now();
+        let result = self.run_gdb_escalation(finding, escalation_id).await;
+        let duration_ms = start_time.elapsed().as_millis() as u64;
+
+        match result {
+            Ok(path) => Ok(EscalationResult {
+                id: escalation_id.to_string(),
+                finding_id: finding.id.clone(),
+                tool: "gdb".to_string(),
+                success: true,
+                tool_available: true,
+                duration_ms,
+                output_path: Some(path),
+                stdout_path: None,
+                stderr_path: None,
+                report_path: None,
+                command: Vec::new(),
+                exit_code: None,
+                confirmed: false,
+                error: None,
+                findings_detected: Vec::new(),
+                timestamp: unix_timestamp(),
+            }),
+            Err(error) => Ok(self.failure_result(
+                finding,
+                escalation_id,
+                "gdb",
+                true,
+                duration_ms,
+                error.to_string(),
+            )),
+        }
+    }
+
+    fn failure_result(
+        &self,
+        finding: &Finding,
+        escalation_id: &str,
+        tool: &str,
+        tool_available: bool,
+        duration_ms: u64,
+        error: String,
+    ) -> EscalationResult {
+        EscalationResult {
+            id: escalation_id.to_string(),
+            finding_id: finding.id.clone(),
+            tool: tool.to_string(),
+            success: false,
+            tool_available,
+            duration_ms,
+            output_path: None,
+            stdout_path: None,
+            stderr_path: None,
+            report_path: None,
+            command: Vec::new(),
+            exit_code: None,
+            confirmed: false,
+            error: Some(error),
+            findings_detected: Vec::new(),
+            timestamp: unix_timestamp(),
+        }
     }
 
     /// Run ASan escalation
@@ -147,9 +243,15 @@ impl EscalationRunner {
         &self,
         finding: &Finding,
         escalation_id: &str,
-    ) -> Result<String> {
+    ) -> Result<EscalationResult> {
+        let start_time = Instant::now();
         if !self.config.tools.valgrind.enabled {
-            return Err(EscalationError::Config(
+            return Ok(self.failure_result(
+                finding,
+                escalation_id,
+                "valgrind",
+                false,
+                start_time.elapsed().as_millis() as u64,
                 "Valgrind escalation is disabled".to_string(),
             ));
         }
@@ -159,30 +261,73 @@ impl EscalationRunner {
 
         // Find the binary for the finding
         let binary_path = self.find_binary(finding)?;
-        let output_file = output_dir.join(format!("valgrind_{}.log", escalation_id));
+        let stdout_file = output_dir.join(format!("valgrind_{}.stdout.log", escalation_id));
+        let stderr_file = output_dir.join(format!("valgrind_{}.stderr.log", escalation_id));
+        let report_file = output_dir.join(format!("valgrind_{}.json", escalation_id));
 
         // Run with Valgrind
         let mut cmd = TokioCommand::new("valgrind");
+        let mut command = vec!["valgrind".to_string()];
         for flag in &self.config.tools.valgrind.flags {
             cmd.arg(flag);
+            command.push(flag.clone());
         }
         cmd.arg(&binary_path);
+        command.push(binary_path.display().to_string());
+        for arg in &self.config.args {
+            cmd.arg(arg);
+            command.push(arg.clone());
+        }
 
         let timeout_duration = TokioDuration::from_millis(self.config.tools.valgrind.timeout_ms);
         let output = timeout(timeout_duration, cmd.output())
             .await
-            .map_err(|_| EscalationError::Timeout("Valgrind execution timed out".to_string()))?
-            .map_err(|e| EscalationError::ToolExecution(e.to_string()))?;
+            .map_err(|_| EscalationError::Timeout("Valgrind execution timed out".to_string()))?;
+
+        let output = match output {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(self.failure_result(
+                    finding,
+                    escalation_id,
+                    "valgrind",
+                    false,
+                    start_time.elapsed().as_millis() as u64,
+                    "valgrind not found in PATH".to_string(),
+                ));
+            }
+            Err(error) => return Err(EscalationError::ToolExecution(error.to_string())),
+        };
 
         let output_str = String::from_utf8_lossy(&output.stdout);
         let error_str = String::from_utf8_lossy(&output.stderr);
-        let full_output = format!("STDOUT:\n{}\nSTDERR:\n{}", output_str, error_str);
+        let report = parse_valgrind_output(&output_str, &error_str);
 
-        // Save output
-        tokio::fs::write(&output_file, &full_output).await?;
+        tokio::fs::write(&stdout_file, output_str.as_bytes()).await?;
+        tokio::fs::write(&stderr_file, error_str.as_bytes()).await?;
+        tokio::fs::write(&report_file, serde_json::to_vec_pretty(&report)?).await?;
 
-        log::info!("Valgrind escalation completed: {}", output_file.display());
-        Ok(output_file.to_string_lossy().to_string())
+        let findings_detected = report.detected_classes();
+
+        log::info!("Valgrind escalation completed: {}", report_file.display());
+        Ok(EscalationResult {
+            id: escalation_id.to_string(),
+            finding_id: finding.id.clone(),
+            tool: "valgrind".to_string(),
+            success: true,
+            tool_available: true,
+            duration_ms: start_time.elapsed().as_millis() as u64,
+            output_path: Some(report_file.display().to_string()),
+            stdout_path: Some(stdout_file.display().to_string()),
+            stderr_path: Some(stderr_file.display().to_string()),
+            report_path: Some(report_file.display().to_string()),
+            command,
+            exit_code: output.status.code(),
+            confirmed: report.confirmed(),
+            error: None,
+            findings_detected,
+            timestamp: unix_timestamp(),
+        })
     }
 
     /// Run GDB escalation
@@ -342,6 +487,13 @@ impl EscalationRunner {
 
         Ok(format!("STDOUT:\n{}\nSTDERR:\n{}", stdout, stderr))
     }
+}
+
+fn unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 #[cfg(test)]

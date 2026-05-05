@@ -3,7 +3,7 @@
 use anyhow::Result;
 use clap::ArgMatches;
 use re_crashpack::EscalationPlan as FindingEscalationPlan;
-use re_escalate::{EscalationConfig, EscalationRunner, Finding};
+use re_escalate::{EscalationConfig, EscalationResult, EscalationRunner, Finding};
 use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;
@@ -16,8 +16,8 @@ struct NativeRunMetadata {
     binary_path: String,
     #[serde(default)]
     source_path: Option<String>,
-    #[serde(rename = "args")]
-    _args: Vec<String>,
+    #[serde(default)]
+    args: Vec<String>,
 }
 
 /// Handle the 'run' command
@@ -102,10 +102,12 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
     config.output_dir = crashpack_dir.join("escalations").display().to_string();
     config.binary_path = Some(analysis.binary_path.clone());
     config.source_file = analysis.source_path.clone();
+    config.args = analysis.args.clone();
 
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async move {
+    let results = runtime.block_on(async move {
         let mut runner = EscalationRunner::new(config);
+        let mut results = Vec::new();
         for mut finding in findings {
             if tool != "all" {
                 let mut plan = finding.escalation.unwrap_or(FindingEscalationPlan {
@@ -126,7 +128,12 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
                         "✓ Escalation successful: {} ({}ms)",
                         result.tool, result.duration_ms
                     );
-                    if let Some(output_path) = result.output_path {
+                    if result.confirmed {
+                        println!("  Confirmed: {}", result.findings_detected.join(", "));
+                    } else {
+                        println!("  Confirmed: no");
+                    }
+                    if let Some(output_path) = &result.output_path {
                         println!("  Output: {}", output_path);
                     }
                 } else {
@@ -134,18 +141,25 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
                         "✗ Escalation failed: {} ({}ms)",
                         result.tool, result.duration_ms
                     );
-                    if let Some(error) = result.error {
+                    if let Some(error) = &result.error {
                         println!("  Error: {}", error);
                     }
                 }
+                results.push(result);
             } else {
                 println!("Skipping {}: no escalation plan", finding.id);
             }
         }
 
-        Ok::<(), anyhow::Error>(())
+        Ok::<Vec<EscalationResult>, anyhow::Error>(results)
     })?;
 
+    let results_path = crashpack_dir.join("escalations").join("results.json");
+    if let Some(parent) = results_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&results_path, serde_json::to_vec_pretty(&results)?)?;
+    println!("Escalation results saved to: {}", results_path.display());
     println!("Escalation analysis completed.");
     Ok(())
 }

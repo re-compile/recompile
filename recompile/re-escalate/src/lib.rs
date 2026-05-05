@@ -9,21 +9,39 @@ use thiserror::Error;
 pub mod config;
 pub mod runner;
 pub mod tools;
+pub mod valgrind;
 
 pub use runner::*;
 pub use tools::*;
+pub use valgrind::*;
 
 /// Escalation result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EscalationResult {
     pub id: String,
+    pub finding_id: String,
     pub tool: String,
     pub success: bool,
+    pub tool_available: bool,
     pub duration_ms: u64,
     pub output_path: Option<String>,
+    pub stdout_path: Option<String>,
+    pub stderr_path: Option<String>,
+    pub report_path: Option<String>,
+    pub command: Vec<String>,
+    pub exit_code: Option<i32>,
+    pub confirmed: bool,
     pub error: Option<String>,
     pub findings_detected: Vec<String>,
     pub timestamp: u64,
+}
+
+/// Parsed escalation evidence from a tool run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EscalationDetection {
+    pub class: String,
+    pub summary: String,
+    pub line: Option<usize>,
 }
 
 /// Escalation plan from a finding
@@ -47,6 +65,8 @@ pub struct EscalationConfig {
     pub output_dir: String,
     pub binary_path: Option<String>,
     pub source_file: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,6 +190,7 @@ impl Default for EscalationConfig {
             output_dir: "build/escalations".to_string(),
             binary_path: None,
             source_file: None,
+            args: Vec::new(),
         }
     }
 }

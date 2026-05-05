@@ -21,7 +21,7 @@ Validated native findings in Docker:
 - `double_free` -> `double_free`
 - `invalid_free` -> `invalid_free`
 
-Current priority is Phase 2 planning after the native MVP gate.
+Current priority is Phase 2: confirm findings with real escalation tools and broaden user-binary coverage.
 
 ## Supported Environment
 
@@ -54,6 +54,12 @@ To smoke-test the bring-your-own-binary path:
 
 ```bash
 make external-smoke
+```
+
+To smoke-test Valgrind confirmation:
+
+```bash
+make escalation-smoke
 ```
 
 ## Repo Layout
@@ -114,4 +120,11 @@ To assert an expected class for one binary:
 
 ```bash
 ./scripts/validate-binary.sh --binary ./my_test --expect-class heap_overflow
+```
+
+To run Valgrind confirmation on an existing crashpack:
+
+```bash
+./target/release/rerun escalate build/my-test --tool valgrind
+jq . build/my-test/escalations/results.json
 ```

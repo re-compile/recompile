@@ -79,6 +79,13 @@ Run it under `rerun`:
 jq . build/my-test/findings.json
 ```
 
+Confirm a finding with Valgrind:
+
+```bash
+./target/release/rerun escalate build/my-test --tool valgrind
+jq . build/my-test/escalations/results.json
+```
+
 Assert an expected class for one binary:
 
 ```bash
@@ -95,6 +102,12 @@ Run the checked user-style samples:
 
 ```bash
 make external-smoke
+```
+
+Run the checked Valgrind escalation smoke:
+
+```bash
+make escalation-smoke
 ```
 
 To inspect the no-finding path:
@@ -118,6 +131,7 @@ Debug/streaming output only:
 ## Known Constraints
 
 - Docker-native tracing requires `--privileged --pid=host`
+- Valgrind confirmation requires `valgrind` in the Docker image or host PATH
 - `invalid_free` may not resolve to a user source file on the current arm64 Docker build even though the finding class is correct
 - VM mode is deferred
 - macOS-first development is deferred
