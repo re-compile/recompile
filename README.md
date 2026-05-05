@@ -112,6 +112,7 @@ make hit-rate
 ```
 
 It writes per-case native and Valgrind escalation outcomes to `build/hit-rate/summary.json`.
+Some Phase 2 classes, such as `use_after_free` and `memory_leak`, are currently Valgrind-first and marked as native-unsupported in that summary.
 
 Golden-only baseline:
 

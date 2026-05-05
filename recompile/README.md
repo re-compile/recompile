@@ -121,7 +121,7 @@ jq . build/hit-rate/summary.json
 ```
 
 The current corpus includes native-confirmed heap/double/invalid-free cases,
-clean negatives, and a Valgrind-first `memory_leak` case.
+clean negatives, and Valgrind-first `use_after_free` and `memory_leak` cases.
 
 For one external binary:
 

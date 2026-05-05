@@ -158,3 +158,8 @@ The summary records:
 - escalation detected classes and TP/TN/FP/FN outcome
 - unsupported native classes when a bug class is intentionally Valgrind-first
 - output directory per case
+
+Current Valgrind-first classes:
+
+- `use_after_free`
+- `memory_leak`
