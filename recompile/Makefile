@@ -1,9 +1,15 @@
-.PHONY: all bpf passes agent toolchain examples phase1
+.PHONY: all bpf passes agent toolchain examples user-samples external-smoke phase1
 
 all: examples
 
 examples:
 	./scripts/build-examples.sh
+
+user-samples:
+	./scripts/build-user-samples.sh
+
+external-smoke:
+	./scripts/validate-user-samples.sh
 
 phase1:
 	./scripts/validate-phase1.sh
