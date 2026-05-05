@@ -78,6 +78,12 @@ fn main() -> Result<()> {
                         .value_name("TOOL")
                         .default_value("all")
                         .help("Escalation tool to use"),
+                )
+                .arg(
+                    Arg::new("check-clean")
+                        .long("check-clean")
+                        .action(ArgAction::SetTrue)
+                        .help("Run the selected escalation tool even when the crashpack has no findings"),
                 ),
         )
         .subcommand(

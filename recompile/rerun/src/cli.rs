@@ -78,6 +78,7 @@ pub fn handle_run_command(matches: &ArgMatches) -> Result<()> {
 pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
     let crashpack_path = matches.get_one::<String>("crashpack").unwrap();
     let tool = matches.get_one::<String>("tool").unwrap();
+    let check_clean = matches.get_flag("check-clean");
     let crashpack_dir = PathBuf::from(crashpack_path);
     let findings_path = crashpack_dir.join("findings.json");
 
@@ -91,18 +92,58 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
         ));
     }
 
-    let findings = load_findings(&findings_path)?;
-    if findings.is_empty() {
-        println!("No findings to escalate.");
-        return Ok(());
-    }
-
     let analysis = load_analysis_metadata(&crashpack_dir)?;
     let mut config = EscalationConfig::default();
     config.output_dir = crashpack_dir.join("escalations").display().to_string();
     config.binary_path = Some(analysis.binary_path.clone());
     config.source_file = analysis.source_path.clone();
     config.args = analysis.args.clone();
+
+    let findings = load_findings(&findings_path)?;
+    if findings.is_empty() {
+        if !check_clean {
+            println!("No findings to escalate.");
+            return Ok(());
+        }
+        if tool == "all" {
+            return Err(anyhow::anyhow!(
+                "--check-clean requires an explicit tool, such as --tool valgrind"
+            ));
+        }
+
+        let runtime = tokio::runtime::Runtime::new()?;
+        let result = runtime.block_on(async move {
+            let mut runner = EscalationRunner::new(config);
+            runner.check_clean_binary(tool).await
+        })?;
+
+        if result.success {
+            println!(
+                "✓ Clean escalation check ran: {} ({}ms)",
+                result.tool, result.duration_ms
+            );
+            if result.confirmed {
+                println!("  Confirmed: {}", result.findings_detected.join(", "));
+            } else {
+                println!("  Confirmed: no");
+            }
+            if let Some(output_path) = &result.output_path {
+                println!("  Output: {}", output_path);
+            }
+        } else {
+            println!(
+                "✗ Clean escalation check failed: {} ({}ms)",
+                result.tool, result.duration_ms
+            );
+            if let Some(error) = &result.error {
+                println!("  Error: {}", error);
+            }
+        }
+
+        write_escalation_results(&crashpack_dir, &[result])?;
+        println!("Escalation analysis completed.");
+        return Ok(());
+    }
 
     let runtime = tokio::runtime::Runtime::new()?;
     let results = runtime.block_on(async move {
@@ -154,13 +195,18 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
         Ok::<Vec<EscalationResult>, anyhow::Error>(results)
     })?;
 
+    write_escalation_results(&crashpack_dir, &results)?;
+    println!("Escalation analysis completed.");
+    Ok(())
+}
+
+fn write_escalation_results(crashpack_dir: &PathBuf, results: &[EscalationResult]) -> Result<()> {
     let results_path = crashpack_dir.join("escalations").join("results.json");
     if let Some(parent) = results_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&results_path, serde_json::to_vec_pretty(&results)?)?;
+    fs::write(&results_path, serde_json::to_vec_pretty(results)?)?;
     println!("Escalation results saved to: {}", results_path.display());
-    println!("Escalation analysis completed.");
     Ok(())
 }
 

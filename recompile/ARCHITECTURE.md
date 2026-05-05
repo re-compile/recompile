@@ -15,6 +15,7 @@ Target ELF binary
   -> event normalization
   -> findings.json + crashpack artifacts
   -> optional rerun escalate <crashpack> --tool valgrind
+  -> optional rerun escalate <clean-crashpack> --tool valgrind --check-clean
   -> escalations/results.json + raw tool logs + parsed tool report
 ```
 
@@ -71,10 +72,11 @@ Current expectation:
 - consume explicit finding provenance
 - avoid guessing paths from example names or finding classes
 - write structured escalation results with command, exit status, raw output paths, parsed report path, and detected classes
+- support explicit clean checks for no-finding crashpacks without inventing a synthetic finding
 
 Current implemented adapter:
 
-- `valgrind` for existing binaries in crashpacks
+- `valgrind` for existing binaries in crashpacks and explicit clean checks
 
 ### `re-harness/`
 
@@ -138,8 +140,7 @@ This runs active Rust checks/tests, the three golden regressions, and user-style
 
 Current Phase 2 candidates:
 
-1. broaden Valgrind coverage beyond the first smoke sample
-2. implement honest ASan support for already-ASan-built binaries or rebuild-aware flows
-3. improve symbolization beyond primary user frames
-4. add broader clean-negative and real-world user-binary regressions
-5. harden `recc` and LLVM pass wiring outside the MVP gate
+1. implement honest ASan support for already-ASan-built binaries or rebuild-aware flows
+2. improve symbolization beyond primary user frames
+3. add broader clean-negative and real-world user-binary regressions
+4. harden `recc` and LLVM pass wiring outside the MVP gate

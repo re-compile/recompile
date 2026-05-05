@@ -71,6 +71,42 @@ impl EscalationRunner {
         Ok(escalation_result)
     }
 
+    /// Run an escalation tool against the configured binary without requiring a finding.
+    pub async fn check_clean_binary(&mut self, tool: &str) -> Result<EscalationResult> {
+        if self.is_in_cooldown(tool) {
+            return Err(EscalationError::Config(format!(
+                "Tool {} is in cooldown",
+                tool
+            )));
+        }
+
+        let escalation_id = Uuid::new_v4().to_string();
+        let start_time = Instant::now();
+        let result = match tool {
+            "valgrind" => self.run_valgrind_clean_check(&escalation_id).await,
+            "asan" | "gdb" => Ok(self.result_failure(
+                "clean-run",
+                &escalation_id,
+                tool,
+                false,
+                start_time.elapsed().as_millis() as u64,
+                format!("Clean checks are not implemented for {}", tool),
+            )),
+            other => Ok(self.result_failure(
+                "clean-run",
+                &escalation_id,
+                other,
+                false,
+                start_time.elapsed().as_millis() as u64,
+                format!("Unknown escalation tool: {}", other),
+            )),
+        };
+
+        let escalation_result = result?;
+        self.update_cooldown(tool, 0);
+        Ok(escalation_result)
+    }
+
     /// Check if a tool is in cooldown
     fn is_in_cooldown(&self, tool: &str) -> bool {
         if let Some(until) = self.cooldowns.get(tool) {
@@ -185,9 +221,28 @@ impl EscalationRunner {
         duration_ms: u64,
         error: String,
     ) -> EscalationResult {
+        self.result_failure(
+            &finding.id,
+            escalation_id,
+            tool,
+            tool_available,
+            duration_ms,
+            error,
+        )
+    }
+
+    fn result_failure(
+        &self,
+        finding_id: &str,
+        escalation_id: &str,
+        tool: &str,
+        tool_available: bool,
+        duration_ms: u64,
+        error: String,
+    ) -> EscalationResult {
         EscalationResult {
             id: escalation_id.to_string(),
-            finding_id: finding.id.clone(),
+            finding_id: finding_id.to_string(),
             tool: tool.to_string(),
             success: false,
             tool_available,
@@ -256,11 +311,51 @@ impl EscalationRunner {
             ));
         }
 
+        // Find the binary for the finding
+        let binary_path = self.find_binary(finding)?;
+        self.run_valgrind_binary(&finding.id, &binary_path, escalation_id, start_time)
+            .await
+    }
+
+    async fn run_valgrind_clean_check(&self, escalation_id: &str) -> Result<EscalationResult> {
+        let start_time = Instant::now();
+        if !self.config.tools.valgrind.enabled {
+            return Ok(self.result_failure(
+                "clean-run",
+                escalation_id,
+                "valgrind",
+                false,
+                start_time.elapsed().as_millis() as u64,
+                "Valgrind escalation is disabled".to_string(),
+            ));
+        }
+
+        let binary_path = self
+            .config
+            .binary_path
+            .as_deref()
+            .map(PathBuf::from)
+            .filter(|path| path.exists())
+            .ok_or_else(|| {
+                EscalationError::Config(
+                    "Clean Valgrind check requires an existing binary_path".to_string(),
+                )
+            })?;
+
+        self.run_valgrind_binary("clean-run", &binary_path, escalation_id, start_time)
+            .await
+    }
+
+    async fn run_valgrind_binary(
+        &self,
+        finding_id: &str,
+        binary_path: &Path,
+        escalation_id: &str,
+        start_time: Instant,
+    ) -> Result<EscalationResult> {
         let output_dir = Path::new(&self.config.output_dir).join("valgrind");
         tokio::fs::create_dir_all(&output_dir).await?;
 
-        // Find the binary for the finding
-        let binary_path = self.find_binary(finding)?;
         let stdout_file = output_dir.join(format!("valgrind_{}.stdout.log", escalation_id));
         let stderr_file = output_dir.join(format!("valgrind_{}.stderr.log", escalation_id));
         let report_file = output_dir.join(format!("valgrind_{}.json", escalation_id));
@@ -287,8 +382,8 @@ impl EscalationRunner {
         let output = match output {
             Ok(output) => output,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(self.failure_result(
-                    finding,
+                return Ok(self.result_failure(
+                    finding_id,
                     escalation_id,
                     "valgrind",
                     false,
@@ -312,7 +407,7 @@ impl EscalationRunner {
         log::info!("Valgrind escalation completed: {}", report_file.display());
         Ok(EscalationResult {
             id: escalation_id.to_string(),
-            finding_id: finding.id.clone(),
+            finding_id: finding_id.to_string(),
             tool: "valgrind".to_string(),
             success: true,
             tool_available: true,

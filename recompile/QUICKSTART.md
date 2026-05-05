@@ -86,6 +86,13 @@ Confirm a finding with Valgrind:
 jq . build/my-test/escalations/results.json
 ```
 
+For a no-finding crashpack, run an explicit clean Valgrind check:
+
+```bash
+./target/release/rerun escalate build/my-clean-test --tool valgrind --check-clean
+jq . build/my-clean-test/escalations/results.json
+```
+
 Assert an expected class for one binary:
 
 ```bash
@@ -109,6 +116,9 @@ Run the checked Valgrind escalation smoke:
 ```bash
 make escalation-smoke
 ```
+
+This validates positive confirmations for the current user-style bug samples
+and clean-negative confirmations for the current clean samples.
 
 To inspect the no-finding path:
 

@@ -26,54 +26,109 @@ printf '[escalation] building rerun release binary\n'
 cargo build --release -p rerun
 runner_path="${project_dir}/target/release/rerun"
 
-output_dir="build/escalation-smoke/copy_overrun_case"
-rm -rf "$output_dir" "${output_dir}.log"
+assert_escalation_result() {
+    local results_path="$1"
+    local binary_name="$2"
+    local expected_class="$3"
 
-./scripts/validate-binary.sh \
-    --binary build/user-samples/copy_overrun_case \
-    --expect-class heap_overflow \
-    --runner "$runner_path" \
-    --output "$output_dir"
-
-printf '[escalation] running valgrind escalation\n'
-"$runner_path" escalate "$output_dir" --tool valgrind
-
-python3 - "$output_dir/escalations/results.json" <<'PY'
+    python3 - "$results_path" "$binary_name" "$expected_class" <<'PY'
 import json
 import pathlib
 import sys
 
 results_path = pathlib.Path(sys.argv[1])
+binary_name = sys.argv[2]
+expected_class = sys.argv[3]
+
 if not results_path.exists():
-    raise SystemExit(f"missing escalation results: {results_path}")
+    raise SystemExit(f"{binary_name}: missing escalation results: {results_path}")
 
 results = json.loads(results_path.read_text())
-if not isinstance(results, list) or not results:
-    raise SystemExit("escalation results must be a non-empty JSON array")
+if not isinstance(results, list) or len(results) != 1:
+    raise SystemExit(f"{binary_name}: expected exactly one escalation result")
 
 result = results[0]
 if result.get("tool") != "valgrind":
-    raise SystemExit(f"expected valgrind result, got {result.get('tool')}")
+    raise SystemExit(f"{binary_name}: expected valgrind result, got {result.get('tool')}")
 if not result.get("tool_available"):
-    raise SystemExit(f"valgrind not available: {result.get('error')}")
+    raise SystemExit(f"{binary_name}: valgrind not available: {result.get('error')}")
 if not result.get("success"):
-    raise SystemExit(f"valgrind escalation failed: {result.get('error')}")
-if not result.get("confirmed"):
-    raise SystemExit("valgrind did not confirm the finding")
-if "heap_overflow" not in result.get("findings_detected", []):
-    raise SystemExit(f"expected heap_overflow confirmation, got {result.get('findings_detected')}")
+    raise SystemExit(f"{binary_name}: valgrind escalation failed: {result.get('error')}")
+
+detected = result.get("findings_detected", [])
+if expected_class == "__none__":
+    if result.get("confirmed"):
+        raise SystemExit(f"{binary_name}: clean sample unexpectedly confirmed {detected}")
+    if detected:
+        raise SystemExit(f"{binary_name}: clean sample unexpectedly detected {detected}")
+else:
+    if not result.get("confirmed"):
+        raise SystemExit(f"{binary_name}: valgrind did not confirm {expected_class}")
+    if expected_class not in detected:
+        raise SystemExit(f"{binary_name}: expected {expected_class}, got {detected}")
 
 for key in ("stdout_path", "stderr_path", "report_path"):
     path = result.get(key)
     if not path or not pathlib.Path(path).exists():
-        raise SystemExit(f"missing {key}: {path}")
+        raise SystemExit(f"{binary_name}: missing {key}: {path}")
 
 print(json.dumps({
+    "binary": binary_name,
     "tool": result.get("tool"),
     "confirmed": result.get("confirmed"),
     "findings_detected": result.get("findings_detected"),
     "report": result.get("report_path"),
 }))
 PY
+}
+
+positive_samples=(
+    "build/user-samples/copy_overrun_case:heap_overflow"
+    "build/user-samples/cache_release_twice:double_free"
+    "build/user-samples/free_stack_slot:invalid_free"
+)
+
+for entry in "${positive_samples[@]}"; do
+    binary_path="${entry%%:*}"
+    expected_class="${entry##*:}"
+    binary_name="$(basename "$binary_path")"
+    output_dir="build/escalation-smoke/${binary_name}"
+
+    ./scripts/validate-binary.sh \
+        --binary "$binary_path" \
+        --expect-class "$expected_class" \
+        --runner "$runner_path" \
+        --output "$output_dir"
+
+    printf '[escalation] running valgrind escalation for %s\n' "$binary_name"
+    "$runner_path" escalate "$output_dir" --tool valgrind
+    assert_escalation_result \
+        "$output_dir/escalations/results.json" \
+        "$binary_name" \
+        "$expected_class"
+done
+
+clean_samples=(
+    "build/user-samples/clean_malloc_free"
+    "build/user-samples/clean_bounded_memcpy"
+)
+
+for binary_path in "${clean_samples[@]}"; do
+    binary_name="$(basename "$binary_path")"
+    output_dir="build/escalation-smoke/${binary_name}"
+
+    ./scripts/validate-binary.sh \
+        --binary "$binary_path" \
+        --expect-none \
+        --runner "$runner_path" \
+        --output "$output_dir"
+
+    printf '[escalation] running clean valgrind check for %s\n' "$binary_name"
+    "$runner_path" escalate "$output_dir" --tool valgrind --check-clean
+    assert_escalation_result \
+        "$output_dir/escalations/results.json" \
+        "$binary_name" \
+        "__none__"
+done
 
 printf '\n[escalation] valgrind escalation smoke passed\n'
