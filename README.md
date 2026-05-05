@@ -13,7 +13,7 @@ Current supported path:
 ## Status
 
 Phase 0 is complete on the supported path.
-Phase 1 now has a canonical regression baseline and a cleaned active-path build.
+Phase 1 is complete for the Linux-native MVP scope.
 
 Validated native findings in Docker:
 
@@ -21,7 +21,7 @@ Validated native findings in Docker:
 - `double_free` -> `double_free`
 - `invalid_free` -> `invalid_free`
 
-Current priority is Phase 1: finalize the MVP release-candidate decision for the Linux-native path.
+Current priority is Phase 2 planning after the native MVP gate.
 
 ## Supported Environment
 
@@ -47,7 +47,7 @@ Inside the container:
 
 ```bash
 cd /workspace/recompile/recompile
-./scripts/validate-phase1.sh
+make rc
 ```
 
 To smoke-test the bring-your-own-binary path:
@@ -79,16 +79,18 @@ make external-smoke
 - `recc` as a required MVP path
 - CI as a release gate
 
-## Phase 1 Baseline
+## Phase 1 RC Gate
 
 The current release-candidate regression command is:
 
 ```bash
 cd recompile
-./scripts/validate-phase1.sh
+make rc
 ```
 
-Equivalent Make target:
+This runs active Rust checks/tests, the three golden regressions, and the user-style external sample suite.
+
+Golden-only baseline:
 
 ```bash
 cd recompile
