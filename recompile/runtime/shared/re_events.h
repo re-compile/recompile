@@ -118,6 +118,8 @@ struct re_sentinel_state {
 /* Shared heap allocation metadata */
 struct re_alloc_key {
     __u32 pid;
+    /* Keep map keys deterministic across BPF programs; implicit padding is key material. */
+    __u32 _pad;
     __u64 addr;
 };
 
