@@ -9,6 +9,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::native::run_native;
+use crate::summary::{print_findings_summary, read_findings};
 
 #[derive(Deserialize)]
 struct NativeRunMetadata {
@@ -206,16 +207,38 @@ fn open_crashpack(path: &str) -> Result<()> {
     let manifest_path = crashpack_path.join("manifest.json");
     if manifest_path.exists() {
         let manifest_content = fs::read_to_string(&manifest_path)?;
-        println!("Manifest found:");
-        println!("{}", manifest_content);
+        let manifest: serde_json::Value = serde_json::from_str(&manifest_content)?;
+        println!("Manifest:");
+        println!(
+            "  Schema:   {}",
+            manifest
+                .get("schema_version")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown")
+        );
+        println!(
+            "  Findings: {}",
+            manifest
+                .get("total_findings")
+                .and_then(|value| value.as_u64())
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        );
+        println!(
+            "  Created:  {}",
+            manifest
+                .get("created_by")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown")
+        );
     }
 
     // Check for findings
     let findings_path = crashpack_path.join("findings.json");
     if findings_path.exists() {
-        let findings_content = fs::read_to_string(&findings_path)?;
         println!("\nFindings:");
-        println!("{}", findings_content);
+        let findings = read_findings(&findings_path)?;
+        print_findings_summary(&findings);
     }
 
     // Check for harnesses

@@ -3,6 +3,7 @@ use clap::{Arg, ArgAction, Command};
 
 mod cli;
 mod native;
+mod summary;
 
 use cli::*;
 
@@ -115,4 +116,3 @@ fn handle_legacy_run(matches: &clap::ArgMatches) -> Result<()> {
     }
     Ok(())
 }
-

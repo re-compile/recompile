@@ -4,12 +4,13 @@
 //! It invokes the C agent (re-mini) to attach probes and monitor the target binary.
 
 use anyhow::{Context, Result};
+use crate::summary::{print_findings_summary, read_findings};
 use re_crashpack::{BinaryInfo, Manifest};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
-use std::fs::{File, OpenOptions};
-use std::io::{BufReader, Write};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
@@ -717,47 +718,8 @@ fn extract_source_path(finding: &Map<String, Value>) -> Option<String> {
 
 /// Display findings from the findings file
 fn display_findings(path: &Path) -> Result<()> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let findings: Vec<Value> = serde_json::from_reader(reader)?;
-
-    for (index, finding) in findings.iter().enumerate() {
-        println!("\n--- Finding #{} ---", index + 1);
-        println!(
-            "  Class:     {}",
-            finding
-                .get("class")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-        );
-        println!(
-            "  Severity:  {}",
-            finding
-                .get("severity")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-        );
-        println!(
-            "  Confidence:{}",
-            match finding.get("confidence").and_then(|v| v.as_str()) {
-                Some(value) => format!(" {}", value),
-                None => " unknown".to_string(),
-            }
-        );
-
-        if let Some(memory) = finding.get("evidence").and_then(|v| v.get("memory")) {
-            if let Some(operation) = memory.get("operation").and_then(|v| v.as_str()) {
-                println!("  Operation: {}", operation);
-            }
-        }
-    }
-
-    if findings.is_empty() {
-        println!("No findings detected.");
-    } else {
-        println!("\nTotal findings: {}", findings.len());
-    }
-
+    let findings = read_findings(path)?;
+    print_findings_summary(&findings);
     Ok(())
 }
 
