@@ -50,6 +50,12 @@ cd /workspace/recompile/recompile
 ./scripts/validate-phase1.sh
 ```
 
+To smoke-test the bring-your-own-binary path:
+
+```bash
+make external-smoke
+```
+
 ## Repo Layout
 
 - `recompile/` - active Rust/C workspace
@@ -87,4 +93,23 @@ Equivalent Make target:
 ```bash
 cd recompile
 make phase1
+```
+
+## Bring Your Own Binary
+
+For early technical users, the supported workflow is runtime triage for a Linux ELF binary the user already knows how to build:
+
+```bash
+clang -g -O0 -fno-omit-frame-pointer \
+  -fno-builtin -fno-builtin-memcpy -fno-builtin-free \
+  -o my_test my_test.c
+
+./target/release/rerun run --native ./my_test --output build/my-test
+jq . build/my-test/findings.json
+```
+
+To assert an expected class for one binary:
+
+```bash
+./scripts/validate-binary.sh --binary ./my_test --expect-class heap_overflow
 ```

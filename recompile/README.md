@@ -90,6 +90,18 @@ Or:
 make phase1
 ```
 
+### Validate user-style binaries
+
+```bash
+make external-smoke
+```
+
+For one external binary:
+
+```bash
+./scripts/validate-binary.sh --binary ./my_test --expect-class heap_overflow
+```
+
 ## Active Components
 
 - `rerun/` - native CLI/orchestration

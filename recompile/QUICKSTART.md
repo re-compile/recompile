@@ -56,6 +56,35 @@ Or from `recompile/`:
 make phase1
 ```
 
+## Bring Your Own Binary
+
+Build your binary with debug info and avoid compiler rewrites that can remove the libc calls the native agent traces:
+
+```bash
+clang -g -O0 -fno-omit-frame-pointer \
+  -fno-builtin -fno-builtin-memcpy -fno-builtin-free \
+  -o my_test my_test.c
+```
+
+Run it under `rerun`:
+
+```bash
+./target/release/rerun run --native ./my_test --output build/my-test
+jq . build/my-test/findings.json
+```
+
+Assert an expected class for one binary:
+
+```bash
+./scripts/validate-binary.sh --binary ./my_test --expect-class heap_overflow
+```
+
+Run the checked user-style samples:
+
+```bash
+make external-smoke
+```
+
 ## Output Contract
 
 Canonical persisted output:

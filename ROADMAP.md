@@ -76,6 +76,7 @@ Before adding features, keep the core path modular and honest.
 
 - Docs match actual behavior and the supported Docker invocation
 - The three goldens produce the correct finding classes in the supported container flow
+- User-style non-golden samples produce expected findings through the generic binary validator
 - Findings include explicit provenance and are consumable by escalation/crashpack without guessing
 - There is no known golden-specific hardcoding in the active path
 - The active crates and scripts are trimmed enough that the supported workflow is obvious
@@ -84,6 +85,8 @@ Before adding features, keep the core path modular and honest.
 
 - canonical regression path exists: `recompile/scripts/validate-phase1.sh`
 - equivalent make target exists: `cd recompile && make phase1`
+- generic binary validator exists: `recompile/scripts/validate-binary.sh`
+- user-style sample suite exists: `cd recompile && make external-smoke`
 - active-path `cargo check` is clean for `rerun`, `re-escalate`, `re-crashpack`, `re-harness`, and `re-rules`
 - bootstrap/docs/scripts now align around the supported Docker-native path
 - the remaining limitation is symbol quality for `invalid_free` on the current arm64 Docker build, not core pipeline correctness
@@ -92,6 +95,7 @@ Before adding features, keep the core path modular and honest.
 
 1. **Keep the baseline honest**
    - keep `recompile/scripts/validate-phase1.sh` and `make phase1` passing
+   - keep `make external-smoke` passing for non-golden user-style samples
    - do not reintroduce parallel happy-path scripts that drift from the canonical baseline
 
 2. **Polish symbolization where it matters**

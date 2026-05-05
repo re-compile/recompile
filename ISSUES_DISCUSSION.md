@@ -67,6 +67,7 @@ The major technical blockers for the current MVP scope are no longer open.
 What remains is mostly a release-boundary decision:
 
 - the baseline regression path exists and passes
+- the user-style external smoke path exists and passes
 - the active-path crate warnings have been trimmed
 - docs/scripts now point at the same supported flow
 - the main remaining limitation is `invalid_free` source resolution on the current arm64 Docker build
@@ -83,6 +84,8 @@ The repo now has a supported regression script:
 
 - `recompile/scripts/validate-phase1.sh`
 - `cd recompile && make phase1`
+- `recompile/scripts/validate-binary.sh` for one external binary
+- `cd recompile && make external-smoke` for user-style non-golden samples
 
 That fixes the worst ad hoc problem, but the discipline still matters:
 
