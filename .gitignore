@@ -93,6 +93,10 @@ recompile/examples/memcpy_overflow
 !recompile/QUICKSTART.md
 !recompile/CHANGELOG.md
 
+# Local planning notes
+ROADMAP.md
+ISSUES_DISCUSSION.md
+
 # Keep configuration files
 !recompile/re.toml
 !recompile/Cargo.toml

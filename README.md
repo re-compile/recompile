@@ -65,8 +65,6 @@ make escalation-smoke
 ## Repo Layout
 
 - `recompile/` - active Rust/C workspace
-- `ROADMAP.md` - current roadmap
-- `ISSUES_DISCUSSION.md` - current issue/status doc
 - `Dockerfile` - supported bootstrap image
 
 ## Core Docs
@@ -74,8 +72,6 @@ make escalation-smoke
 - [`recompile/README.md`](recompile/README.md)
 - [`recompile/QUICKSTART.md`](recompile/QUICKSTART.md)
 - [`recompile/ARCHITECTURE.md`](recompile/ARCHITECTURE.md)
-- [`ROADMAP.md`](ROADMAP.md)
-- [`ISSUES_DISCUSSION.md`](ISSUES_DISCUSSION.md)
 
 ## Not In Scope Right Now
 

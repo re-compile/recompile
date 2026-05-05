@@ -146,5 +146,3 @@ To inspect the no-finding diagnostics on a clean sample:
 
 - [`QUICKSTART.md`](QUICKSTART.md)
 - [`ARCHITECTURE.md`](ARCHITECTURE.md)
-- [`../ROADMAP.md`](../ROADMAP.md)
-- [`../ISSUES_DISCUSSION.md`](../ISSUES_DISCUSSION.md)
