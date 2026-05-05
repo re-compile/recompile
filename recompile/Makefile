@@ -1,4 +1,4 @@
-.PHONY: all bpf passes agent toolchain examples user-samples external-smoke escalation-smoke phase1 rc phase2
+.PHONY: all bpf passes agent toolchain examples user-samples external-smoke escalation-smoke hit-rate phase1 rc phase2
 
 all: examples
 
@@ -13,6 +13,9 @@ external-smoke:
 
 escalation-smoke:
 	./scripts/validate-escalation.sh
+
+hit-rate:
+	./scripts/validate-hit-rate.sh
 
 phase1:
 	./scripts/validate-phase1.sh
