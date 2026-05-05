@@ -20,6 +20,7 @@
 - The Docker bootstrap image now includes Valgrind for native escalation smoke tests.
 - Valgrind escalation smoke now covers all current positive user-style samples and clean-negative samples.
 - `rerun escalate --check-clean` now runs explicit Valgrind checks for no-finding crashpacks.
+- Added `make hit-rate` to score native and Valgrind escalation outcomes across the current user-style corpus.
 
 ### Fixed
 - PID-scoped native runs no longer depend on the old shell-wrapper launch path.

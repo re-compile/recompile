@@ -140,7 +140,20 @@ This runs active Rust checks/tests, the three golden regressions, and user-style
 
 Current Phase 2 candidates:
 
-1. implement honest ASan support for already-ASan-built binaries or rebuild-aware flows
-2. improve symbolization beyond primary user frames
-3. add broader clean-negative and real-world user-binary regressions
-4. harden `recc` and LLVM pass wiring outside the MVP gate
+1. grow the hit-rate corpus as new bug classes land
+2. implement honest ASan support for already-ASan-built binaries or rebuild-aware flows
+3. improve symbolization beyond primary user frames
+4. add broader clean-negative and real-world user-binary regressions
+5. harden `recc` and LLVM pass wiring outside the MVP gate
+
+## Evaluation
+
+`make hit-rate` runs the current user-style corpus through native analysis and
+Valgrind escalation, then writes `build/hit-rate/summary.json`.
+
+The summary records:
+
+- expected class per sample
+- native finding classes and TP/TN/FP/FN outcome
+- escalation detected classes and TP/TN/FP/FN outcome
+- output directory per case

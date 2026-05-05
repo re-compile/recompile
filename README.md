@@ -65,6 +65,13 @@ make escalation-smoke
 That smoke validates Valgrind confirmations for the current positive user-style
 samples and verifies Valgrind stays unconfirmed on clean user-style samples.
 
+To score the current native/escalation hit rate:
+
+```bash
+make hit-rate
+jq . build/hit-rate/summary.json
+```
+
 ## Repo Layout
 
 - `recompile/` - active Rust/C workspace
@@ -94,6 +101,17 @@ make rc
 ```
 
 This runs active Rust checks/tests, the three golden regressions, and the user-style external sample suite.
+
+## Phase 2 Evaluation
+
+The current Phase 2 hit-rate command is:
+
+```bash
+cd recompile
+make hit-rate
+```
+
+It writes per-case native and Valgrind escalation outcomes to `build/hit-rate/summary.json`.
 
 Golden-only baseline:
 

@@ -120,6 +120,13 @@ make escalation-smoke
 This validates positive confirmations for the current user-style bug samples
 and clean-negative confirmations for the current clean samples.
 
+Run the current hit-rate evaluation:
+
+```bash
+make hit-rate
+jq . build/hit-rate/summary.json
+```
+
 To inspect the no-finding path:
 
 ```bash

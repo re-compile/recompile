@@ -113,6 +113,13 @@ make external-smoke
 make escalation-smoke
 ```
 
+### Score hit rate
+
+```bash
+make hit-rate
+jq . build/hit-rate/summary.json
+```
+
 For one external binary:
 
 ```bash
