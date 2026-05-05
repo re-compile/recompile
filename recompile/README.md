@@ -15,6 +15,7 @@ What is working now:
 - findings persist canonically to `findings.json`
 - debug/streaming output goes to `re-findings.jsonl`
 - crashpack and escalation consume explicit provenance instead of guessing from example names
+- Valgrind escalation can confirm a finding from an existing crashpack
 - the three goldens validate in Docker with `--privileged --pid=host`
 
 Validated goldens:
@@ -70,7 +71,8 @@ cargo run -p rerun -- run --native build/examples/invalid_free --output build/in
 ### Escalate an existing crashpack
 
 ```bash
-cargo run -p rerun -- escalate build/invalid-free --tool asan
+cargo run -p rerun -- escalate build/invalid-free --tool valgrind
+jq . build/invalid-free/escalations/results.json
 ```
 
 ### Validate a crashpack
@@ -103,6 +105,12 @@ make phase1
 
 ```bash
 make external-smoke
+```
+
+### Validate Valgrind escalation
+
+```bash
+make escalation-smoke
 ```
 
 For one external binary:

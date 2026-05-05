@@ -14,6 +14,8 @@ Target ELF binary
   -> eBPF uprobes on libc allocation/copy functions
   -> event normalization
   -> findings.json + crashpack artifacts
+  -> optional rerun escalate <crashpack> --tool valgrind
+  -> escalations/results.json + raw tool logs + parsed tool report
 ```
 
 The current release path is Docker-native or Linux-host-native. VM mode is deferred.
@@ -68,6 +70,11 @@ Current expectation:
 
 - consume explicit finding provenance
 - avoid guessing paths from example names or finding classes
+- write structured escalation results with command, exit status, raw output paths, parsed report path, and detected classes
+
+Current implemented adapter:
+
+- `valgrind` for existing binaries in crashpacks
 
 ### `re-harness/`
 
@@ -131,7 +138,8 @@ This runs active Rust checks/tests, the three golden regressions, and user-style
 
 Current Phase 2 candidates:
 
-1. implement real ASan/Valgrind escalation adapters
-2. improve symbolization beyond primary user frames
-3. add broader clean-negative and real-world user-binary regressions
-4. harden `recc` and LLVM pass wiring outside the MVP gate
+1. broaden Valgrind coverage beyond the first smoke sample
+2. implement honest ASan support for already-ASan-built binaries or rebuild-aware flows
+3. improve symbolization beyond primary user frames
+4. add broader clean-negative and real-world user-binary regressions
+5. harden `recc` and LLVM pass wiring outside the MVP gate

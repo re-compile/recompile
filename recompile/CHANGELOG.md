@@ -15,6 +15,9 @@
 - Added a generic external-binary validator and user-style sample suite for non-golden smoke testing.
 - Added a clean `malloc/free` user-style sample for the no-finding path.
 - Added a clean bounded-`memcpy` user-style sample for the no-finding path.
+- Added structured Valgrind escalation output for existing crashpacks.
+- Added `make escalation-smoke` and `make phase2` validation targets.
+- The Docker bootstrap image now includes Valgrind for native escalation smoke tests.
 
 ### Fixed
 - PID-scoped native runs no longer depend on the old shell-wrapper launch path.
