@@ -39,6 +39,7 @@ samples=(
     "copy_overrun_case:heap_overflow:heap_overflow"
     "cache_release_twice:double_free:double_free"
     "free_stack_slot:invalid_free:invalid_free"
+    "use_after_free_case:__unsupported__:use_after_free"
     "memory_leak_case:__unsupported__:memory_leak"
     "clean_malloc_free:__none__:__none__"
     "clean_bounded_memcpy:__none__:__none__"

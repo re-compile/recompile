@@ -171,6 +171,19 @@ mod tests {
     }
 
     #[test]
+    fn parses_use_after_free() {
+        let stderr = r#"==1== Invalid read of size 1
+==1==    at 0x1091C0: cache_line_score (use_after_free_case.c:17)
+==1==  Address 0x4a45040 is 0 bytes inside a block of size 32 free'd
+==1==    at 0x484417B: free (vg_replace_malloc.c:872)
+==1== ERROR SUMMARY: 1 errors from 1 contexts
+"#;
+
+        let report = parse_valgrind_output("", stderr);
+        assert_eq!(report.detected_classes(), vec!["use_after_free"]);
+    }
+
+    #[test]
     fn clean_output_is_not_confirmed() {
         let stderr = "==1== ERROR SUMMARY: 0 errors from 0 contexts";
         let report = parse_valgrind_output("", stderr);

@@ -22,6 +22,7 @@
 - `rerun escalate --check-clean` now runs explicit Valgrind checks for no-finding crashpacks.
 - Added `make hit-rate` to score native and Valgrind escalation outcomes across the current user-style corpus.
 - Added Valgrind-first memory leak coverage and the `rerun escalate --scan-binary` alias for no-native-finding binary scans.
+- Added Valgrind-first use-after-free coverage.
 
 ### Fixed
 - PID-scoped native runs no longer depend on the old shell-wrapper launch path.

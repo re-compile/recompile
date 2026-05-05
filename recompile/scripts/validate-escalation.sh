@@ -109,6 +109,7 @@ for entry in "${positive_samples[@]}"; do
 done
 
 valgrind_only_samples=(
+    "build/user-samples/use_after_free_case:use_after_free"
     "build/user-samples/memory_leak_case:memory_leak"
 )
 
