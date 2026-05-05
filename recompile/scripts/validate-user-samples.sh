@@ -34,4 +34,17 @@ for entry in "${samples[@]}"; do
         --output "build/user-sample-regression/$(basename "$binary_path")"
 done
 
+clean_samples=(
+    "build/user-samples/clean_malloc_free"
+    "build/user-samples/clean_bounded_memcpy"
+)
+
+for binary_path in "${clean_samples[@]}"; do
+    ./scripts/validate-binary.sh \
+        --binary "$binary_path" \
+        --expect-none \
+        --runner "$runner_path" \
+        --output "build/user-sample-regression/$(basename "$binary_path")"
+done
+
 printf '\n[external] user-style sample regression passed\n'
