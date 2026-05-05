@@ -85,6 +85,13 @@ Run the checked user-style samples:
 make external-smoke
 ```
 
+To inspect the no-finding path:
+
+```bash
+./scripts/build-user-samples.sh
+./target/release/rerun run --native build/user-samples/clean_malloc_free --output build/clean-demo
+```
+
 ## Output Contract
 
 Canonical persisted output:
