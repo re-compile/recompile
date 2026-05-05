@@ -13,19 +13,18 @@
 - Active-path workspace `cargo check` is now clean for the supported Phase 1 crates.
 - Added a generic external-binary validator and user-style sample suite for non-golden smoke testing.
 - Added a clean `malloc/free` user-style sample for the no-finding path.
+- Added a clean bounded-`memcpy` user-style sample for the no-finding path.
 
 ### Fixed
 - PID-scoped native runs no longer depend on the old shell-wrapper launch path.
 - Docker-native runs now fail loudly when started without a shared host PID namespace.
 - Native runs now refresh generated crashpack output before analysis so stale findings do not leak across repeated `--output` directories.
+- Shared allocator tracking now uses deterministic BPF map keys, fixing valid bounded `memcpy` runs that could report `invalid_free`.
 - PID/binary validation in `re-mini` now uses stronger executable matching and handles `readlink` truncation explicitly.
 - The three Linux-native goldens currently verify as distinct findings in the supported Docker path:
   - `invalid_free`
   - `double_free`
   - `heap_overflow`
-
-### Known Issues
-- A valid `malloc -> bounded memcpy -> free` pattern can still report `invalid_free`; this is the next Phase 1 correctness gate.
 
 ### Removed
 - VM-era bootstrap and ad hoc test scripts that no longer match the supported Linux-native workflow.

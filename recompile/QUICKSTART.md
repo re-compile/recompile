@@ -79,6 +79,12 @@ Assert an expected class for one binary:
 ./scripts/validate-binary.sh --binary ./my_test --expect-class heap_overflow
 ```
 
+Assert that one binary is clean:
+
+```bash
+./scripts/validate-binary.sh --binary ./my_test --expect-none
+```
+
 Run the checked user-style samples:
 
 ```bash
@@ -89,7 +95,7 @@ To inspect the no-finding path:
 
 ```bash
 ./scripts/build-user-samples.sh
-./target/release/rerun run --native build/user-samples/clean_malloc_free --output build/clean-demo
+./target/release/rerun run --native build/user-samples/clean_bounded_memcpy --output build/clean-demo
 ```
 
 ## Output Contract

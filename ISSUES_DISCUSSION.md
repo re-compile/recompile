@@ -1,6 +1,6 @@
 # re:compile Issues Discussion
 
-*Updated after the Phase 1 bring-your-own-binary and finding-quality slices.*
+*Updated after the Phase 1 allocator-key and clean-memcpy regression slice.*
 
 ---
 
@@ -14,13 +14,13 @@ The active Linux-native path is now working on the supported Docker flow:
 - `double_free` -> `double_free`
 - `invalid_free` -> `invalid_free`
 
-The remaining work is narrower than the original architecture repair, but Phase 1 is **not** ready until one user-code correctness blocker is handled.
+The remaining work is final release-candidate validation, not broad architecture repair.
 
 What still matters now:
 
 1. keep the Docker-native workflow explicit and repeatable
 2. add regression coverage for the three goldens
-3. fix the valid `malloc -> bounded memcpy -> free` false positive
+3. keep clean user-code patterns producing zero findings
 4. keep symbolization good enough for user-visible primary locations
 5. decide whether any remaining arm64 source-location gaps are acceptable for the MVP
 
@@ -44,29 +44,7 @@ Without a shared PID namespace:
 
 This is no longer a hidden correctness bug. It is now a documented support constraint and the code errors early in the unsupported case.
 
-### Issue #2: Valid Bounded `memcpy` Can Corrupt Finding Quality
-
-**Location**: `recompile/runtime/agent/re-mini.c`, allocator/copy probe interaction
-**Status**: Open
-**Severity**: High
-
-A valid user-code pattern still reports `invalid_free` in the supported Docker-native flow:
-
-```c
-char *dst = malloc(64);
-memcpy(dst, "safe copy", 10);
-free(dst);
-```
-
-This is not a stale-output issue anymore. `rerun run --output <dir>` now refreshes generated crashpack artifacts before each run, and the repro still produces `invalid_free` with a fresh output directory.
-
-The next fix must be generic:
-
-- no bypass based on source file name, binary name, or sample identity
-- add a committed regression sample for this clean pattern
-- inspect allocator state and copy-probe map sharing before changing classification behavior
-
-### Issue #3: `invalid_free` Source Location May Still Be Missing
+### Issue #2: `invalid_free` Source Location May Still Be Missing
 
 **Location**: `recompile/runtime/agent/re-mini.c`, native Docker arm64 builds
 **Status**: Known limitation
@@ -76,27 +54,27 @@ After the symbolization and launch fixes, user-code source paths are good for th
 
 This should not block the finding class, severity, or provenance, but it remains a finding-quality issue after the false-positive gate is closed.
 
-### Issue #4: Phase 1 Readiness Is Mostly A Scope Decision Now
+### Issue #3: Phase 1 Readiness Is Mostly A Scope Decision Now
 
 **Location**: roadmap / release criteria
 **Status**: Open
 **Severity**: Medium
 
-The major plumbing blockers for the current MVP scope are no longer open, but the safe-memcpy false positive is a correctness gate.
+The major plumbing and user-code correctness blockers for the current MVP scope are no longer open.
 
 What remains is mostly a release-boundary decision:
 
 - the baseline regression path exists and passes
 - the user-style external smoke path exists and passes
-- the clean `malloc/free` no-finding sample exists and passes
+- the clean `malloc/free` and bounded-`memcpy` no-finding samples exist and pass
 - stale output directories no longer leak findings across runs
+- allocator tracking no longer depends on implicit BPF map-key padding
 - the active-path crate warnings have been trimmed
 - docs/scripts now point at the same supported flow
-- the main remaining correctness limitation is the valid bounded-`memcpy` false positive
 
-For the current MVP definition, Phase 1 should not be called ready until that false positive is resolved or explicitly scoped out.
+For the current MVP definition, Phase 1 can move to final validation and PR review.
 
-### Issue #5: Regression Coverage Needs To Stay Canonical
+### Issue #4: Regression Coverage Needs To Stay Canonical
 
 **Location**: repo workflow / Docker validation path
 **Status**: Reduced
@@ -108,7 +86,7 @@ The repo now has a supported regression script:
 - `cd recompile && make phase1`
 - `recompile/scripts/validate-binary.sh` for one external binary
 - `cd recompile && make external-smoke` for user-style non-golden samples
-- `recompile/samples/user-binaries/clean_malloc_free.c` for the no-finding path
+- `recompile/samples/user-binaries/clean_malloc_free.c` and `recompile/samples/user-binaries/clean_bounded_memcpy.c` for the no-finding path
 
 That fixes the worst ad hoc problem, but the discipline still matters:
 
@@ -166,17 +144,21 @@ The following stale or deferred components were removed from the active workspac
 
 `rerun run --output <dir>` now removes known generated crashpack artifacts before a new analysis. This prevents old `findings.json`, `.re`, `bins`, logs, and manifests from being treated as current-run output.
 
+### Resolved: Valid Bounded `memcpy` Could Report `invalid_free`
+
+Allocator tracking used a shared BPF map key with implicit padding. The heap and copy probes could observe the same pointer with different key bytes, so the allocation was visible during `memcpy` but missing at `free`.
+
+The key now has explicit zero-initialized padding, and `clean_bounded_memcpy` is part of `make external-smoke` as an expected no-finding regression.
+
 ---
 
 ## Part 3: Recommended Next Order
 
-1. Fix the valid bounded-`memcpy` false positive without a hotfix
-2. Add the false-positive repro as a committed clean regression sample
-3. Keep the supported Docker-native invocation explicit everywhere
-4. Keep `recompile/scripts/validate-phase1.sh`, `make phase1`, and `make external-smoke` as the canonical regression path
-5. Decide whether any remaining source-path resolution gaps are release gates or post-RC polish
-6. If correctness is clean, call Phase 1 ready for the current MVP scope
-7. Then decide what belongs in Phase 2 versus remaining deferred
+1. Keep the supported Docker-native invocation explicit everywhere
+2. Keep `recompile/scripts/validate-phase1.sh`, `make phase1`, and `make external-smoke` as the canonical regression path
+3. Decide whether any remaining source-path resolution gaps are release gates or post-RC polish
+4. If final validation is clean, call Phase 1 ready for the current MVP scope
+5. Open/merge the PR, then decide what belongs in Phase 2 versus remaining deferred
 
 ---
 

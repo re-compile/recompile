@@ -102,11 +102,17 @@ For one external binary:
 ./scripts/validate-binary.sh --binary ./my_test --expect-class heap_overflow
 ```
 
+For one binary that should be clean:
+
+```bash
+./scripts/validate-binary.sh --binary ./my_test --expect-none
+```
+
 To inspect the no-finding diagnostics on a clean sample:
 
 ```bash
 ./scripts/build-user-samples.sh
-./target/release/rerun run --native build/user-samples/clean_malloc_free --output build/clean-demo
+./target/release/rerun run --native build/user-samples/clean_bounded_memcpy --output build/clean-demo
 ```
 
 ## Active Components
