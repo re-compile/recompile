@@ -51,6 +51,8 @@ pub struct FindingProvenance {
     pub original_binary_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

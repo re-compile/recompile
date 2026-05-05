@@ -130,6 +130,7 @@ print(json.dumps({
     "class": actual_class,
     "severity": finding.get("severity"),
     "source_path": provenance.get("source_path"),
+    "source_status": provenance.get("source_status"),
     "alloc_site": evidence.get("alloc_site"),
 }))
 PY
