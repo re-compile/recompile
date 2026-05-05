@@ -17,9 +17,7 @@ Inside the container:
 
 ```bash
 cd /workspace/recompile/recompile
-./scripts/build-examples.sh
-cargo run -p rerun -- run --native build/examples/memcpy_overflow --output build/memcpy-demo
-jq . build/memcpy-demo/findings.json
+./scripts/validate-phase1.sh
 ```
 
 ## Option 2: Native Linux host
@@ -45,6 +43,60 @@ Expected findings:
 - `memcpy_overflow` -> `heap_overflow`
 - `double_free` -> `double_free`
 - `invalid_free` -> `invalid_free`
+
+Run them together with:
+
+```bash
+./scripts/validate-phase1.sh
+```
+
+Or from `recompile/`:
+
+```bash
+make phase1
+```
+
+## Bring Your Own Binary
+
+Build your binary with debug info and avoid compiler rewrites that can remove the libc calls the native agent traces:
+
+```bash
+clang -g -O0 -fno-omit-frame-pointer \
+  -fno-builtin -fno-builtin-memcpy -fno-builtin-free \
+  -o my_test my_test.c
+```
+
+Run it under `rerun`:
+
+```bash
+./target/release/rerun run --native ./my_test --output build/my-test
+jq . build/my-test/findings.json
+```
+
+Assert an expected class for one binary:
+
+```bash
+./scripts/validate-binary.sh --binary ./my_test --expect-class heap_overflow
+```
+
+Assert that one binary is clean:
+
+```bash
+./scripts/validate-binary.sh --binary ./my_test --expect-none
+```
+
+Run the checked user-style samples:
+
+```bash
+make external-smoke
+```
+
+To inspect the no-finding path:
+
+```bash
+./scripts/build-user-samples.sh
+./target/release/rerun run --native build/user-samples/clean_bounded_memcpy --output build/clean-demo
+```
 
 ## Output Contract
 

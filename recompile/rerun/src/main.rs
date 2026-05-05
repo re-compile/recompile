@@ -3,65 +3,82 @@ use clap::{Arg, ArgAction, Command};
 
 mod cli;
 mod native;
+mod summary;
 
 use cli::*;
 
 fn main() -> Result<()> {
     env_logger::init();
-    
+
     let matches = Command::new("re")
         .about("RECC Sentinel - eBPF-driven compiler companion for C/C++ binaries")
         .version("0.1.0")
         .subcommand(
             Command::new("run")
                 .about("Run binary analysis with eBPF monitoring")
-                .arg(Arg::new("binary")
-                    .help("Binary to analyze")
-                    .required(true))
-                .arg(Arg::new("manifest")
-                    .long("manifest")
-                    .value_name("PATH")
-                    .help("Path to manifest.json"))
-                .arg(Arg::new("native")
-                    .long("native")
-                    .action(ArgAction::SetTrue)
-                    .help("Native mode is now the default on Linux; kept for compatibility"))
-                .arg(Arg::new("vm")
-                    .long("vm")
-                    .action(ArgAction::SetTrue)
-                    .conflicts_with("native")
-                    .help("VM mode is deferred and not part of the supported workflow"))
-                .arg(Arg::new("escalate")
-                    .long("escalate")
-                    .value_name("MODE")
-                    .default_value("auto")
-                    .help("Escalation mode: auto (on low confidence), always, never"))
-                .arg(Arg::new("output")
-                    .long("output")
-                    .short('o')
-                    .value_name("PATH")
-                    .help("Output directory for crashpack"))
-                .arg(Arg::new("symbolizer")
-                    .long("symbolizer")
-                    .value_name("TOOL")
-                    .default_value("llvm")
-                    .help("Symbolization tool to use"))
-                .arg(Arg::new("args")
-                    .help("Arguments to pass to the binary")
-                    .num_args(0..)
-                    .trailing_var_arg(true))
+                .arg(Arg::new("binary").help("Binary to analyze").required(true))
+                .arg(
+                    Arg::new("manifest")
+                        .long("manifest")
+                        .value_name("PATH")
+                        .help("Path to manifest.json"),
+                )
+                .arg(
+                    Arg::new("native")
+                        .long("native")
+                        .action(ArgAction::SetTrue)
+                        .help("Native mode is now the default on Linux; kept for compatibility"),
+                )
+                .arg(
+                    Arg::new("vm")
+                        .long("vm")
+                        .action(ArgAction::SetTrue)
+                        .conflicts_with("native")
+                        .help("VM mode is deferred and not part of the supported workflow"),
+                )
+                .arg(
+                    Arg::new("escalate")
+                        .long("escalate")
+                        .value_name("MODE")
+                        .default_value("auto")
+                        .help("Escalation mode: auto (on low confidence), always, never"),
+                )
+                .arg(
+                    Arg::new("output")
+                        .long("output")
+                        .short('o')
+                        .value_name("PATH")
+                        .help("Output directory for crashpack"),
+                )
+                .arg(
+                    Arg::new("symbolizer")
+                        .long("symbolizer")
+                        .value_name("TOOL")
+                        .default_value("llvm")
+                        .help("Symbolization tool to use"),
+                )
+                .arg(
+                    Arg::new("args")
+                        .help("Arguments to pass to the binary")
+                        .num_args(0..)
+                        .trailing_var_arg(true),
+                ),
         )
         .subcommand(
             Command::new("escalate")
                 .about("Run escalation analysis on existing crashpack")
-                .arg(Arg::new("crashpack")
-                    .help("Path to crashpack directory")
-                    .required(true))
-                .arg(Arg::new("tool")
-                    .long("tool")
-                    .value_name("TOOL")
-                    .default_value("all")
-                    .help("Escalation tool to use"))
+                .arg(
+                    Arg::new("crashpack")
+                        .help("Path to crashpack directory")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("tool")
+                        .long("tool")
+                        .value_name("TOOL")
+                        .default_value("all")
+                        .help("Escalation tool to use"),
+                ),
         )
         .subcommand(
             Command::new("crashpack")
@@ -69,17 +86,21 @@ fn main() -> Result<()> {
                 .subcommand(
                     Command::new("open")
                         .about("Open and view crashpack summary")
-                        .arg(Arg::new("path")
-                            .help("Path to crashpack directory")
-                            .required(true))
+                        .arg(
+                            Arg::new("path")
+                                .help("Path to crashpack directory")
+                                .required(true),
+                        ),
                 )
                 .subcommand(
                     Command::new("validate")
                         .about("Validate crashpack structure and contents")
-                        .arg(Arg::new("path")
-                            .help("Path to crashpack directory")
-                            .required(true))
-                )
+                        .arg(
+                            Arg::new("path")
+                                .help("Path to crashpack directory")
+                                .required(true),
+                        ),
+                ),
         )
         .get_matches();
 
@@ -111,8 +132,9 @@ fn handle_legacy_run(matches: &clap::ArgMatches) -> Result<()> {
             bin
         ));
     } else {
-        eprintln!("re: no binary specified. Use 're run <binary>' or see 're --help' for more options.");
+        eprintln!(
+            "re: no binary specified. Use 're run <binary>' or see 're --help' for more options."
+        );
     }
     Ok(())
 }
-

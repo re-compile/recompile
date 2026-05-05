@@ -245,31 +245,6 @@ impl ClusterManager {
         merged
     }
 
-    /// Create merged finding with higher confidence
-    fn create_merged_finding(&self, cluster: &Cluster, new_finding: Finding) -> Finding {
-        let mut merged = new_finding.clone();
-        
-        // Update confidence based on multiple hits
-        let avg_confidence = cluster.confidence_sum / cluster.hit_count as f64;
-        let boosted_confidence = (avg_confidence + new_finding.confidence.as_f64()) / 2.0;
-        
-        // Set confidence to the higher of current or boosted
-        merged.confidence = if boosted_confidence >= 0.9 {
-            Confidence::Certain
-        } else if boosted_confidence >= 0.7 {
-            Confidence::High
-        } else if boosted_confidence >= 0.5 {
-            Confidence::Medium
-        } else {
-            Confidence::Low
-        };
-        
-        // Add related findings
-        merged.related.extend(cluster.findings.iter().map(|f| f.id.clone()));
-        
-        merged
-    }
-
     /// Update Top-K heap
     fn update_top_k_heap(&mut self, cluster_id: &str) {
         if let Some(cluster) = self.clusters.get(cluster_id) {

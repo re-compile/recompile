@@ -46,6 +46,7 @@ BPF_SRCS := $(CORE_BPF_SRCS) $(EXTRA_BPF_SRCS)
 BPF_OBJS := $(BPF_SRCS:.c=.o)
 CORE_BPF_OBJS := $(CORE_BPF_SRCS:.c=.o)
 EXTRA_BPF_OBJS := $(EXTRA_BPF_SRCS:.c=.o)
+SHARED_HEADERS := ../shared/re_events.h
 VMLINUX_OUT ?= vmlinux.h
 
 .PHONY: all clean clang-version check-btf vmlinux-regen vmlinux-minimal vmlinux-sync help
@@ -58,7 +59,7 @@ all: vmlinux-sync
 	  $(MAKE) --no-print-directory $(EXTRA_BPF_OBJS); \
 	fi
 
-%.bpf.o: %.bpf.c vmlinux.h
+%.bpf.o: %.bpf.c vmlinux.h $(SHARED_HEADERS)
 	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
 
 # Refresh vmlinux.h from the current kernel when possible. This avoids silently

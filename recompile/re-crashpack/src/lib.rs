@@ -4,18 +4,15 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use uuid::Uuid;
+use writer::CrashpackWriter;
 
 pub mod capture;
 pub mod manifest;
 pub mod writer;
-
-pub use capture::*;
-pub use manifest::*;
-pub use writer::*;
 
 /// Main crashpack structure
 #[derive(Debug, Clone, Serialize, Deserialize)]

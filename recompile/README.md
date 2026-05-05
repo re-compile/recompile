@@ -39,9 +39,7 @@ Inside the container:
 
 ```bash
 cd /workspace/recompile/recompile
-./scripts/build-examples.sh
-cargo run -p rerun -- run --native build/examples/memcpy_overflow --output build/demo
-jq . build/demo/findings.json
+./scripts/validate-phase1.sh
 ```
 
 ### Native Linux host
@@ -78,6 +76,43 @@ cargo run -p rerun -- escalate build/invalid-free --tool asan
 
 ```bash
 cargo run -p rerun -- crashpack validate build/invalid-free
+```
+
+### Run the Phase 1 regression baseline
+
+```bash
+./scripts/validate-phase1.sh
+```
+
+Or:
+
+```bash
+make phase1
+```
+
+### Validate user-style binaries
+
+```bash
+make external-smoke
+```
+
+For one external binary:
+
+```bash
+./scripts/validate-binary.sh --binary ./my_test --expect-class heap_overflow
+```
+
+For one binary that should be clean:
+
+```bash
+./scripts/validate-binary.sh --binary ./my_test --expect-none
+```
+
+To inspect the no-finding diagnostics on a clean sample:
+
+```bash
+./scripts/build-user-samples.sh
+./target/release/rerun run --native build/user-samples/clean_bounded_memcpy --output build/clean-demo
 ```
 
 ## Active Components

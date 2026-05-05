@@ -13,6 +13,7 @@ Current supported path:
 ## Status
 
 Phase 0 is complete on the supported path.
+Phase 1 now has a canonical regression baseline and a cleaned active-path build.
 
 Validated native findings in Docker:
 
@@ -20,7 +21,7 @@ Validated native findings in Docker:
 - `double_free` -> `double_free`
 - `invalid_free` -> `invalid_free`
 
-Current priority is Phase 1: turn the working Linux-native path into a clean MVP release candidate.
+Current priority is Phase 1: finalize the MVP release-candidate decision for the Linux-native path.
 
 ## Supported Environment
 
@@ -46,9 +47,13 @@ Inside the container:
 
 ```bash
 cd /workspace/recompile/recompile
-./scripts/build-examples.sh
-cargo run -p rerun -- run --native build/examples/memcpy_overflow --output build/demo
-jq . build/demo/findings.json
+./scripts/validate-phase1.sh
+```
+
+To smoke-test the bring-your-own-binary path:
+
+```bash
+make external-smoke
 ```
 
 ## Repo Layout
@@ -73,3 +78,38 @@ jq . build/demo/findings.json
 - Rust runtime agent
 - `recc` as a required MVP path
 - CI as a release gate
+
+## Phase 1 Baseline
+
+The current release-candidate regression command is:
+
+```bash
+cd recompile
+./scripts/validate-phase1.sh
+```
+
+Equivalent Make target:
+
+```bash
+cd recompile
+make phase1
+```
+
+## Bring Your Own Binary
+
+For early technical users, the supported workflow is runtime triage for a Linux ELF binary the user already knows how to build:
+
+```bash
+clang -g -O0 -fno-omit-frame-pointer \
+  -fno-builtin -fno-builtin-memcpy -fno-builtin-free \
+  -o my_test my_test.c
+
+./target/release/rerun run --native ./my_test --output build/my-test
+jq . build/my-test/findings.json
+```
+
+To assert an expected class for one binary:
+
+```bash
+./scripts/validate-binary.sh --binary ./my_test --expect-class heap_overflow
+```

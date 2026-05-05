@@ -1,6 +1,6 @@
 # re:compile Issues Discussion
 
-*Updated after the Linux-native stabilization pass and Docker validation of the three goldens.*
+*Updated after the Phase 1 allocator-key and clean-memcpy regression slice.*
 
 ---
 
@@ -14,14 +14,15 @@ The active Linux-native path is now working on the supported Docker flow:
 - `double_free` -> `double_free`
 - `invalid_free` -> `invalid_free`
 
-The remaining work is mostly **release-candidate cleanup**, not broad architecture repair.
+The remaining work is final release-candidate validation, not broad architecture repair.
 
 What still matters now:
 
 1. keep the Docker-native workflow explicit and repeatable
 2. add regression coverage for the three goldens
-3. remove stale code and warnings from active crates
+3. keep clean user-code patterns producing zero findings
 4. keep symbolization good enough for user-visible primary locations
+5. decide whether any remaining arm64 source-location gaps are acceptable for the MVP
 
 ---
 
@@ -49,41 +50,48 @@ This is no longer a hidden correctness bug. It is now a documented support const
 **Status**: Known limitation
 **Severity**: Medium
 
-After the symbolization and launch fixes:
+After the symbolization and launch fixes, user-code source paths are good for the current user-style finding samples. Some `invalid_free` paths may still degrade to raw binary offsets on the current arm64 Docker build.
 
-- `memcpy_overflow` and `double_free` resolve user-code source paths correctly
-- `invalid_free` still may not resolve beyond a raw binary offset / `_start` frame on the current arm64 Docker build
+This should not block the finding class, severity, or provenance, but it remains a finding-quality issue after the false-positive gate is closed.
 
-This does **not** block the finding class, severity, or provenance. It is a symbol-quality limitation, not a contract or plumbing failure.
+### Issue #3: Phase 1 Readiness Is Mostly A Scope Decision Now
 
-### Issue #3: Active Crates Still Have Warning-Level Stale Code
-
-**Location**: `recompile/re-crashpack`, `recompile/re-escalate`, `recompile/re-rules`
+**Location**: roadmap / release criteria
 **Status**: Open
 **Severity**: Medium
 
-`cargo check` on the active workspace still reports warning-level dead code and unused imports.
+The major plumbing and user-code correctness blockers for the current MVP scope are no longer open.
 
-Examples seen in the current state:
+What remains is mostly a release-boundary decision:
 
-- unused re-exports/imports in `re-crashpack/src/lib.rs`
-- unused config re-export and parameter in `re-escalate`
-- dead code and unused imports in `re-rules`, especially the test/demo binary path
+- the baseline regression path exists and passes
+- the user-style external smoke path exists and passes
+- the clean `malloc/free` and bounded-`memcpy` no-finding samples exist and pass
+- stale output directories no longer leak findings across runs
+- allocator tracking no longer depends on implicit BPF map-key padding
+- the active-path crate warnings have been trimmed
+- docs/scripts now point at the same supported flow
 
-These are not blocking correctness issues, but they still make the supported OSS path look rough.
+For the current MVP definition, Phase 1 can move to final validation and PR review.
 
-### Issue #4: Regression Coverage Is Still Ad Hoc
+### Issue #4: Regression Coverage Needs To Stay Canonical
 
 **Location**: repo workflow / Docker validation path
-**Status**: Open
+**Status**: Reduced
 **Severity**: Medium
 
-The three-golden native path has now been validated manually in Docker, but the regression path is still ad hoc.
+The repo now has a supported regression script:
 
-What is missing:
+- `recompile/scripts/validate-phase1.sh`
+- `cd recompile && make phase1`
+- `recompile/scripts/validate-binary.sh` for one external binary
+- `cd recompile && make external-smoke` for user-style non-golden samples
+- `recompile/samples/user-binaries/clean_malloc_free.c` and `recompile/samples/user-binaries/clean_bounded_memcpy.c` for the no-finding path
 
-- one clearly supported command/script for the three-golden validation pass
-- documentation that treats that pass as the release-candidate regression baseline
+That fixes the worst ad hoc problem, but the discipline still matters:
+
+- docs should keep pointing at that one command
+- future cleanup should not reintroduce parallel “happy path” scripts that drift from it
 
 ---
 
@@ -132,15 +140,25 @@ The following stale or deferred components were removed from the active workspac
 - LSP/MCP stubs
 - stale helper/generated assets tied to removed workflows
 
+### Resolved: Stale Output Directories Could Re-report Old Findings
+
+`rerun run --output <dir>` now removes known generated crashpack artifacts before a new analysis. This prevents old `findings.json`, `.re`, `bins`, logs, and manifests from being treated as current-run output.
+
+### Resolved: Valid Bounded `memcpy` Could Report `invalid_free`
+
+Allocator tracking used a shared BPF map key with implicit padding. The heap and copy probes could observe the same pointer with different key bytes, so the allocation was visible during `memcpy` but missing at `free`.
+
+The key now has explicit zero-initialized padding, and `clean_bounded_memcpy` is part of `make external-smoke` as an expected no-finding regression.
+
 ---
 
 ## Part 3: Recommended Next Order
 
 1. Keep the supported Docker-native invocation explicit everywhere
-2. Add one repeatable regression path for the three goldens
-3. Clean warning-level stale code from active crates
-4. Polish symbolization only where it improves user-visible findings
-5. Then decide what belongs in Phase 2 versus remaining deferred
+2. Keep `recompile/scripts/validate-phase1.sh`, `make phase1`, and `make external-smoke` as the canonical regression path
+3. Decide whether any remaining source-path resolution gaps are release gates or post-RC polish
+4. If final validation is clean, call Phase 1 ready for the current MVP scope
+5. Open/merge the PR, then decide what belongs in Phase 2 versus remaining deferred
 
 ---
 

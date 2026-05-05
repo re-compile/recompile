@@ -20,12 +20,9 @@ pub struct RuleEngine {
 
 #[derive(Debug, Clone)]
 struct ClusterState {
-    rule_id: String,
     events: Vec<SentinelEvent>,
     hits: u32,
-    first_seen: Instant,
     last_seen: Instant,
-    fingerprint: String,
 }
 
 impl RuleEngine {
@@ -186,12 +183,9 @@ impl RuleEngine {
         let should_generate = {
             let cluster = self.active_clusters.entry(cluster_key.clone()).or_insert_with(|| {
                 ClusterState {
-                    rule_id: id.to_string(),
                     events: Vec::new(),
                     hits: 0,
-                    first_seen: Instant::now(),
                     last_seen: Instant::now(),
-                    fingerprint: cluster_key.clone(),
                 }
             });
 
@@ -218,7 +212,8 @@ impl RuleEngine {
         Ok(Some(finding))
     }
 
-    /// Check a specific rule against the current event window
+    /// Legacy generic-rule path kept for future non-golden rule wiring.
+    #[allow(dead_code)]
     fn check_rule(&mut self, rule: &crate::Rule, trigger_event: &SentinelEvent) -> Result<Option<Finding>> {
         // Check cooldown
         if let Some(cooldown_until) = self.cooldowns.get(&rule.id) {
@@ -245,12 +240,9 @@ impl RuleEngine {
         let should_generate_finding = {
             let cluster = self.active_clusters.entry(cluster_key.clone()).or_insert_with(|| {
                 ClusterState {
-                    rule_id: rule.id.clone(),
                     events: Vec::new(),
                     hits: 0,
-                    first_seen: Instant::now(),
                     last_seen: Instant::now(),
-                    fingerprint: cluster_key.clone(),
                 }
             });
 
@@ -283,7 +275,7 @@ impl RuleEngine {
         Ok(Some(finding))
     }
 
-    /// Generate a cluster key for grouping related events
+    #[allow(dead_code)]
     fn generate_cluster_key(&self, rule: &crate::Rule, event: &SentinelEvent) -> String {
         // Simple fingerprint: rule_id + top stack frame + ptr bucket
         let ptr_bucket = (event.addr >> 12) & 0xFFFF; // 4KB page bucket
@@ -346,7 +338,7 @@ impl RuleEngine {
         })
     }
 
-    /// Create a finding from a rule match
+    #[allow(dead_code)]
     fn create_finding(&self, rule: &crate::Rule, events: &[SentinelEvent]) -> Result<Finding> {
         let evidence = rule.matcher.extract_evidence(events);
         let timestamp = SystemTime::now()
@@ -410,7 +402,7 @@ impl RuleEngine {
                 SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs())
     }
 
-    /// Determine if a finding should be escalated
+    #[allow(dead_code)]
     fn should_escalate(&self, rule: &crate::Rule) -> bool {
         let confidence_value = rule.confidence.as_f64();
         confidence_value >= self.config.rules.confidence_lo

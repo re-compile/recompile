@@ -59,7 +59,7 @@ Before adding features, keep the core path modular and honest.
 
 ## Phase 1 - Native MVP Release Candidate
 
-**Status**: Current priority
+**Status**: In progress; correctness gate closed, final RC validation pending
 **Goal**: turn the working native path into a small but honest OSS release candidate
 
 ### Scope
@@ -76,30 +76,45 @@ Before adding features, keep the core path modular and honest.
 
 - Docs match actual behavior and the supported Docker invocation
 - The three goldens produce the correct finding classes in the supported container flow
+- User-style non-golden samples produce expected findings through the generic binary validator
+- A clean user-style sample produces no findings through the same native runner
 - Findings include explicit provenance and are consumable by escalation/crashpack without guessing
 - There is no known golden-specific hardcoding in the active path
 - The active crates and scripts are trimmed enough that the supported workflow is obvious
+- Known false positives in simple, valid user-code patterns are fixed or explicitly tracked outside the MVP scope
+
+### Progress So Far
+
+- canonical regression path exists: `recompile/scripts/validate-phase1.sh`
+- equivalent make target exists: `cd recompile && make phase1`
+- generic binary validator exists: `recompile/scripts/validate-binary.sh`
+- user-style sample suite exists: `cd recompile && make external-smoke`
+- clean no-finding samples exist: `recompile/samples/user-binaries/clean_malloc_free.c` and `recompile/samples/user-binaries/clean_bounded_memcpy.c`
+- `rerun run --output <dir>` now refreshes generated crashpack artifacts before each run, so stale findings do not leak into the next analysis
+- allocator tracking uses a deterministic shared BPF map key, avoiding padding-dependent lookup misses across heap and copy probes
+- active-path `cargo check` is clean for `rerun`, `re-escalate`, `re-crashpack`, `re-harness`, and `re-rules`
+- bootstrap/docs/scripts now align around the supported Docker-native path
+- the valid `malloc -> bounded memcpy -> free` false positive is now covered by `make external-smoke`
 
 ### Current Work Items
 
-1. **Lock the supported Docker-native workflow**
-   - keep `Dockerfile`, bootstrap script, and docs aligned
-   - make the `--privileged --pid=host` requirement impossible to miss
+1. **Keep the baseline honest**
+   - keep `recompile/scripts/validate-phase1.sh` and `make phase1` passing
+   - keep `make external-smoke` passing for non-golden user-style samples
+   - keep the clean no-finding samples producing zero findings
+   - do not reintroduce parallel happy-path scripts that drift from the canonical baseline
 
-2. **Add regression coverage for the three goldens**
-   - one repeatable validation path for `memcpy_overflow`, `double_free`, and `invalid_free`
-   - keep this lightweight for now; CI can follow later
-
-3. **Clean the active path**
-   - remove or trim remaining stale code and warnings in active crates
-   - keep the supported workflow obvious to OSS users
-
-4. **Polish symbolization where it matters**
+2. **Polish symbolization where it matters**
    - keep user-code primary locations strong
    - treat unresolved libc/system frames as secondary unless they break findings quality
 
-5. **Prepare release-candidate documentation**
-   - make quickstart, architecture, and roadmap agree on the real supported path
+3. **Prepare release-candidate documentation**
+   - keep quickstart, architecture, roadmap, and root README aligned
+   - make the Docker requirement and the Linux-only scope impossible to miss
+
+4. **Make the release decision**
+   - after final validation passes, Phase 1 can be called ready for the current MVP scope
+   - remaining improvements after that should be treated as post-RC polish or Phase 2 input
 
 ---
 
@@ -132,8 +147,8 @@ Only start this after the Phase 1 release candidate is stable.
 
 ## Immediate Execution Order
 
-1. Lock the Docker-native release-candidate workflow in docs and scripts
-2. Add a repeatable native regression path for the three goldens
-3. Remove remaining stale code and warnings in active crates
-4. Polish symbolization only where it improves user-visible findings quality
+1. Keep `recompile/scripts/validate-phase1.sh`, `make phase1`, and `make external-smoke` passing
+2. Re-check symbol quality for the three goldens and user-style samples
+3. Confirm README/quickstart/architecture/changelog match the supported workflow
+4. Open a PR for the Phase 1 branch and merge after review/validation
 5. Then decide what enters Phase 2
