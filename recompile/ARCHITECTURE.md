@@ -116,13 +116,22 @@ Why the PID namespace matters:
 - BPF events use the kernel-visible PID
 - without `--pid=host`, those can diverge in Docker and valid events get dropped
 
-## Current Priorities
+## Phase Status
 
 Phase 0 is complete.
+Phase 1 is complete for the Linux-native MVP scope.
 
-Current Phase 1 priorities:
+The current release gate is:
 
-1. keep the supported Docker-native path obvious and repeatable
-2. add a repeatable regression path for the three goldens
-3. remove remaining warning-level stale code in active crates
-4. polish symbolization only where it materially improves user-visible findings
+```bash
+make rc
+```
+
+This runs active Rust checks/tests, the three golden regressions, and user-style finding/no-finding samples.
+
+Current Phase 2 candidates:
+
+1. implement real ASan/Valgrind escalation adapters
+2. improve symbolization beyond primary user frames
+3. add broader clean-negative and real-world user-binary regressions
+4. harden `recc` and LLVM pass wiring outside the MVP gate

@@ -1,6 +1,6 @@
 # re:compile Issues Discussion
 
-*Updated after the Phase 1 allocator-key and clean-memcpy regression slice.*
+*Updated after the Phase 1 RC gate slice.*
 
 ---
 
@@ -14,7 +14,7 @@ The active Linux-native path is now working on the supported Docker flow:
 - `double_free` -> `double_free`
 - `invalid_free` -> `invalid_free`
 
-The remaining work is final release-candidate validation, not broad architecture repair.
+Phase 1 is complete for the supported Linux-native MVP scope.
 
 What still matters now:
 
@@ -22,7 +22,7 @@ What still matters now:
 2. add regression coverage for the three goldens
 3. keep clean user-code patterns producing zero findings
 4. keep symbolization good enough for user-visible primary locations
-5. decide whether any remaining arm64 source-location gaps are acceptable for the MVP
+5. keep any remaining arm64 source-location gaps scoped as symbolization polish unless they break user-style findings
 
 ---
 
@@ -54,15 +54,15 @@ After the symbolization and launch fixes, user-code source paths are good for th
 
 This should not block the finding class, severity, or provenance, but it remains a finding-quality issue after the false-positive gate is closed.
 
-### Issue #3: Phase 1 Readiness Is Mostly A Scope Decision Now
+### Issue #3: Phase 1 MVP Is Complete
 
 **Location**: roadmap / release criteria
-**Status**: Open
+**Status**: Resolved
 **Severity**: Medium
 
 The major plumbing and user-code correctness blockers for the current MVP scope are no longer open.
 
-What remains is mostly a release-boundary decision:
+What is now locked:
 
 - the baseline regression path exists and passes
 - the user-style external smoke path exists and passes
@@ -71,8 +71,9 @@ What remains is mostly a release-boundary decision:
 - allocator tracking no longer depends on implicit BPF map-key padding
 - the active-path crate warnings have been trimmed
 - docs/scripts now point at the same supported flow
+- `make rc` exists as the single Phase 1 release-candidate gate
 
-For the current MVP definition, Phase 1 can move to final validation and PR review.
+For the current MVP definition, Phase 1 is complete. New feature work should go through Phase 2.
 
 ### Issue #4: Regression Coverage Needs To Stay Canonical
 
@@ -155,10 +156,9 @@ The key now has explicit zero-initialized padding, and `clean_bounded_memcpy` is
 ## Part 3: Recommended Next Order
 
 1. Keep the supported Docker-native invocation explicit everywhere
-2. Keep `recompile/scripts/validate-phase1.sh`, `make phase1`, and `make external-smoke` as the canonical regression path
-3. Decide whether any remaining source-path resolution gaps are release gates or post-RC polish
-4. If final validation is clean, call Phase 1 ready for the current MVP scope
-5. Open/merge the PR, then decide what belongs in Phase 2 versus remaining deferred
+2. Keep `make rc` as the canonical Phase 1 guardrail
+3. Treat remaining source-path resolution gaps as Phase 2 polish unless they break user-style findings
+4. Start Phase 2 with real escalation adapters or broader user-binary regressions
 
 ---
 

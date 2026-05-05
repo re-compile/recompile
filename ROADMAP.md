@@ -57,9 +57,9 @@ Before adding features, keep the core path modular and honest.
 
 ---
 
-## Phase 1 - Native MVP Release Candidate
+## Phase 1 - Native MVP
 
-**Status**: In progress; correctness gate closed, final RC validation pending
+**Status**: Complete on the supported Docker-native path
 **Goal**: turn the working native path into a small but honest OSS release candidate
 
 ### Scope
@@ -87,6 +87,7 @@ Before adding features, keep the core path modular and honest.
 
 - canonical regression path exists: `recompile/scripts/validate-phase1.sh`
 - equivalent make target exists: `cd recompile && make phase1`
+- full release-candidate gate exists: `cd recompile && make rc`
 - generic binary validator exists: `recompile/scripts/validate-binary.sh`
 - user-style sample suite exists: `cd recompile && make external-smoke`
 - clean no-finding samples exist: `recompile/samples/user-binaries/clean_malloc_free.c` and `recompile/samples/user-binaries/clean_bounded_memcpy.c`
@@ -96,31 +97,24 @@ Before adding features, keep the core path modular and honest.
 - bootstrap/docs/scripts now align around the supported Docker-native path
 - the valid `malloc -> bounded memcpy -> free` false positive is now covered by `make external-smoke`
 
-### Current Work Items
+### Exit Criteria Met
 
-1. **Keep the baseline honest**
-   - keep `recompile/scripts/validate-phase1.sh` and `make phase1` passing
-   - keep `make external-smoke` passing for non-golden user-style samples
-   - keep the clean no-finding samples producing zero findings
-   - do not reintroduce parallel happy-path scripts that drift from the canonical baseline
+- `make rc` passes on the supported Docker-native path
+- `make phase1` passes for the three goldens
+- `make external-smoke` passes for user-style positive and clean samples
+- user-style `invalid_free` resolves a source path
+- clean `malloc/free` and bounded-`memcpy` samples produce zero findings
+- docs point at Linux-native Docker as the supported workflow
 
-2. **Polish symbolization where it matters**
-   - keep user-code primary locations strong
-   - treat unresolved libc/system frames as secondary unless they break findings quality
+### Known Non-Blocking Limitation
 
-3. **Prepare release-candidate documentation**
-   - keep quickstart, architecture, roadmap, and root README aligned
-   - make the Docker requirement and the Linux-only scope impossible to miss
-
-4. **Make the release decision**
-   - after final validation passes, Phase 1 can be called ready for the current MVP scope
-   - remaining improvements after that should be treated as post-RC polish or Phase 2 input
+- Golden `invalid_free` may still show `source_path: null` on the current arm64 Docker build. This is symbolization polish because the finding class, severity, and provenance are correct, and the user-style invalid-free sample resolves source.
 
 ---
 
 ## Phase 2 - Feature Expansion
 
-Only start this after the Phase 1 release candidate is stable.
+Phase 2 starts after the Phase 1 native MVP gate.
 
 ### Candidate Work
 
@@ -147,8 +141,6 @@ Only start this after the Phase 1 release candidate is stable.
 
 ## Immediate Execution Order
 
-1. Keep `recompile/scripts/validate-phase1.sh`, `make phase1`, and `make external-smoke` passing
-2. Re-check symbol quality for the three goldens and user-style samples
-3. Confirm README/quickstart/architecture/changelog match the supported workflow
-4. Open a PR for the Phase 1 branch and merge after review/validation
-5. Then decide what enters Phase 2
+1. Keep `make rc` passing as the Phase 1 guardrail
+2. Decide the first Phase 2 slice, with escalation as the recommended next focus
+3. Add broader real-world user-binary regressions as Phase 2 work lands

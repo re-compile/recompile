@@ -7,6 +7,7 @@ The current supported workflow is Linux-native analysis of C/C++ binaries using 
 ## Current State
 
 Phase 0 is complete on the supported Docker-native path.
+Phase 1 is complete for the Linux-native MVP scope.
 
 What is working now:
 
@@ -39,7 +40,7 @@ Inside the container:
 
 ```bash
 cd /workspace/recompile/recompile
-./scripts/validate-phase1.sh
+make rc
 ```
 
 ### Native Linux host
@@ -78,7 +79,15 @@ cargo run -p rerun -- escalate build/invalid-free --tool asan
 cargo run -p rerun -- crashpack validate build/invalid-free
 ```
 
-### Run the Phase 1 regression baseline
+### Run the Phase 1 RC gate
+
+```bash
+make rc
+```
+
+This runs active Rust checks/tests, the golden baseline, and user-style external samples.
+
+### Run the golden-only baseline
 
 ```bash
 ./scripts/validate-phase1.sh

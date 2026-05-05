@@ -17,7 +17,7 @@ Inside the container:
 
 ```bash
 cd /workspace/recompile/recompile
-./scripts/validate-phase1.sh
+make rc
 ```
 
 ## Option 2: Native Linux host
@@ -44,7 +44,13 @@ Expected findings:
 - `double_free` -> `double_free`
 - `invalid_free` -> `invalid_free`
 
-Run them together with:
+Run the full Phase 1 RC gate with:
+
+```bash
+make rc
+```
+
+Run only the golden baseline with:
 
 ```bash
 ./scripts/validate-phase1.sh
