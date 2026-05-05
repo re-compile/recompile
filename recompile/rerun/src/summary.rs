@@ -75,8 +75,11 @@ fn source_location(finding: &Value) -> Option<String> {
 }
 
 fn primary_location(finding: &Value) -> Option<String> {
-    string_field(finding, &["primaryLocation", "uri"])
-        .and_then(|uri| uri.strip_prefix("file://").map(str::to_string).or(Some(uri)))
+    string_field(finding, &["primaryLocation", "uri"]).and_then(|uri| {
+        uri.strip_prefix("file://")
+            .map(str::to_string)
+            .or(Some(uri))
+    })
 }
 
 fn binary_offset(finding: &Value) -> Option<String> {
