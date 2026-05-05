@@ -59,7 +59,7 @@ Before adding features, keep the core path modular and honest.
 
 ## Phase 1 - Native MVP Release Candidate
 
-**Status**: In progress; baseline and cleanup slices landed
+**Status**: In progress; bring-your-own-binary and finding-quality slices landed
 **Goal**: turn the working native path into a small but honest OSS release candidate
 
 ### Scope
@@ -77,9 +77,11 @@ Before adding features, keep the core path modular and honest.
 - Docs match actual behavior and the supported Docker invocation
 - The three goldens produce the correct finding classes in the supported container flow
 - User-style non-golden samples produce expected findings through the generic binary validator
+- A clean user-style sample produces no findings through the same native runner
 - Findings include explicit provenance and are consumable by escalation/crashpack without guessing
 - There is no known golden-specific hardcoding in the active path
 - The active crates and scripts are trimmed enough that the supported workflow is obvious
+- Known false positives in simple, valid user-code patterns are fixed or explicitly excluded from the MVP scope
 
 ### Progress So Far
 
@@ -87,27 +89,35 @@ Before adding features, keep the core path modular and honest.
 - equivalent make target exists: `cd recompile && make phase1`
 - generic binary validator exists: `recompile/scripts/validate-binary.sh`
 - user-style sample suite exists: `cd recompile && make external-smoke`
+- clean no-finding sample exists: `recompile/samples/user-binaries/clean_malloc_free.c`
+- `rerun run --output <dir>` now refreshes generated crashpack artifacts before each run, so stale findings do not leak into the next analysis
 - active-path `cargo check` is clean for `rerun`, `re-escalate`, `re-crashpack`, `re-harness`, and `re-rules`
 - bootstrap/docs/scripts now align around the supported Docker-native path
-- the remaining limitation is symbol quality for `invalid_free` on the current arm64 Docker build, not core pipeline correctness
+- a source/allocator correctness blocker remains: valid `malloc -> bounded memcpy -> free` can still report `invalid_free`
 
 ### Current Work Items
 
-1. **Keep the baseline honest**
+1. **Fix the safe-memcpy false positive**
+   - reproduce with a committed regression sample instead of a one-off `/tmp` source
+   - identify whether allocator tracking, memcpy probe sharing, or event normalization is corrupting allocation state
+   - keep the fix generic; no source-name, binary-name, or golden-specific bypasses
+
+2. **Keep the baseline honest**
    - keep `recompile/scripts/validate-phase1.sh` and `make phase1` passing
    - keep `make external-smoke` passing for non-golden user-style samples
+   - keep the clean no-finding sample producing zero findings
    - do not reintroduce parallel happy-path scripts that drift from the canonical baseline
 
-2. **Polish symbolization where it matters**
+3. **Polish symbolization where it matters**
    - keep user-code primary locations strong
    - treat unresolved libc/system frames as secondary unless they break findings quality
 
-3. **Prepare release-candidate documentation**
+4. **Prepare release-candidate documentation**
    - keep quickstart, architecture, roadmap, and root README aligned
    - make the Docker requirement and the Linux-only scope impossible to miss
 
-4. **Make the release decision**
-   - if no new correctness regressions appear, Phase 1 can be called ready for the current MVP scope
+5. **Make the release decision**
+   - after the safe-memcpy false positive is resolved or explicitly scoped out, Phase 1 can be called ready for the current MVP scope
    - remaining improvements after that should be treated as post-RC polish or Phase 2 input
 
 ---
@@ -141,8 +151,9 @@ Only start this after the Phase 1 release candidate is stable.
 
 ## Immediate Execution Order
 
-1. Keep the Docker-native release-candidate workflow aligned in docs and scripts
-2. Keep `recompile/scripts/validate-phase1.sh` and `make phase1` passing for the three goldens
-3. Decide whether the current symbolization limitation for `invalid_free` is acceptable for the MVP
-4. If yes, call Phase 1 ready for the current scope
-5. Then decide what enters Phase 2
+1. Fix the valid `malloc -> bounded memcpy -> free` false positive without a hotfix
+2. Add that pattern to the regression path as a committed clean sample
+3. Keep `recompile/scripts/validate-phase1.sh`, `make phase1`, and `make external-smoke` passing
+4. Re-check symbol quality for the three goldens and user-style samples
+5. If the correctness gate is clean, call Phase 1 ready for the current scope
+6. Then decide what enters Phase 2
