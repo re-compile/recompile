@@ -146,8 +146,8 @@ To run Valgrind confirmation on an existing crashpack:
 jq . build/my-test/escalations/results.json
 ```
 
-For a crashpack with no findings, run an explicit clean escalation check:
+For a crashpack with no native findings, run an explicit Valgrind binary scan:
 
 ```bash
-./target/release/rerun escalate build/my-clean-test --tool valgrind --check-clean
+./target/release/rerun escalate build/my-test --tool valgrind --scan-binary
 ```

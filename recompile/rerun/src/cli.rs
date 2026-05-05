@@ -78,7 +78,7 @@ pub fn handle_run_command(matches: &ArgMatches) -> Result<()> {
 pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
     let crashpack_path = matches.get_one::<String>("crashpack").unwrap();
     let tool = matches.get_one::<String>("tool").unwrap();
-    let check_clean = matches.get_flag("check-clean");
+    let scan_without_findings = matches.get_flag("check-clean") || matches.get_flag("scan-binary");
     let crashpack_dir = PathBuf::from(crashpack_path);
     let findings_path = crashpack_dir.join("findings.json");
 
@@ -101,13 +101,13 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
 
     let findings = load_findings(&findings_path)?;
     if findings.is_empty() {
-        if !check_clean {
+        if !scan_without_findings {
             println!("No findings to escalate.");
             return Ok(());
         }
         if tool == "all" {
             return Err(anyhow::anyhow!(
-                "--check-clean requires an explicit tool, such as --tool valgrind"
+                "--scan-binary requires an explicit tool, such as --tool valgrind"
             ));
         }
 
@@ -119,7 +119,7 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
 
         if result.success {
             println!(
-                "✓ Clean escalation check ran: {} ({}ms)",
+                "✓ Binary escalation scan ran: {} ({}ms)",
                 result.tool, result.duration_ms
             );
             if result.confirmed {
@@ -132,7 +132,7 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
             }
         } else {
             println!(
-                "✗ Clean escalation check failed: {} ({}ms)",
+                "✗ Binary escalation scan failed: {} ({}ms)",
                 result.tool, result.duration_ms
             );
             if let Some(error) = &result.error {

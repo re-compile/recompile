@@ -84,6 +84,12 @@ fn main() -> Result<()> {
                         .long("check-clean")
                         .action(ArgAction::SetTrue)
                         .help("Run the selected escalation tool even when the crashpack has no findings"),
+                )
+                .arg(
+                    Arg::new("scan-binary")
+                        .long("scan-binary")
+                        .action(ArgAction::SetTrue)
+                        .help("Alias for --check-clean; run the selected tool even with no native findings"),
                 ),
         )
         .subcommand(

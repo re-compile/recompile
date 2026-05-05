@@ -36,26 +36,29 @@ mkdir -p "$cases_dir"
 : >"$cases_jsonl"
 
 samples=(
-    "copy_overrun_case:heap_overflow"
-    "cache_release_twice:double_free"
-    "free_stack_slot:invalid_free"
-    "clean_malloc_free:__none__"
-    "clean_bounded_memcpy:__none__"
+    "copy_overrun_case:heap_overflow:heap_overflow"
+    "cache_release_twice:double_free:double_free"
+    "free_stack_slot:invalid_free:invalid_free"
+    "memory_leak_case:__unsupported__:memory_leak"
+    "clean_malloc_free:__none__:__none__"
+    "clean_bounded_memcpy:__none__:__none__"
 )
 
 append_case_record() {
     local binary_name="$1"
-    local expected_class="$2"
-    local output_dir="$3"
+    local native_expected_class="$2"
+    local escalation_expected_class="$3"
+    local output_dir="$4"
 
-    python3 - "$binary_name" "$expected_class" "$output_dir" >>"$cases_jsonl" <<'PY'
+    python3 - "$binary_name" "$native_expected_class" "$escalation_expected_class" "$output_dir" >>"$cases_jsonl" <<'PY'
 import json
 import pathlib
 import sys
 
 binary_name = sys.argv[1]
-expected_class = sys.argv[2]
-output_dir = pathlib.Path(sys.argv[3])
+native_expected_class = sys.argv[2]
+escalation_expected_class = sys.argv[3]
+output_dir = pathlib.Path(sys.argv[4])
 findings_path = output_dir / "findings.json"
 results_path = output_dir / "escalations" / "results.json"
 
@@ -69,10 +72,12 @@ actual_classes = [
     if isinstance(finding, dict) and finding.get("class")
 ]
 
-if expected_class == "__none__":
+if native_expected_class == "__unsupported__":
+    native_outcome = "unsupported"
+elif native_expected_class == "__none__":
     native_outcome = "tn" if not actual_classes else "fp"
 else:
-    native_outcome = "tp" if expected_class in actual_classes else "fn"
+    native_outcome = "tp" if native_expected_class in actual_classes else "fn"
 
 escalation_results = []
 if results_path.exists():
@@ -82,7 +87,7 @@ if results_path.exists():
 
 escalation = escalation_results[0] if escalation_results else {}
 escalation_detected = escalation.get("findings_detected") or []
-if expected_class == "__none__":
+if escalation_expected_class == "__none__":
     escalation_outcome = (
         "tn"
         if escalation.get("success") and not escalation.get("confirmed") and not escalation_detected
@@ -91,13 +96,14 @@ if expected_class == "__none__":
 else:
     escalation_outcome = (
         "tp"
-        if escalation.get("confirmed") and expected_class in escalation_detected
+        if escalation.get("confirmed") and escalation_expected_class in escalation_detected
         else "fn"
     )
 
 print(json.dumps({
     "binary": binary_name,
-    "expected_class": None if expected_class == "__none__" else expected_class,
+    "native_expected_class": None if native_expected_class.startswith("__") else native_expected_class,
+    "escalation_expected_class": None if escalation_expected_class == "__none__" else escalation_expected_class,
     "native": {
         "outcome": native_outcome,
         "actual_classes": actual_classes,
@@ -117,8 +123,7 @@ PY
 }
 
 for entry in "${samples[@]}"; do
-    binary_name="${entry%%:*}"
-    expected_class="${entry##*:}"
+    IFS=':' read -r binary_name native_expected_class escalation_expected_class <<<"$entry"
     binary_path="build/user-samples/${binary_name}"
     output_dir="${cases_dir}/${binary_name}"
     run_log="${output_dir}.log"
@@ -132,15 +137,18 @@ for entry in "${samples[@]}"; do
         exit 1
     fi
 
-    if [[ "$expected_class" == "__none__" ]]; then
+    if [[ "$escalation_expected_class" == "__none__" ]]; then
         printf '[hit-rate] clean Valgrind check for %s\n' "$binary_name"
         "$runner_path" escalate "$output_dir" --tool valgrind --check-clean
+    elif [[ "$native_expected_class" == "__unsupported__" ]]; then
+        printf '[hit-rate] Valgrind binary scan for %s\n' "$binary_name"
+        "$runner_path" escalate "$output_dir" --tool valgrind --scan-binary
     else
         printf '[hit-rate] Valgrind confirmation for %s\n' "$binary_name"
         "$runner_path" escalate "$output_dir" --tool valgrind
     fi
 
-    append_case_record "$binary_name" "$expected_class" "$output_dir"
+    append_case_record "$binary_name" "$native_expected_class" "$escalation_expected_class" "$output_dir"
 done
 
 python3 - "$cases_jsonl" "$summary_json" <<'PY'
@@ -162,6 +170,7 @@ def totals_for(key):
         "true_negatives": 0,
         "false_positives": 0,
         "false_negatives": 0,
+        "unsupported": 0,
     }
     for case in cases:
         outcome = case[key]["outcome"]
@@ -173,6 +182,8 @@ def totals_for(key):
             totals["false_positives"] += 1
         elif outcome == "fn":
             totals["false_negatives"] += 1
+        elif outcome == "unsupported":
+            totals["unsupported"] += 1
         else:
             raise SystemExit(f"unknown {key} outcome: {outcome}")
     return totals
