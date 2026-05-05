@@ -86,11 +86,11 @@ Confirm a finding with Valgrind:
 jq . build/my-test/escalations/results.json
 ```
 
-For a no-finding crashpack, run an explicit clean Valgrind check:
+For a no-finding crashpack, run an explicit Valgrind binary scan:
 
 ```bash
-./target/release/rerun escalate build/my-clean-test --tool valgrind --check-clean
-jq . build/my-clean-test/escalations/results.json
+./target/release/rerun escalate build/my-test --tool valgrind --scan-binary
+jq . build/my-test/escalations/results.json
 ```
 
 Assert an expected class for one binary:

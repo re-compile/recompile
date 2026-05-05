@@ -15,7 +15,7 @@ Target ELF binary
   -> event normalization
   -> findings.json + crashpack artifacts
   -> optional rerun escalate <crashpack> --tool valgrind
-  -> optional rerun escalate <clean-crashpack> --tool valgrind --check-clean
+  -> optional rerun escalate <crashpack-without-findings> --tool valgrind --scan-binary
   -> escalations/results.json + raw tool logs + parsed tool report
 ```
 
@@ -72,11 +72,11 @@ Current expectation:
 - consume explicit finding provenance
 - avoid guessing paths from example names or finding classes
 - write structured escalation results with command, exit status, raw output paths, parsed report path, and detected classes
-- support explicit clean checks for no-finding crashpacks without inventing a synthetic finding
+- support explicit binary scans for no-finding crashpacks without inventing a synthetic finding
 
 Current implemented adapter:
 
-- `valgrind` for existing binaries in crashpacks and explicit clean checks
+- `valgrind` for existing binaries in crashpacks and explicit binary scans
 
 ### `re-harness/`
 
@@ -153,7 +153,8 @@ Valgrind escalation, then writes `build/hit-rate/summary.json`.
 
 The summary records:
 
-- expected class per sample
+- expected native and escalation class per sample
 - native finding classes and TP/TN/FP/FN outcome
 - escalation detected classes and TP/TN/FP/FN outcome
+- unsupported native classes when a bug class is intentionally Valgrind-first
 - output directory per case

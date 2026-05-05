@@ -69,7 +69,9 @@ pub fn parse_valgrind_output(stdout: &str, stderr: &str) -> ValgrindReport {
             continue;
         }
 
-        if normalized.contains("definitely lost:") && !normalized.contains("0 bytes") {
+        if (normalized.contains("definitely lost:") || normalized.contains("are definitely lost"))
+            && !normalized.contains("0 bytes")
+        {
             push_detection(&mut detected, "memory_leak", normalized, index + 1);
         }
     }
@@ -171,6 +173,30 @@ mod tests {
     #[test]
     fn clean_output_is_not_confirmed() {
         let stderr = "==1== ERROR SUMMARY: 0 errors from 0 contexts";
+        let report = parse_valgrind_output("", stderr);
+        assert!(!report.confirmed());
+        assert!(report.detected.is_empty());
+    }
+
+    #[test]
+    fn parses_definitely_lost_memory_leak() {
+        let stderr = r#"==1== 48 bytes in 1 blocks are definitely lost in loss record 1 of 1
+==1==    at 0x48417B4: malloc (vg_replace_malloc.c:381)
+==1==    by 0x109177: session_open (memory_leak_case.c:8)
+==1== ERROR SUMMARY: 1 errors from 1 contexts
+"#;
+
+        let report = parse_valgrind_output("", stderr);
+        assert_eq!(report.detected_classes(), vec!["memory_leak"]);
+    }
+
+    #[test]
+    fn ignores_zero_and_reachable_leak_summaries() {
+        let stderr = r#"==1== definitely lost: 0 bytes in 0 blocks
+==1== still reachable: 64 bytes in 1 blocks
+==1== ERROR SUMMARY: 0 errors from 0 contexts
+"#;
+
         let report = parse_valgrind_output("", stderr);
         assert!(!report.confirmed());
         assert!(report.detected.is_empty());

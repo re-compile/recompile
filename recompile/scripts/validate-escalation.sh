@@ -108,6 +108,30 @@ for entry in "${positive_samples[@]}"; do
         "$expected_class"
 done
 
+valgrind_only_samples=(
+    "build/user-samples/memory_leak_case:memory_leak"
+)
+
+for entry in "${valgrind_only_samples[@]}"; do
+    binary_path="${entry%%:*}"
+    expected_class="${entry##*:}"
+    binary_name="$(basename "$binary_path")"
+    output_dir="build/escalation-smoke/${binary_name}"
+
+    ./scripts/validate-binary.sh \
+        --binary "$binary_path" \
+        --expect-none \
+        --runner "$runner_path" \
+        --output "$output_dir"
+
+    printf '[escalation] running valgrind binary scan for %s\n' "$binary_name"
+    "$runner_path" escalate "$output_dir" --tool valgrind --scan-binary
+    assert_escalation_result \
+        "$output_dir/escalations/results.json" \
+        "$binary_name" \
+        "$expected_class"
+done
+
 clean_samples=(
     "build/user-samples/clean_malloc_free"
     "build/user-samples/clean_bounded_memcpy"

@@ -120,6 +120,9 @@ make hit-rate
 jq . build/hit-rate/summary.json
 ```
 
+The current corpus includes native-confirmed heap/double/invalid-free cases,
+clean negatives, and a Valgrind-first `memory_leak` case.
+
 For one external binary:
 
 ```bash
