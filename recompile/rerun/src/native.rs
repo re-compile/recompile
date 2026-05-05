@@ -3,8 +3,8 @@
 //! This module implements direct eBPF-based analysis without a VM.
 //! It invokes the C agent (re-mini) to attach probes and monitor the target binary.
 
-use anyhow::{Context, Result};
 use crate::summary::{print_findings_summary, read_findings};
+use anyhow::{Context, Result};
 use re_crashpack::{BinaryInfo, Manifest};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -14,6 +14,16 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
+
+const GENERATED_OUTPUT_FILES: &[&str] = &[
+    "analysis.json",
+    "console.log",
+    "findings.json",
+    "manifest.json",
+    "re-findings.jsonl",
+];
+
+const GENERATED_OUTPUT_DIRS: &[&str] = &[".re", "bins", "escalations"];
 
 #[cfg(target_os = "linux")]
 use libc;
@@ -95,8 +105,7 @@ pub fn run_native(
     #[cfg(target_os = "linux")]
     check_pid_namespace()?;
 
-    // Create output directory
-    std::fs::create_dir_all(output_dir)?;
+    prepare_output_dir(output_dir)?;
 
     // Resolve the binary path to absolute
     let binary_abs = std::fs::canonicalize(binary_path)
@@ -273,6 +282,37 @@ fn locate_components(output_dir: &Path) -> Result<NativeConfig> {
         crashpack_dir: output_dir.to_path_buf(),
         console_log_path,
     })
+}
+
+fn prepare_output_dir(output_dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(output_dir)
+        .with_context(|| format!("Failed to create {}", output_dir.display()))?;
+
+    for file_name in GENERATED_OUTPUT_FILES {
+        let path = output_dir.join(file_name);
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Failed to remove stale {}", path.display()));
+            }
+        }
+    }
+
+    for dir_name in GENERATED_OUTPUT_DIRS {
+        let path = output_dir.join(dir_name);
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Failed to remove stale {}", path.display()));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Find a file in a list of paths
@@ -837,4 +877,35 @@ fn check_pid_namespace() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prepare_output_dir_removes_generated_artifacts_only() {
+        let base =
+            std::env::temp_dir().join(format!("rerun-output-cleanup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join(".re")).unwrap();
+        std::fs::create_dir_all(base.join("bins")).unwrap();
+        std::fs::write(base.join("findings.json"), "[{}]").unwrap();
+        std::fs::write(base.join("re-findings.jsonl"), "stale\n").unwrap();
+        std::fs::write(base.join(".re").join("last_finding.json"), "{}").unwrap();
+        std::fs::write(base.join("notes.txt"), "keep").unwrap();
+
+        prepare_output_dir(&base).unwrap();
+
+        assert!(!base.join("findings.json").exists());
+        assert!(!base.join("re-findings.jsonl").exists());
+        assert!(!base.join(".re").exists());
+        assert!(!base.join("bins").exists());
+        assert_eq!(
+            std::fs::read_to_string(base.join("notes.txt")).unwrap(),
+            "keep"
+        );
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
 }
