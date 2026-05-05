@@ -72,6 +72,11 @@ actual_classes = [
     for finding in findings
     if isinstance(finding, dict) and finding.get("class")
 ]
+source_statuses = [
+    (finding.get("provenance") or {}).get("source_status")
+    for finding in findings
+    if isinstance(finding, dict)
+]
 
 if native_expected_class == "__unsupported__":
     native_outcome = "unsupported"
@@ -108,6 +113,7 @@ print(json.dumps({
     "native": {
         "outcome": native_outcome,
         "actual_classes": actual_classes,
+        "source_statuses": source_statuses,
         "finding_count": len(findings),
     },
     "escalation": {

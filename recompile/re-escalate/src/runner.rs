@@ -650,6 +650,7 @@ mod tests {
             binary_path: Some(crashpack_binary.display().to_string()),
             original_binary_path: Some("/does/not/exist".to_string()),
             source_path: None,
+            source_status: None,
         });
 
         let mut config = EscalationConfig::default();
@@ -671,6 +672,7 @@ mod tests {
             binary_path: None,
             original_binary_path: None,
             source_path: Some(source_file.display().to_string()),
+            source_status: Some("resolved".to_string()),
         });
 
         let runner = EscalationRunner::new(EscalationConfig::default());

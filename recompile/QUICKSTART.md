@@ -79,6 +79,9 @@ Run it under `rerun`:
 jq . build/my-test/findings.json
 ```
 
+Findings include `provenance.source_status`, which is `resolved` when source is
+known and `unresolved` when the tool refuses to guess.
+
 Confirm a finding with Valgrind:
 
 ```bash

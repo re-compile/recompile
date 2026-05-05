@@ -708,7 +708,7 @@ fn attach_finding_provenance(
         let Some(object) = finding.as_object_mut() else {
             continue;
         };
-        let source_path = extract_source_path(object);
+        let source_path = extract_source_path(object, original_binary_path);
 
         let provenance_value = object
             .entry("provenance".to_string())
@@ -727,15 +727,26 @@ fn attach_finding_provenance(
             .entry("original_binary_path".to_string())
             .or_insert_with(|| Value::String(original_binary_path.display().to_string()));
 
-        if !provenance.contains_key("source_path") {
-            if let Some(source_path) = source_path {
-                provenance.insert("source_path".to_string(), Value::String(source_path));
-            }
+        if let Some(source_path) = source_path {
+            provenance
+                .entry("source_path".to_string())
+                .or_insert_with(|| Value::String(source_path));
+            provenance.insert(
+                "source_status".to_string(),
+                Value::String("resolved".to_string()),
+            );
+        } else {
+            provenance
+                .entry("source_status".to_string())
+                .or_insert_with(|| Value::String("unresolved".to_string()));
         }
     }
 }
 
-fn extract_source_path(finding: &Map<String, Value>) -> Option<String> {
+fn extract_source_path(
+    finding: &Map<String, Value>,
+    original_binary_path: &Path,
+) -> Option<String> {
     if let Some(source_path) = finding
         .get("evidence")
         .and_then(|value| value.get("alloc_site"))
@@ -754,6 +765,132 @@ fn extract_source_path(finding: &Map<String, Value>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty() && *value != "unknown")
         .map(str::to_string)
+        .or_else(|| source_path_from_stack_summaries(finding))
+        .or_else(|| source_path_from_binary_offset_frames(finding, original_binary_path))
+}
+
+fn source_path_from_stack_summaries(finding: &Map<String, Value>) -> Option<String> {
+    stack_frame_strings(finding).find_map(|frame| source_path_from_stack_summary(&frame))
+}
+
+fn source_path_from_stack_summary(frame: &str) -> Option<String> {
+    let start = frame.rfind('(')?;
+    let end = frame.rfind(')')?;
+    if end <= start {
+        return None;
+    }
+
+    source_path_from_location(&frame[start + 1..end])
+}
+
+fn source_path_from_binary_offset_frames(
+    finding: &Map<String, Value>,
+    original_binary_path: &Path,
+) -> Option<String> {
+    stack_frame_strings(finding).find_map(|frame| {
+        let (binary_path, offset) = binary_offset_frame(&frame)?;
+        let candidate_binary = if binary_path.exists() {
+            binary_path
+        } else {
+            original_binary_path.to_path_buf()
+        };
+        symbolize_binary_offset(&candidate_binary, offset)
+            .ok()
+            .flatten()
+    })
+}
+
+fn stack_frame_strings(finding: &Map<String, Value>) -> impl Iterator<Item = String> + '_ {
+    ["call", "alloc"].into_iter().flat_map(|stack_name| {
+        finding
+            .get("evidence")
+            .and_then(|value| value.get("stacks"))
+            .and_then(|value| value.get(stack_name))
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flat_map(|frames| frames.iter())
+            .filter_map(|frame| frame.as_str().map(str::trim))
+            .filter(|frame| !frame.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn binary_offset_frame(frame: &str) -> Option<(PathBuf, &str)> {
+    let (path, offset) = frame.rsplit_once("+0x")?;
+    if path.trim().is_empty() || offset.trim().is_empty() {
+        return None;
+    }
+
+    Some((PathBuf::from(path.trim()), offset.trim()))
+}
+
+fn symbolize_binary_offset(binary_path: &Path, offset_hex: &str) -> Result<Option<String>> {
+    if !binary_path.exists() {
+        return Ok(None);
+    }
+
+    let offset = format!("0x{}", offset_hex.trim_start_matches("0x"));
+    if let Ok(output) = Command::new("llvm-symbolizer")
+        .arg(format!("--obj={}", binary_path.display()))
+        .arg(&offset)
+        .output()
+    {
+        if output.status.success() {
+            if let Some(source_path) = parse_symbolizer_output(&output.stdout) {
+                return Ok(Some(source_path));
+            }
+        }
+    }
+
+    if let Ok(output) = Command::new("addr2line")
+        .args(["-f", "-C", "-e"])
+        .arg(binary_path)
+        .arg(&offset)
+        .output()
+    {
+        if output.status.success() {
+            if let Some(source_path) = parse_symbolizer_output(&output.stdout) {
+                return Ok(Some(source_path));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn parse_symbolizer_output(output: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(output);
+    text.lines().find_map(source_path_from_location)
+}
+
+fn source_path_from_location(location: &str) -> Option<String> {
+    let location = location.trim();
+    if location.is_empty() || location == "??" || location.starts_with("??:") {
+        return None;
+    }
+
+    let without_column = strip_trailing_numeric_component(location);
+    if without_column == location {
+        return None;
+    }
+    let without_line = strip_trailing_numeric_component(without_column);
+    let source_path = without_line.trim();
+    if source_path.is_empty() || source_path == "??" {
+        return None;
+    }
+
+    Some(source_path.to_string())
+}
+
+fn strip_trailing_numeric_component(value: &str) -> &str {
+    let Some((head, tail)) = value.rsplit_once(':') else {
+        return value;
+    };
+    if !tail.is_empty() && tail.chars().all(|ch| ch.is_ascii_digit()) {
+        head
+    } else {
+        value
+    }
 }
 
 /// Display findings from the findings file
@@ -882,6 +1019,7 @@ fn check_pid_namespace() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn prepare_output_dir_removes_generated_artifacts_only() {
@@ -907,5 +1045,90 @@ mod tests {
         );
 
         std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn source_path_from_stack_summary_strips_line_and_column() {
+        assert_eq!(
+            source_path_from_stack_summary("main (/tmp/project/example.c:18:3)").as_deref(),
+            Some("/tmp/project/example.c")
+        );
+        assert_eq!(
+            source_path_from_stack_summary("main (/tmp/project/example.c:18)").as_deref(),
+            Some("/tmp/project/example.c")
+        );
+    }
+
+    #[test]
+    fn source_path_ignores_unknown_symbolizer_locations() {
+        assert_eq!(source_path_from_location("??:0"), None);
+        assert_eq!(source_path_from_location("??"), None);
+        assert_eq!(source_path_from_location("main"), None);
+    }
+
+    #[test]
+    fn parse_symbolizer_output_skips_function_names() {
+        assert_eq!(
+            parse_symbolizer_output(b"main\n/tmp/project/example.c:18:3\n").as_deref(),
+            Some("/tmp/project/example.c")
+        );
+    }
+
+    #[test]
+    fn binary_offset_frame_parses_module_and_offset() {
+        let (path, offset) = binary_offset_frame("/tmp/app+0x770").unwrap();
+        assert_eq!(path, PathBuf::from("/tmp/app"));
+        assert_eq!(offset, "770");
+    }
+
+    #[test]
+    fn extract_source_path_uses_stack_summary_when_primary_is_unknown() {
+        let finding = json!({
+            "evidence": {
+                "alloc_site": "",
+                "stacks": {
+                    "call": [
+                        "0xffffab0a6ec0",
+                        "main (/workspace/recompile/examples/invalid_free.c:14)",
+                        "/workspace/recompile/build/examples/invalid_free+0x770"
+                    ],
+                    "alloc": []
+                }
+            },
+            "primaryLocation": {"uri": "file://unknown"}
+        });
+        let object = finding.as_object().unwrap();
+
+        assert_eq!(
+            extract_source_path(
+                object,
+                Path::new("/workspace/recompile/build/examples/invalid_free")
+            )
+            .as_deref(),
+            Some("/workspace/recompile/examples/invalid_free.c")
+        );
+    }
+
+    #[test]
+    fn attach_provenance_marks_unresolved_source_explicitly() {
+        let mut findings = vec![json!({
+            "class": "invalid_free",
+            "evidence": {
+                "alloc_site": "",
+                "stacks": {
+                    "call": ["/tmp/app+0x770"],
+                    "alloc": []
+                }
+            }
+        })];
+
+        attach_finding_provenance(&mut findings, Path::new("/tmp/app"), Path::new("/tmp/copy"));
+
+        let provenance = findings[0].get("provenance").unwrap();
+        assert_eq!(
+            provenance.get("source_status").and_then(Value::as_str),
+            Some("unresolved")
+        );
+        assert!(provenance.get("source_path").is_none());
     }
 }

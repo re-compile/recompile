@@ -109,6 +109,7 @@ Findings can include explicit provenance for:
 - analyzed binary path
 - original binary path
 - source path when available
+- source resolution status
 
 Escalation should use provenance first.
 
@@ -155,6 +156,7 @@ The summary records:
 
 - expected native and escalation class per sample
 - native finding classes and TP/TN/FP/FN outcome
+- native source resolution statuses
 - escalation detected classes and TP/TN/FP/FN outcome
 - unsupported native classes when a bug class is intentionally Valgrind-first
 - output directory per case
@@ -163,3 +165,13 @@ Current Valgrind-first classes:
 
 - `use_after_free`
 - `memory_leak`
+
+## Source Quality
+
+Native findings attach `provenance.source_status`:
+
+- `resolved` when a concrete source path is available
+- `unresolved` when source lookup fails without guessing
+
+Source resolution prefers explicit runtime source data, then stack summaries,
+then debug-info lookup from binary-offset stack frames.
