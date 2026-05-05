@@ -18,6 +18,8 @@
 - Added structured Valgrind escalation output for existing crashpacks.
 - Added `make escalation-smoke` and `make phase2` validation targets.
 - The Docker bootstrap image now includes Valgrind for native escalation smoke tests.
+- Valgrind escalation smoke now covers all current positive user-style samples and clean-negative samples.
+- `rerun escalate --check-clean` now runs explicit Valgrind checks for no-finding crashpacks.
 
 ### Fixed
 - PID-scoped native runs no longer depend on the old shell-wrapper launch path.

@@ -62,6 +62,9 @@ To smoke-test Valgrind confirmation:
 make escalation-smoke
 ```
 
+That smoke validates Valgrind confirmations for the current positive user-style
+samples and verifies Valgrind stays unconfirmed on clean user-style samples.
+
 ## Repo Layout
 
 - `recompile/` - active Rust/C workspace
@@ -123,4 +126,10 @@ To run Valgrind confirmation on an existing crashpack:
 ```bash
 ./target/release/rerun escalate build/my-test --tool valgrind
 jq . build/my-test/escalations/results.json
+```
+
+For a crashpack with no findings, run an explicit clean escalation check:
+
+```bash
+./target/release/rerun escalate build/my-clean-test --tool valgrind --check-clean
 ```
