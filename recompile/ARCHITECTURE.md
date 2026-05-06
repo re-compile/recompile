@@ -119,6 +119,10 @@ Current decision:
 - includes artifact pointers, binary provenance, class counts, source resolution counts, and compact per-finding evidence
 - does not replace `findings.json`
 
+`rerun summarize <crashpack> --format json` reads this evidence pack plus
+optional `escalations/results.json` and emits the compact agent summary used by
+coding agents.
+
 ### Debug contract
 
 - `re-findings.jsonl`
