@@ -120,14 +120,25 @@ impl CrashpackWriter {
     }
 
     /// Write repro.sh script
-    pub fn write_repro_script(&self, findings: &[Finding]) -> Result<()> {
+    pub fn write_repro_script(&self, findings: &[Finding], binaries: &[BinaryInfo]) -> Result<()> {
         let repro_path = self.base_dir.join("repro.sh");
+        let repro_binary = primary_repro_binary(binaries);
         
         let mut script = String::new();
         script.push_str("#!/bin/bash\n");
         script.push_str("set -euo pipefail\n\n");
         script.push_str("# RECC Crashpack Repro Script\n");
         script.push_str("# Generated automatically\n\n");
+        if let Some(binary) = &repro_binary {
+            script.push_str(&format!("RE_TARGET={}\n", shell_quote(binary)));
+            script.push_str("if [[ ! -x \"$RE_TARGET\" ]]; then\n");
+            script.push_str("  echo \"captured binary is missing or not executable: $RE_TARGET\" >&2\n");
+            script.push_str("  exit 2\n");
+            script.push_str("fi\n\n");
+        } else {
+            script.push_str("echo \"no binary was captured in this crashpack\" >&2\n");
+            script.push_str("exit 2\n");
+        }
         
         // Add environment setup
         script.push_str("export ASAN_OPTIONS=detect_leaks=1:abort_on_error=1\n");
@@ -144,17 +155,17 @@ impl CrashpackWriter {
                     "asan" => {
                         script.push_str(&format!("# ASan escalation for {}\n", finding.class));
                         script.push_str("echo \"Running with AddressSanitizer...\"\n");
-                        script.push_str("RE_SANITIZE=address ./bins/target 2>&1 | tee sanitizer/asan.log\n");
+                        script.push_str("RE_SANITIZE=address \"$RE_TARGET\" 2>&1 | tee sanitizer/asan.log\n");
                     }
                     "valgrind" => {
                         script.push_str(&format!("# Valgrind escalation for {}\n", finding.class));
                         script.push_str("echo \"Running with Valgrind...\"\n");
-                        script.push_str("valgrind --error-exitcode=99 --leak-check=full --track-origins=yes ./bins/target 2>&1 | tee sanitizer/valgrind.log\n");
+                        script.push_str("valgrind --error-exitcode=99 --leak-check=full --track-origins=yes \"$RE_TARGET\" 2>&1 | tee sanitizer/valgrind.log\n");
                     }
                     "gdb" => {
                         script.push_str(&format!("# GDB escalation for {}\n", finding.class));
                         script.push_str("echo \"Running with GDB...\"\n");
-                        script.push_str("gdb -batch -ex run -ex bt -ex info reg ./bins/target 2>&1 | tee gdb/backtrace.txt\n");
+                        script.push_str("gdb -batch -ex run -ex bt -ex 'info reg' \"$RE_TARGET\" 2>&1 | tee gdb/backtrace.txt\n");
                     }
                     _ => {
                         script.push_str(&format!("# Unknown escalation tool: {}\n", escalation.tool));
@@ -192,5 +203,51 @@ impl CrashpackWriter {
         
         fs::write(env_path, env_content)?;
         Ok(())
+    }
+}
+
+fn primary_repro_binary(binaries: &[BinaryInfo]) -> Option<String> {
+    binaries.iter().find_map(|binary| {
+        Path::new(&binary.path)
+            .file_name()
+            .map(|name| format!("./bins/{}", name.to_string_lossy()))
+    })
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+
+    let escaped = value.replace('\'', "'\"'\"'");
+    format!("'{}'", escaped)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repro_binary_uses_copied_binary_basename() {
+        let binaries = vec![BinaryInfo {
+            path: "/tmp/project/build/server".to_string(),
+            build_id: None,
+            debug_info: true,
+            size: 42,
+            sha256: None,
+        }];
+
+        assert_eq!(
+            primary_repro_binary(&binaries).as_deref(),
+            Some("./bins/server")
+        );
+    }
+
+    #[test]
+    fn shell_quote_handles_spaces_and_quotes() {
+        assert_eq!(
+            shell_quote("./bins/my app's test"),
+            "'./bins/my app'\"'\"'s test'"
+        );
     }
 }
