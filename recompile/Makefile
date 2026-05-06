@@ -1,4 +1,4 @@
-.PHONY: all bpf passes agent toolchain examples user-samples external-smoke escalation-smoke hit-rate phase1 rc phase2
+.PHONY: all bpf passes agent toolchain examples user-samples external-smoke escalation-smoke asan-smoke hit-rate phase1 rc phase2
 
 all: examples
 
@@ -14,6 +14,9 @@ external-smoke:
 escalation-smoke:
 	./scripts/validate-escalation.sh
 
+asan-smoke:
+	./scripts/validate-asan.sh
+
 hit-rate:
 	./scripts/validate-hit-rate.sh
 
@@ -26,6 +29,7 @@ rc:
 phase2:
 	./scripts/validate-rc.sh
 	./scripts/validate-escalation.sh
+	./scripts/validate-asan.sh
 
 passes:
 	cmake -S llvm-passes -B build/passes && cmake --build build/passes

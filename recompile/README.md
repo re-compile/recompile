@@ -16,6 +16,7 @@ What is working now:
 - debug/streaming output goes to `re-findings.jsonl`
 - crashpack and escalation consume explicit provenance instead of guessing from example names
 - Valgrind escalation can confirm a finding from an existing crashpack
+- ASan escalation can confirm an already-ASan-built binary from an existing crashpack
 - the three goldens validate in Docker with `--privileged --pid=host`
 
 Validated goldens:
@@ -113,6 +114,16 @@ make external-smoke
 make escalation-smoke
 ```
 
+### Validate ASan escalation
+
+```bash
+make asan-smoke
+```
+
+ASan validation uses binaries built under `build/user-samples-asan/`. This is
+deliberate: ASan only applies when the target was compiled with
+`-fsanitize=address`.
+
 ### Score hit rate
 
 ```bash
@@ -141,6 +152,18 @@ To inspect the no-finding diagnostics on a clean sample:
 ./scripts/build-user-samples.sh
 ./target/release/rerun run --native build/user-samples/clean_bounded_memcpy --output build/clean-demo
 ```
+
+To run ASan on a no-finding crashpack, use an ASan-instrumented target:
+
+```bash
+./scripts/build-user-samples.sh
+./target/release/rerun run --native build/user-samples-asan/use_after_free_case --output build/asan-demo
+./target/release/rerun escalate build/asan-demo --tool asan --scan-binary
+jq . build/asan-demo/escalations/results.json
+```
+
+Running `--tool asan` on a normal binary is rejected with an explicit
+`-fsanitize=address` build requirement.
 
 ## Active Components
 

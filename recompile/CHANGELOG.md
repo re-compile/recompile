@@ -24,11 +24,14 @@
 - Added Valgrind-first memory leak coverage and the `rerun escalate --scan-binary` alias for no-native-finding binary scans.
 - Added Valgrind-first use-after-free coverage.
 - Native finding provenance now records explicit `source_status` and can recover source paths from stack summaries or debuginfo-resolved binary-offset frames.
+- Added structured ASan escalation for binaries already built with `-fsanitize=address`.
+- Added `make asan-smoke` and included it in `make phase2`.
 
 ### Fixed
 - PID-scoped native runs no longer depend on the old shell-wrapper launch path.
 - Docker-native runs now fail loudly when started without a shared host PID namespace.
 - Native runs now refresh generated crashpack output before analysis so stale findings do not leak across repeated `--output` directories.
+- ASan escalation now rejects non-instrumented binaries clearly instead of attempting an implicit source rebuild.
 - Shared allocator tracking now uses deterministic BPF map keys, fixing valid bounded `memcpy` runs that could report `invalid_free`.
 - PID/binary validation in `re-mini` now uses stronger executable matching and handles `readlink` truncation explicitly.
 - The three Linux-native goldens currently verify as distinct findings in the supported Docker path:
@@ -38,3 +41,4 @@
 
 ### Removed
 - VM-era bootstrap and ad hoc test scripts that no longer match the supported Linux-native workflow.
+- Removed the legacy unreferenced escalation tool module that duplicated stale sanitizer implementations.

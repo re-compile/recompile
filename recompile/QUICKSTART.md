@@ -96,6 +96,21 @@ For a no-finding crashpack, run an explicit Valgrind binary scan:
 jq . build/my-test/escalations/results.json
 ```
 
+Confirm an already-ASan-built binary with ASan:
+
+```bash
+clang -g -O0 -fno-omit-frame-pointer -fsanitize=address \
+  -o my_asan_test my_test.c
+
+./target/release/rerun run --native ./my_asan_test --output build/my-asan-test
+./target/release/rerun escalate build/my-asan-test --tool asan --scan-binary
+jq . build/my-asan-test/escalations/results.json
+```
+
+ASan is not a standalone binary checker. If the target was not compiled with
+`-fsanitize=address`, `rerun escalate --tool asan` rejects it instead of
+guessing or rebuilding from source.
+
 Assert an expected class for one binary:
 
 ```bash
@@ -122,6 +137,12 @@ make escalation-smoke
 
 This validates positive confirmations for the current user-style bug samples
 and clean-negative confirmations for the current clean samples.
+
+Run the checked ASan escalation smoke:
+
+```bash
+make asan-smoke
+```
 
 Run the current hit-rate evaluation:
 

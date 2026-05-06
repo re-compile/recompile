@@ -65,6 +65,16 @@ make escalation-smoke
 That smoke validates Valgrind confirmations for the current positive user-style
 samples and verifies Valgrind stays unconfirmed on clean user-style samples.
 
+To smoke-test ASan confirmation for already-instrumented binaries:
+
+```bash
+make asan-smoke
+```
+
+ASan support is intentionally narrow: the binary must already be built with
+`-fsanitize=address`. `rerun` does not silently rebuild source files or pretend
+ASan applies to a normal binary.
+
 To score the current native/escalation hit rate:
 
 ```bash
@@ -155,3 +165,17 @@ For a crashpack with no native findings, run an explicit Valgrind binary scan:
 ```bash
 ./target/release/rerun escalate build/my-test --tool valgrind --scan-binary
 ```
+
+To run ASan confirmation, build the target with ASan first:
+
+```bash
+clang -g -O0 -fno-omit-frame-pointer -fsanitize=address \
+  -o my_asan_test my_test.c
+
+./target/release/rerun run --native ./my_asan_test --output build/my-asan-test
+./target/release/rerun escalate build/my-asan-test --tool asan --scan-binary
+jq . build/my-asan-test/escalations/results.json
+```
+
+If the binary is not ASan-instrumented, `--tool asan` fails clearly with the
+`-fsanitize=address` requirement instead of reporting a fake negative.

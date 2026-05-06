@@ -1,7 +1,8 @@
 //! Escalation runner - orchestrates tool execution
 
 use crate::{
-    parse_valgrind_output, EscalationConfig, EscalationError, EscalationResult, Finding, Result,
+    parse_asan_output, parse_valgrind_output, EscalationConfig, EscalationError, EscalationResult,
+    Finding, Result,
 };
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -84,7 +85,8 @@ impl EscalationRunner {
         let start_time = Instant::now();
         let result = match tool {
             "valgrind" => self.run_valgrind_clean_check(&escalation_id).await,
-            "asan" | "gdb" => Ok(self.result_failure(
+            "asan" => self.run_asan_clean_check(&escalation_id).await,
+            "gdb" => Ok(self.result_failure(
                 "clean-run",
                 &escalation_id,
                 tool,
@@ -140,37 +142,20 @@ impl EscalationRunner {
         escalation_id: &str,
     ) -> Result<EscalationResult> {
         let start_time = Instant::now();
-        let result = self.run_asan_escalation(finding, escalation_id).await;
-        let duration_ms = start_time.elapsed().as_millis() as u64;
-
-        match result {
-            Ok(path) => Ok(EscalationResult {
-                id: escalation_id.to_string(),
-                finding_id: finding.id.clone(),
-                tool: "asan".to_string(),
-                success: true,
-                tool_available: true,
-                duration_ms,
-                output_path: Some(path),
-                stdout_path: None,
-                stderr_path: None,
-                report_path: None,
-                command: Vec::new(),
-                exit_code: None,
-                confirmed: false,
-                error: None,
-                findings_detected: Vec::new(),
-                timestamp: unix_timestamp(),
-            }),
-            Err(error) => Ok(self.failure_result(
+        if !self.config.tools.asan.enabled {
+            return Ok(self.failure_result(
                 finding,
                 escalation_id,
                 "asan",
-                true,
-                duration_ms,
-                error.to_string(),
-            )),
+                false,
+                start_time.elapsed().as_millis() as u64,
+                "ASan escalation is disabled".to_string(),
+            ));
         }
+
+        let binary_path = self.find_binary(finding)?;
+        self.run_asan_binary(&finding.id, &binary_path, escalation_id, start_time)
+            .await
     }
 
     async fn run_gdb_result(
@@ -260,37 +245,109 @@ impl EscalationRunner {
         }
     }
 
-    /// Run ASan escalation
-    async fn run_asan_escalation(&self, finding: &Finding, escalation_id: &str) -> Result<String> {
+    async fn run_asan_clean_check(&self, escalation_id: &str) -> Result<EscalationResult> {
+        let start_time = Instant::now();
         if !self.config.tools.asan.enabled {
-            return Err(EscalationError::Config(
+            return Ok(self.result_failure(
+                "clean-run",
+                escalation_id,
+                "asan",
+                false,
+                start_time.elapsed().as_millis() as u64,
                 "ASan escalation is disabled".to_string(),
+            ));
+        }
+
+        let binary_path = self
+            .config
+            .binary_path
+            .as_deref()
+            .map(PathBuf::from)
+            .filter(|path| path.exists())
+            .ok_or_else(|| {
+                EscalationError::Config(
+                    "Clean ASan check requires an existing binary_path".to_string(),
+                )
+            })?;
+
+        self.run_asan_binary("clean-run", &binary_path, escalation_id, start_time)
+            .await
+    }
+
+    async fn run_asan_binary(
+        &self,
+        finding_id: &str,
+        binary_path: &Path,
+        escalation_id: &str,
+        start_time: Instant,
+    ) -> Result<EscalationResult> {
+        if !self.binary_looks_asan_instrumented(binary_path).await? {
+            return Ok(self.result_failure(
+                finding_id,
+                escalation_id,
+                "asan",
+                false,
+                start_time.elapsed().as_millis() as u64,
+                format!(
+                    "ASan requires a binary built with -fsanitize=address: {}",
+                    binary_path.display()
+                ),
             ));
         }
 
         let output_dir = Path::new(&self.config.output_dir).join("asan");
         tokio::fs::create_dir_all(&output_dir).await?;
 
-        // Find the source file for the finding
-        let source_file = self.find_source_file(finding)?;
-        let binary_name = format!("{}_{}", finding.class, escalation_id);
-        let binary_path = output_dir.join(&binary_name);
-        let output_file = output_dir.join(format!("{}.log", binary_name));
+        let stdout_file = output_dir.join(format!("asan_{}.stdout.log", escalation_id));
+        let stderr_file = output_dir.join(format!("asan_{}.stderr.log", escalation_id));
+        let report_file = output_dir.join(format!("asan_{}.json", escalation_id));
 
-        // Compile with ASan
-        self.compile_with_asan(&source_file, &binary_path).await?;
+        let mut cmd = TokioCommand::new(binary_path);
+        let mut command = vec![binary_path.display().to_string()];
+        for arg in &self.config.args {
+            cmd.arg(arg);
+            command.push(arg.clone());
+        }
 
-        // Run with ASan
         let runtime_flags = self.config.tools.asan.runtime_flags.join(":");
-        let env_vars = vec![("ASAN_OPTIONS", runtime_flags.as_str())];
+        cmd.env("ASAN_OPTIONS", runtime_flags);
 
-        let output = self.run_binary_with_env(&binary_path, &env_vars).await?;
+        let timeout_duration = TokioDuration::from_millis(self.config.tools.asan.timeout_ms);
+        let output = timeout(timeout_duration, cmd.output())
+            .await
+            .map_err(|_| EscalationError::Timeout("ASan execution timed out".to_string()))?;
 
-        // Save output
-        tokio::fs::write(&output_file, &output).await?;
+        let output = output.map_err(|error| EscalationError::ToolExecution(error.to_string()))?;
 
-        log::info!("ASan escalation completed: {}", output_file.display());
-        Ok(output_file.to_string_lossy().to_string())
+        let output_str = String::from_utf8_lossy(&output.stdout);
+        let error_str = String::from_utf8_lossy(&output.stderr);
+        let report = parse_asan_output(&output_str, &error_str);
+
+        tokio::fs::write(&stdout_file, output_str.as_bytes()).await?;
+        tokio::fs::write(&stderr_file, error_str.as_bytes()).await?;
+        tokio::fs::write(&report_file, serde_json::to_vec_pretty(&report)?).await?;
+
+        let findings_detected = report.detected_classes();
+
+        log::info!("ASan escalation completed: {}", report_file.display());
+        Ok(EscalationResult {
+            id: escalation_id.to_string(),
+            finding_id: finding_id.to_string(),
+            tool: "asan".to_string(),
+            success: true,
+            tool_available: true,
+            duration_ms: start_time.elapsed().as_millis() as u64,
+            output_path: Some(report_file.display().to_string()),
+            stdout_path: Some(stdout_file.display().to_string()),
+            stderr_path: Some(stderr_file.display().to_string()),
+            report_path: Some(report_file.display().to_string()),
+            command,
+            exit_code: output.status.code(),
+            confirmed: report.confirmed(),
+            error: None,
+            findings_detected,
+            timestamp: unix_timestamp(),
+        })
     }
 
     /// Run Valgrind escalation
@@ -471,31 +528,6 @@ impl EscalationRunner {
         Ok(output_file.to_string_lossy().to_string())
     }
 
-    /// Find source file for a finding
-    fn find_source_file(&self, finding: &Finding) -> Result<PathBuf> {
-        if let Some(path) = finding
-            .provenance
-            .as_ref()
-            .and_then(|provenance| provenance.source_path.as_deref())
-            .map(PathBuf::from)
-            .filter(|path| path.exists())
-        {
-            return Ok(path);
-        }
-
-        if let Some(source_file) = &self.config.source_file {
-            let path = PathBuf::from(source_file);
-            if path.exists() {
-                return Ok(path);
-            }
-        }
-
-        Err(EscalationError::Config(format!(
-            "Could not find explicit source provenance for finding {}",
-            finding.id
-        )))
-    }
-
     /// Find binary for a finding
     fn find_binary(&self, finding: &Finding) -> Result<PathBuf> {
         if let Some(path) = finding
@@ -531,56 +563,12 @@ impl EscalationRunner {
         )))
     }
 
-    /// Compile source with ASan
-    async fn compile_with_asan(&self, source_file: &Path, output_file: &Path) -> Result<()> {
-        let mut cmd = TokioCommand::new("clang");
-
-        // Add ASan flags
-        for flag in &self.config.tools.asan.compile_flags {
-            cmd.arg(flag);
-        }
-
-        cmd.arg(source_file);
-        cmd.arg("-o");
-        cmd.arg(output_file);
-
-        let timeout_duration = TokioDuration::from_millis(self.config.timeouts.compile_ms);
-        let output = timeout(timeout_duration, cmd.output())
-            .await
-            .map_err(|_| EscalationError::Timeout("Compilation timed out".to_string()))?
-            .map_err(|e| EscalationError::Compilation(e.to_string()))?;
-
-        if !output.status.success() {
-            let error = String::from_utf8_lossy(&output.stderr);
-            return Err(EscalationError::Compilation(error.to_string()));
-        }
-
-        Ok(())
-    }
-
-    /// Run binary with environment variables
-    async fn run_binary_with_env(
-        &self,
-        binary_path: &Path,
-        env_vars: &[(&str, &str)],
-    ) -> Result<String> {
-        let mut cmd = TokioCommand::new(binary_path);
-
-        // Set environment variables
-        for (key, value) in env_vars {
-            cmd.env(key, value);
-        }
-
-        let timeout_duration = TokioDuration::from_millis(self.config.timeouts.run_ms);
-        let output = timeout(timeout_duration, cmd.output())
-            .await
-            .map_err(|_| EscalationError::Timeout("Binary execution timed out".to_string()))?
-            .map_err(|e| EscalationError::ToolExecution(e.to_string()))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        Ok(format!("STDOUT:\n{}\nSTDERR:\n{}", stdout, stderr))
+    async fn binary_looks_asan_instrumented(&self, binary_path: &Path) -> Result<bool> {
+        let bytes = tokio::fs::read(binary_path).await?;
+        let haystack = String::from_utf8_lossy(&bytes);
+        Ok(haystack.contains("__asan_")
+            || haystack.contains("libasan")
+            || haystack.contains("AddressSanitizer"))
     }
 }
 
@@ -661,22 +649,29 @@ mod tests {
         assert_eq!(resolved, crashpack_binary);
     }
 
-    #[test]
-    fn find_source_file_requires_explicit_provenance() {
-        let dir = unique_test_dir("source");
-        let source_file = dir.join("example.c");
-        fs::write(&source_file, b"int main(void) { return 0; }\n").unwrap();
-
-        let mut finding = sample_finding();
-        finding.provenance = Some(FindingProvenance {
-            binary_path: None,
-            original_binary_path: None,
-            source_path: Some(source_file.display().to_string()),
-            source_status: Some("resolved".to_string()),
-        });
+    #[tokio::test]
+    async fn detects_asan_instrumentation_markers() {
+        let dir = unique_test_dir("asan-marker");
+        let binary = dir.join("target-bin");
+        fs::write(&binary, b"\0__asan_init\0").unwrap();
 
         let runner = EscalationRunner::new(EscalationConfig::default());
-        let resolved = runner.find_source_file(&finding).unwrap();
-        assert_eq!(resolved, source_file);
+        assert!(runner
+            .binary_looks_asan_instrumented(&binary)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn rejects_non_asan_binaries() {
+        let dir = unique_test_dir("non-asan-marker");
+        let binary = dir.join("target-bin");
+        fs::write(&binary, b"plain elf-ish bytes").unwrap();
+
+        let runner = EscalationRunner::new(EscalationConfig::default());
+        assert!(!runner
+            .binary_looks_asan_instrumented(&binary)
+            .await
+            .unwrap());
     }
 }

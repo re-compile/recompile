@@ -6,13 +6,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
 
+pub mod asan;
 pub mod config;
 pub mod runner;
-pub mod tools;
 pub mod valgrind;
 
+pub use asan::*;
 pub use runner::*;
-pub use tools::*;
 pub use valgrind::*;
 
 /// Escalation result
