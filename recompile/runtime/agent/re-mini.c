@@ -119,9 +119,29 @@ static const char *crashpack_dir = NULL;  // NULL = cwd/crashpack, or set via --
 static int out_fd = -1;
 static int ustacks_fd = -1;
 static __u32 self_pid = 0;
-static bool memcpy_finding_emitted = false;
-static unsigned free_finding_mask = 0;
 static bool symbolize_debug = false;
+
+enum finding_dedupe_kind {
+    FINDING_DEDUPE_HEAP_OVERFLOW = 1,
+    FINDING_DEDUPE_DOUBLE_FREE = 2,
+    FINDING_DEDUPE_INVALID_FREE = 3,
+};
+
+struct emitted_finding_key {
+    __u16 kind;
+    __u8 status;
+    __u32 pid;
+    __u32 site_id;
+    __s32 stack_id;
+    __u64 addr;
+    __u32 len;
+    __u32 alloc_size;
+};
+
+#define MAX_EMITTED_FINDINGS 256
+static struct emitted_finding_key emitted_findings[MAX_EMITTED_FINDINGS];
+static int emitted_finding_count = 0;
+static int emitted_finding_next = 0;
 
 #define MAX_TRACKED_PIDS 32
 struct pid_entry { __u32 pid; bool allowed; };
@@ -148,8 +168,13 @@ static bool ensure_pid_allowed(__u32 pid);
 static bool exe_matches_binary(__u32 pid, const char *proc_exe_path);
 static void debug_drop(__u32 pid, const char *reason);
 static void debug_symbolize(const char *fmt, ...);
-static bool already_reported(__u32 pid, __u64 dst);
-static void mark_reported(__u32 pid, __u64 dst);
+static struct emitted_finding_key finding_key_from_event(
+    const struct re_sentinel_event *ev,
+    enum finding_dedupe_kind kind,
+    __u8 status);
+static bool finding_already_emitted(const struct emitted_finding_key *key);
+static void mark_finding_emitted(const struct emitted_finding_key *key);
+static bool heap_overflow_emitted_for_addr(__u32 pid, __u64 addr);
 static int collect_call_frames(__u32 pid, __s32 stack_id, struct frame_info *frames, int max_frames);
 static struct module_cache *get_module_cache(__u32 pid);
 static void build_module_cache(struct module_cache *cache);
@@ -508,9 +533,6 @@ static int on_sentinel_event(void *ctx, void *data, size_t len)
 
     switch (ev.type) {
     case RE_SENTINEL_TYPE_MEMCPY: {
-        if (memcpy_finding_emitted)
-            return 0;
-
         // Treat heap overflow as a tracked-allocation signal only. Unknown
         // destination capacity produces too many libc-internal false positives
         // in the current native pipeline.
@@ -520,7 +542,11 @@ static int on_sentinel_event(void *ctx, void *data, size_t len)
         if (ev.len <= ev.alloc_size)
             return 0;
 
-        if (already_reported(ev.pid, ev.addr))
+        struct emitted_finding_key key = finding_key_from_event(
+            &ev,
+            FINDING_DEDUPE_HEAP_OVERFLOW,
+            RE_SENTINEL_FREE_OK);
+        if (finding_already_emitted(&key))
             return 0;
 
         __s32 alloc_sid = -1;
@@ -532,10 +558,9 @@ static int on_sentinel_event(void *ctx, void *data, size_t len)
         int call_count = collect_call_frames(ev.pid, ev.stack_id, call_frames, MAX_CALL_FRAMES);
         int alloc_count = collect_call_frames(ev.pid, alloc_sid, alloc_frames, MAX_CALL_FRAMES);
 
-        mark_reported(ev.pid, ev.addr);
+        mark_finding_emitted(&key);
         last_drop_reason[0] = '\0';
         emit_memcpy_finding(&ev, call_frames, call_count, alloc_frames, alloc_count);
-        memcpy_finding_emitted = true;
         break;
     }
     case RE_SENTINEL_TYPE_FREE: {
@@ -547,13 +572,15 @@ static int on_sentinel_event(void *ctx, void *data, size_t len)
         // Once we have already reported a heap overflow on this exact
         // allocation, a later invalid free is usually a secondary symptom of
         // the same corruption rather than an independent root cause.
-        if (status == RE_SENTINEL_FREE_INVALID && already_reported(ev.pid, ev.addr))
+        if (status == RE_SENTINEL_FREE_INVALID && heap_overflow_emitted_for_addr(ev.pid, ev.addr))
             return 0;
 
-        unsigned bit = (status <= 30) ? (1u << status) : (1u << 31);
-        if (free_finding_mask & bit)
+        enum finding_dedupe_kind kind = (status == RE_SENTINEL_FREE_DOUBLE)
+            ? FINDING_DEDUPE_DOUBLE_FREE
+            : FINDING_DEDUPE_INVALID_FREE;
+        struct emitted_finding_key key = finding_key_from_event(&ev, kind, status);
+        if (finding_already_emitted(&key))
             return 0;
-        free_finding_mask |= bit;
 
         __s32 alloc_sid = -1;
         if (ev.site_id)
@@ -564,6 +591,7 @@ static int on_sentinel_event(void *ctx, void *data, size_t len)
         int free_count = collect_call_frames(ev.pid, ev.stack_id, free_frames, MAX_CALL_FRAMES);
         int alloc_count = collect_call_frames(ev.pid, alloc_sid, alloc_frames, MAX_CALL_FRAMES);
 
+        mark_finding_emitted(&key);
         emit_free_finding(&ev, status, free_frames, free_count, alloc_frames, alloc_count);
         break;
     }
@@ -707,15 +735,6 @@ struct link_vec {
     struct bpf_link *links[32];
     int count;
 };
-
-struct reported_event {
-    __u32 pid;
-    __u64 dst;
-};
-
-#define MAX_REPORTED 64
-static struct reported_event reported[MAX_REPORTED];
-static int reported_count = 0;
 
 struct module_range {
     __u64 start;
@@ -1054,21 +1073,63 @@ static int find_module_for_addr(__u32 pid, __u64 addr, char *path_out, size_t pa
     return 0;
 }
 
-static bool already_reported(__u32 pid, __u64 dst)
+static struct emitted_finding_key finding_key_from_event(
+    const struct re_sentinel_event *ev,
+    enum finding_dedupe_kind kind,
+    __u8 status)
 {
-    for (int i = 0; i < reported_count; ++i) {
-        if (reported[i].pid == pid && reported[i].dst == dst)
+    struct emitted_finding_key key = {
+        .kind = (__u16)kind,
+        .status = status,
+        .pid = ev->pid,
+        .site_id = ev->site_id,
+        .stack_id = ev->stack_id,
+        .addr = ev->addr,
+        .len = ev->len,
+        .alloc_size = ev->alloc_size,
+    };
+    return key;
+}
+
+static bool finding_keys_equal(const struct emitted_finding_key *a,
+    const struct emitted_finding_key *b)
+{
+    return a->kind == b->kind
+        && a->status == b->status
+        && a->pid == b->pid
+        && a->site_id == b->site_id
+        && a->stack_id == b->stack_id
+        && a->addr == b->addr
+        && a->len == b->len
+        && a->alloc_size == b->alloc_size;
+}
+
+static bool finding_already_emitted(const struct emitted_finding_key *key)
+{
+    for (int i = 0; i < emitted_finding_count; ++i) {
+        if (finding_keys_equal(&emitted_findings[i], key))
             return true;
     }
     return false;
 }
 
-static void mark_reported(__u32 pid, __u64 dst)
+static void mark_finding_emitted(const struct emitted_finding_key *key)
 {
-    if (reported_count >= MAX_REPORTED) return;
-    reported[reported_count].pid = pid;
-    reported[reported_count].dst = dst;
-    reported_count++;
+    emitted_findings[emitted_finding_next] = *key;
+    if (emitted_finding_count < MAX_EMITTED_FINDINGS)
+        emitted_finding_count++;
+    emitted_finding_next = (emitted_finding_next + 1) % MAX_EMITTED_FINDINGS;
+}
+
+static bool heap_overflow_emitted_for_addr(__u32 pid, __u64 addr)
+{
+    for (int i = 0; i < emitted_finding_count; ++i) {
+        if (emitted_findings[i].kind == FINDING_DEDUPE_HEAP_OVERFLOW
+            && emitted_findings[i].pid == pid
+            && emitted_findings[i].addr == addr)
+            return true;
+    }
+    return false;
 }
 
 // Run symbolizer via fork/exec (avoids shell injection)
@@ -1258,11 +1319,94 @@ static size_t json_escape(const char *in, char *out, size_t out_sz)
     return pos;
 }
 
+static void reset_finding_dedupe_state(void)
+{
+    memset(emitted_findings, 0, sizeof(emitted_findings));
+    emitted_finding_count = 0;
+    emitted_finding_next = 0;
+}
+
+static int require_dedupe_check(bool condition, const char *message)
+{
+    if (condition)
+        return 0;
+    fprintf(stderr, "dedupe self-test failed: %s\n", message);
+    return 1;
+}
+
+static int run_dedupe_self_test(void)
+{
+    reset_finding_dedupe_state();
+
+    struct re_sentinel_event overflow = {
+        .type = RE_SENTINEL_TYPE_MEMCPY,
+        .pid = 42,
+        .site_id = 7,
+        .stack_id = 11,
+        .len = 64,
+        .alloc_size = 16,
+        .addr = 0x1000,
+    };
+    struct emitted_finding_key first_overflow = finding_key_from_event(
+        &overflow,
+        FINDING_DEDUPE_HEAP_OVERFLOW,
+        RE_SENTINEL_FREE_OK);
+
+    if (require_dedupe_check(!finding_already_emitted(&first_overflow),
+            "new heap overflow key should not be suppressed"))
+        return 1;
+    mark_finding_emitted(&first_overflow);
+    if (require_dedupe_check(finding_already_emitted(&first_overflow),
+            "identical heap overflow key should be suppressed"))
+        return 1;
+    if (require_dedupe_check(heap_overflow_emitted_for_addr(42, 0x1000),
+            "heap overflow address should be tracked for secondary suppression"))
+        return 1;
+
+    overflow.addr = 0x2000;
+    struct emitted_finding_key second_overflow = finding_key_from_event(
+        &overflow,
+        FINDING_DEDUPE_HEAP_OVERFLOW,
+        RE_SENTINEL_FREE_OK);
+    if (require_dedupe_check(!finding_already_emitted(&second_overflow),
+            "different heap overflow address should remain reportable"))
+        return 1;
+
+    struct re_sentinel_event double_free = {
+        .type = RE_SENTINEL_TYPE_FREE,
+        .pid = 42,
+        .site_id = 9,
+        .stack_id = 13,
+        .addr = 0x3000,
+        .errno_code = RE_SENTINEL_FREE_DOUBLE,
+    };
+    struct emitted_finding_key first_free = finding_key_from_event(
+        &double_free,
+        FINDING_DEDUPE_DOUBLE_FREE,
+        RE_SENTINEL_FREE_DOUBLE);
+    mark_finding_emitted(&first_free);
+    if (require_dedupe_check(finding_already_emitted(&first_free),
+            "identical double free key should be suppressed"))
+        return 1;
+
+    double_free.addr = 0x4000;
+    struct emitted_finding_key second_free = finding_key_from_event(
+        &double_free,
+        FINDING_DEDUPE_DOUBLE_FREE,
+        RE_SENTINEL_FREE_DOUBLE);
+    if (require_dedupe_check(!finding_already_emitted(&second_free),
+            "different double free address should remain reportable"))
+        return 1;
+
+    fprintf(stderr, "dedupe self-test passed\n");
+    return 0;
+}
+
 static void usage(const char *argv0){
     fprintf(stderr,
         "usage: %s [--heap <heap_tracker.o>] --obj <copy_checker.o> [--sentinel <sentinel.o>]\n"
         "       [--binary <path>] [--pid <pid>] [--libc <libc.so>] [--func memcpy]\n"
-        "       [--out <path>] [--crashpack <dir>]\n"
+        "       [--out <path>] [--crashpack <dir>] [--self-test-dedupe]\n"
         "\n"
         "Options:\n"
         "  --obj <file>       Required: copy_checker BPF object\n"
@@ -1273,7 +1417,8 @@ static void usage(const char *argv0){
         "  --libc <path>      Path to libc.so.6 (auto-detected if not specified)\n"
         "  --func <name>      Filter to specific function (e.g., memcpy)\n"
         "  --out <path>       Output file for events (default: stdout)\n"
-        "  --crashpack <dir>  Directory for findings (default: ./crashpack)\n",
+        "  --crashpack <dir>  Directory for findings (default: ./crashpack)\n"
+        "  --self-test-dedupe Run runtime dedupe self-test and exit\n",
         argv0);
 }
 
@@ -1287,6 +1432,7 @@ int main(int argc, char **argv){
     int shared_events_fd = -1;
     int shared_state_fd = -1;
     struct bpf_object *sentinel_obj = NULL;
+    bool self_test_dedupe = false;
 
     for (int i=1;i<argc;i++){
         if (strcmp(argv[i],"--obj")==0 && i+1<argc) obj_path = argv[++i];
@@ -1298,8 +1444,11 @@ int main(int argc, char **argv){
         else if (strcmp(argv[i],"--sentinel")==0 && i+1<argc) sentinel_path = argv[++i];
         else if (strcmp(argv[i],"--out")==0 && i+1<argc) out_path = argv[++i];
         else if (strcmp(argv[i],"--crashpack")==0 && i+1<argc) crashpack_dir = argv[++i];
+        else if (!strcmp(argv[i],"--self-test-dedupe")) self_test_dedupe = true;
         else if (!strcmp(argv[i],"-h") || !strcmp(argv[i],"--help")) { usage(argv[0]); return 1; }
     }
+    if (self_test_dedupe)
+        return run_dedupe_self_test();
     if (!obj_path){ usage(argv[0]); return 1; }
 
     self_pid = (__u32)getpid();

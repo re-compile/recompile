@@ -78,7 +78,8 @@ pub fn handle_run_command(matches: &ArgMatches) -> Result<()> {
 pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
     let crashpack_path = matches.get_one::<String>("crashpack").unwrap();
     let tool = matches.get_one::<String>("tool").unwrap();
-    let scan_without_findings = matches.get_flag("check-clean") || matches.get_flag("scan-binary");
+    let check_clean = matches.get_flag("check-clean");
+    let scan_binary = matches.get_flag("scan-binary");
     let crashpack_dir = PathBuf::from(crashpack_path);
     let findings_path = crashpack_dir.join("findings.json");
 
@@ -99,9 +100,18 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
     config.source_file = analysis.source_path.clone();
     config.args = analysis.args.clone();
 
+    if scan_binary {
+        if tool == "all" {
+            return Err(anyhow::anyhow!(
+                "--scan-binary requires an explicit tool, such as --tool valgrind or --tool asan"
+            ));
+        }
+        return run_binary_escalation_scan(&crashpack_dir, tool, config);
+    }
+
     let findings = load_findings(&findings_path)?;
     if findings.is_empty() {
-        if !scan_without_findings {
+        if !check_clean {
             println!("No findings to escalate.");
             return Ok(());
         }
@@ -111,38 +121,7 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
             ));
         }
 
-        let runtime = tokio::runtime::Runtime::new()?;
-        let result = runtime.block_on(async move {
-            let mut runner = EscalationRunner::new(config);
-            runner.check_clean_binary(tool).await
-        })?;
-
-        if result.success {
-            println!(
-                "✓ Binary escalation scan ran: {} ({}ms)",
-                result.tool, result.duration_ms
-            );
-            if result.confirmed {
-                println!("  Confirmed: {}", result.findings_detected.join(", "));
-            } else {
-                println!("  Confirmed: no");
-            }
-            if let Some(output_path) = &result.output_path {
-                println!("  Output: {}", output_path);
-            }
-        } else {
-            println!(
-                "✗ Binary escalation scan failed: {} ({}ms)",
-                result.tool, result.duration_ms
-            );
-            if let Some(error) = &result.error {
-                println!("  Error: {}", error);
-            }
-        }
-
-        write_escalation_results(&crashpack_dir, &[result])?;
-        println!("Escalation analysis completed.");
-        return Ok(());
+        return run_binary_escalation_scan(&crashpack_dir, tool, config);
     }
 
     let runtime = tokio::runtime::Runtime::new()?;
@@ -196,6 +175,45 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
     })?;
 
     write_escalation_results(&crashpack_dir, &results)?;
+    println!("Escalation analysis completed.");
+    Ok(())
+}
+
+fn run_binary_escalation_scan(
+    crashpack_dir: &PathBuf,
+    tool: &str,
+    config: EscalationConfig,
+) -> Result<()> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    let result = runtime.block_on(async move {
+        let mut runner = EscalationRunner::new(config);
+        runner.check_clean_binary(tool).await
+    })?;
+
+    if result.success {
+        println!(
+            "✓ Binary escalation scan ran: {} ({}ms)",
+            result.tool, result.duration_ms
+        );
+        if result.confirmed {
+            println!("  Confirmed: {}", result.findings_detected.join(", "));
+        } else {
+            println!("  Confirmed: no");
+        }
+        if let Some(output_path) = &result.output_path {
+            println!("  Output: {}", output_path);
+        }
+    } else {
+        println!(
+            "✗ Binary escalation scan failed: {} ({}ms)",
+            result.tool, result.duration_ms
+        );
+        if let Some(error) = &result.error {
+            println!("  Error: {}", error);
+        }
+    }
+
+    write_escalation_results(crashpack_dir, &[result])?;
     println!("Escalation analysis completed.");
     Ok(())
 }
