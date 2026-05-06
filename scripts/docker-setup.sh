@@ -43,7 +43,7 @@ if [[ "$skip_bootstrap" != "1" ]]; then
 
     if [[ "$build_rust" == "1" ]]; then
         log "recompile bootstrap: building Rust workspace"
-        cargo build --release -p rerun -p re-rules -p re-crashpack -p re-escalate -p re-harness
+        cargo build --release -p rerun -p re-rules -p re-crashpack -p re-escalate
     fi
 
     if [[ "$build_examples" == "1" ]]; then
