@@ -5,6 +5,8 @@ use clap::ArgMatches;
 use re_crashpack::EscalationPlan as FindingEscalationPlan;
 use re_escalate::{EscalationConfig, EscalationResult, EscalationRunner, Finding};
 use serde::Deserialize;
+use serde_json::{json, Value};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
@@ -246,6 +248,147 @@ pub fn handle_crashpack_command(matches: &ArgMatches) -> Result<()> {
     Ok(())
 }
 
+/// Handle the 'summarize' command
+pub fn handle_summarize_command(matches: &ArgMatches) -> Result<()> {
+    let crashpack_path = PathBuf::from(matches.get_one::<String>("crashpack").unwrap());
+    let format = matches.get_one::<String>("format").unwrap();
+    if format != "json" {
+        return Err(anyhow::anyhow!("unsupported summarize format: {}", format));
+    }
+
+    let summary = summarize_crashpack(&crashpack_path)?;
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn summarize_crashpack(crashpack_path: &PathBuf) -> Result<Value> {
+    let evidence_pack_path = crashpack_path.join("evidence-pack.json");
+    let evidence_pack = read_json_file(&evidence_pack_path)?;
+    let escalation_results_path = crashpack_path.join("escalations").join("results.json");
+    let escalation_results = if escalation_results_path.exists() {
+        read_json_file(&escalation_results_path)?
+            .as_array()
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{} must contain a JSON array",
+                    escalation_results_path.display()
+                )
+            })?
+    } else {
+        Vec::new()
+    };
+
+    Ok(build_agent_summary(
+        crashpack_path,
+        &evidence_pack,
+        &escalation_results,
+    ))
+}
+
+fn read_json_file(path: &PathBuf) -> Result<Value> {
+    let content = fs::read_to_string(path)
+        .map_err(|error| anyhow::anyhow!("Failed to read {}: {}", path.display(), error))?;
+    serde_json::from_str::<Value>(&content)
+        .map_err(|error| anyhow::anyhow!("Failed to parse {}: {}", path.display(), error))
+}
+
+fn build_agent_summary(
+    crashpack_path: &PathBuf,
+    evidence_pack: &Value,
+    escalation_results: &[Value],
+) -> Value {
+    let findings = evidence_pack
+        .get("findings")
+        .and_then(Value::as_array)
+        .map(|findings| {
+            findings
+                .iter()
+                .map(compact_agent_finding)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let escalation_summary = summarize_escalation_results(crashpack_path, escalation_results);
+
+    json!({
+        "schema_version": "1.0",
+        "purpose": "agent_summary",
+        "crashpack": crashpack_path.display().to_string(),
+        "artifacts": evidence_pack.get("artifacts").cloned().unwrap_or_else(|| json!({})),
+        "binary": evidence_pack.get("binary").cloned().unwrap_or_else(|| json!({})),
+        "summary": {
+            "total_findings": evidence_pack.pointer("/summary/total_findings").cloned().unwrap_or(Value::Null),
+            "class_counts": evidence_pack.pointer("/summary/class_counts").cloned().unwrap_or_else(|| json!({})),
+            "source_resolved": evidence_pack.pointer("/summary/source_resolved").cloned().unwrap_or(Value::Null),
+            "source_unresolved": evidence_pack.pointer("/summary/source_unresolved").cloned().unwrap_or(Value::Null),
+            "escalation_total_runs": escalation_summary.pointer("/total_runs").cloned().unwrap_or(Value::Null),
+            "escalation_confirmed_runs": escalation_summary.pointer("/confirmed_runs").cloned().unwrap_or(Value::Null),
+            "escalation_detected_classes": escalation_summary.pointer("/detected_classes").cloned().unwrap_or_else(|| json!([])),
+        },
+        "findings": findings,
+        "escalation": escalation_summary,
+    })
+}
+
+fn compact_agent_finding(finding: &Value) -> Value {
+    json!({
+        "id": finding.get("id").cloned().unwrap_or(Value::Null),
+        "class": finding.get("class").cloned().unwrap_or(Value::Null),
+        "severity": finding.get("severity").cloned().unwrap_or(Value::Null),
+        "confidence": finding.get("confidence").cloned().unwrap_or(Value::Null),
+        "source": finding.get("source").cloned().unwrap_or(Value::Null),
+        "operation": finding.get("operation").cloned().unwrap_or(Value::Null),
+        "memory": finding.get("memory").cloned().unwrap_or(Value::Null),
+        "stacks": finding.get("stacks").cloned().unwrap_or(Value::Null),
+        "alloc_site": finding.get("alloc_site").cloned().unwrap_or(Value::Null),
+        "escalation_plan": finding.get("escalation_plan").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn summarize_escalation_results(crashpack_path: &PathBuf, results: &[Value]) -> Value {
+    let mut tools = BTreeSet::<String>::new();
+    let mut detected_classes = BTreeSet::<String>::new();
+    let mut confirmed_runs = 0usize;
+    let compact_results = results
+        .iter()
+        .map(|result| {
+            if let Some(tool) = result.get("tool").and_then(Value::as_str) {
+                tools.insert(tool.to_string());
+            }
+            if result
+                .get("confirmed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                confirmed_runs += 1;
+            }
+            if let Some(classes) = result.get("findings_detected").and_then(Value::as_array) {
+                for class in classes.iter().filter_map(Value::as_str) {
+                    detected_classes.insert(class.to_string());
+                }
+            }
+
+            json!({
+                "tool": result.get("tool").cloned().unwrap_or(Value::Null),
+                "success": result.get("success").cloned().unwrap_or(Value::Null),
+                "confirmed": result.get("confirmed").cloned().unwrap_or(Value::Null),
+                "findings_detected": result.get("findings_detected").cloned().unwrap_or_else(|| json!([])),
+                "output_path": result.get("output_path").cloned().unwrap_or(Value::Null),
+                "error": result.get("error").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "results_path": crashpack_path.join("escalations").join("results.json").display().to_string(),
+        "total_runs": results.len(),
+        "confirmed_runs": confirmed_runs,
+        "tools": tools.into_iter().collect::<Vec<_>>(),
+        "detected_classes": detected_classes.into_iter().collect::<Vec<_>>(),
+        "results": compact_results,
+    })
+}
+
 fn load_findings(path: &PathBuf) -> Result<Vec<Finding>> {
     let content = fs::read_to_string(path)?;
     match serde_json::from_str::<serde_json::Value>(&content) {
@@ -451,4 +594,143 @@ fn validate_crashpack(path: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_summary_handles_finding_crashpack() {
+        let pack = json!({
+            "artifacts": {
+                "findings": "/tmp/crash/findings.json"
+            },
+            "binary": {
+                "original_path": "/tmp/project/build/app",
+                "captured_path": "/tmp/crash/bins/app"
+            },
+            "summary": {
+                "total_findings": 1,
+                "class_counts": {
+                    "heap_overflow": 1
+                },
+                "source_resolved": 1,
+                "source_unresolved": 0
+            },
+            "findings": [{
+                "id": "F-1",
+                "class": "heap_overflow",
+                "severity": "error",
+                "confidence": "high",
+                "source": {
+                    "status": "resolved",
+                    "path": "/tmp/project/src/app.c"
+                },
+                "operation": "memcpy",
+                "memory": {
+                    "size": 64,
+                    "alloc_size": 16
+                },
+                "stacks": {
+                    "call": ["copy (/tmp/project/src/app.c:12)"]
+                },
+                "escalation_plan": {
+                    "tool": "valgrind"
+                }
+            }]
+        });
+
+        let summary = build_agent_summary(&PathBuf::from("/tmp/crash"), &pack, &[]);
+
+        assert_eq!(
+            summary.pointer("/purpose").and_then(Value::as_str),
+            Some("agent_summary")
+        );
+        assert_eq!(
+            summary
+                .pointer("/summary/class_counts/heap_overflow")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .pointer("/findings/0/operation")
+                .and_then(Value::as_str),
+            Some("memcpy")
+        );
+        assert!(summary.pointer("/findings/0/raw_finding").is_none());
+    }
+
+    #[test]
+    fn agent_summary_handles_no_finding_crashpack() {
+        let pack = json!({
+            "summary": {
+                "total_findings": 0,
+                "class_counts": {},
+                "source_resolved": 0,
+                "source_unresolved": 0
+            },
+            "findings": []
+        });
+
+        let summary = build_agent_summary(&PathBuf::from("/tmp/clean"), &pack, &[]);
+
+        assert_eq!(
+            summary
+                .pointer("/summary/total_findings")
+                .and_then(Value::as_u64),
+            Some(0)
+        );
+        assert_eq!(
+            summary
+                .pointer("/findings")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn agent_summary_includes_escalation_results() {
+        let pack = json!({
+            "summary": {
+                "total_findings": 1,
+                "class_counts": {
+                    "use_after_free": 1
+                },
+                "source_resolved": 0,
+                "source_unresolved": 1
+            },
+            "findings": []
+        });
+        let escalation_results = vec![json!({
+            "tool": "valgrind",
+            "success": true,
+            "confirmed": true,
+            "findings_detected": ["use_after_free"],
+            "output_path": "/tmp/crash/escalations/valgrind/report.json"
+        })];
+
+        let summary = build_agent_summary(&PathBuf::from("/tmp/crash"), &pack, &escalation_results);
+
+        assert_eq!(
+            summary
+                .pointer("/summary/escalation_total_runs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .pointer("/summary/escalation_detected_classes/0")
+                .and_then(Value::as_str),
+            Some("use_after_free")
+        );
+        assert_eq!(
+            summary
+                .pointer("/escalation/results/0/tool")
+                .and_then(Value::as_str),
+            Some("valgrind")
+        );
+    }
 }

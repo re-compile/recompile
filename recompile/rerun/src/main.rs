@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::{Arg, ArgAction, Command};
+use clap::{Arg, ArgAction, Command, ValueHint};
 
 mod cli;
 mod native;
@@ -114,6 +114,24 @@ fn main() -> Result<()> {
                         ),
                 ),
         )
+        .subcommand(
+            Command::new("summarize")
+                .about("Print a compact agent-readable crashpack summary")
+                .arg(
+                    Arg::new("crashpack")
+                        .help("Path to crashpack directory")
+                        .required(true)
+                        .value_hint(ValueHint::DirPath),
+                )
+                .arg(
+                    Arg::new("format")
+                        .long("format")
+                        .value_name("FORMAT")
+                        .default_value("json")
+                        .value_parser(["json"])
+                        .help("Output format"),
+                ),
+        )
         .get_matches();
 
     match matches.subcommand() {
@@ -125,6 +143,9 @@ fn main() -> Result<()> {
         }
         Some(("crashpack", sub_matches)) => {
             handle_crashpack_command(sub_matches)?;
+        }
+        Some(("summarize", sub_matches)) => {
+            handle_summarize_command(sub_matches)?;
         }
         _ => {
             // Fallback to legacy behavior for backward compatibility
