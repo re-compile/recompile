@@ -7,8 +7,8 @@ use crate::summary::{print_findings_summary, read_findings};
 use anyhow::{Context, Result};
 use re_crashpack::{BinaryInfo, Manifest};
 use serde::Serialize;
-use serde_json::{Map, Value};
-use std::collections::BTreeSet;
+use serde_json::{json, Map, Value};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -18,6 +18,7 @@ use std::time::Duration;
 const GENERATED_OUTPUT_FILES: &[&str] = &[
     "analysis.json",
     "console.log",
+    "evidence-pack.json",
     "findings.json",
     "manifest.json",
     "re-findings.jsonl",
@@ -582,6 +583,7 @@ fn finalize_findings(crashpack_dir: &Path, binary_path: &Path) -> Result<PathBuf
     std::fs::write(&findings_path, serde_json::to_vec_pretty(&findings)?)
         .with_context(|| format!("Failed to rewrite {}", findings_path.display()))?;
     write_manifest(crashpack_dir, &findings)?;
+    write_agent_evidence_pack(crashpack_dir, binary_path, &copied_binary_path, &findings)?;
 
     println!("\nFindings saved to: {}", findings_path.display());
     Ok(findings_path)
@@ -678,6 +680,117 @@ fn write_manifest(crashpack_dir: &Path, findings: &[Value]) -> Result<()> {
     let manifest_path = crashpack_dir.join("manifest.json");
     std::fs::write(manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
     Ok(())
+}
+
+fn write_agent_evidence_pack(
+    crashpack_dir: &Path,
+    original_binary_path: &Path,
+    copied_binary_path: &Path,
+    findings: &[Value],
+) -> Result<()> {
+    let pack = build_agent_evidence_pack(
+        crashpack_dir,
+        original_binary_path,
+        copied_binary_path,
+        findings,
+    );
+    let pack_path = crashpack_dir.join("evidence-pack.json");
+    std::fs::write(&pack_path, serde_json::to_vec_pretty(&pack)?)
+        .with_context(|| format!("Failed to write {}", pack_path.display()))?;
+    Ok(())
+}
+
+fn build_agent_evidence_pack(
+    crashpack_dir: &Path,
+    original_binary_path: &Path,
+    copied_binary_path: &Path,
+    findings: &[Value],
+) -> Value {
+    let mut class_counts = BTreeMap::<String, usize>::new();
+    let mut resolved_sources = 0usize;
+    let mut unresolved_sources = 0usize;
+
+    let agent_findings = findings
+        .iter()
+        .enumerate()
+        .map(|(index, finding)| {
+            let class = finding_string(finding, &["class"])
+                .or_else(|| finding_string(finding, &["kind"]))
+                .unwrap_or_else(|| "unknown".to_string());
+            *class_counts.entry(class.clone()).or_default() += 1;
+
+            match finding_string(finding, &["provenance", "source_status"]).as_deref() {
+                Some("resolved") => resolved_sources += 1,
+                Some("unresolved") => unresolved_sources += 1,
+                _ => {}
+            }
+
+            json!({
+                "index": index,
+                "id": finding_string(finding, &["id"]).unwrap_or_else(|| format!("finding-{}", index + 1)),
+                "class": class,
+                "severity": finding_string(finding, &["severity"]).unwrap_or_else(|| "unknown".to_string()),
+                "confidence": finding_string(finding, &["confidence"]).unwrap_or_else(|| "unknown".to_string()),
+                "source": {
+                    "status": finding_string(finding, &["provenance", "source_status"]).unwrap_or_else(|| "unknown".to_string()),
+                    "path": finding.get("provenance")
+                        .and_then(|value| value.get("source_path"))
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                },
+                "operation": finding_string(finding, &["evidence", "memory", "operation"])
+                    .or_else(|| finding_string(finding, &["evidence", "api"]))
+                    .unwrap_or_else(|| "unknown".to_string()),
+                "memory": finding.get("evidence")
+                    .and_then(|value| value.get("memory"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "stacks": finding.get("evidence")
+                    .and_then(|value| value.get("stacks"))
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
+                "alloc_site": finding.get("evidence")
+                    .and_then(|value| value.get("alloc_site"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "escalation_plan": finding.get("escalation").cloned().unwrap_or(Value::Null),
+                "raw_finding": finding,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "schema_version": "1.0",
+        "purpose": "agent_runtime_evidence",
+        "artifacts": {
+            "crashpack_dir": crashpack_dir.display().to_string(),
+            "evidence_pack": crashpack_dir.join("evidence-pack.json").display().to_string(),
+            "findings": crashpack_dir.join("findings.json").display().to_string(),
+            "manifest": crashpack_dir.join("manifest.json").display().to_string(),
+            "analysis": crashpack_dir.join("analysis.json").display().to_string(),
+            "console_log": crashpack_dir.join("console.log").display().to_string(),
+            "debug_stream": crashpack_dir.join("re-findings.jsonl").display().to_string(),
+        },
+        "binary": {
+            "original_path": original_binary_path.display().to_string(),
+            "captured_path": copied_binary_path.display().to_string(),
+        },
+        "summary": {
+            "total_findings": findings.len(),
+            "class_counts": class_counts,
+            "source_resolved": resolved_sources,
+            "source_unresolved": unresolved_sources,
+        },
+        "findings": agent_findings,
+    })
+}
+
+fn finding_string(finding: &Value, path: &[&str]) -> Option<String> {
+    let mut current = finding;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_str().map(str::to_string)
 }
 
 fn write_binary_artifacts(crashpack_dir: &Path, binary_path: &Path) -> Result<PathBuf> {
@@ -1028,6 +1141,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join(".re")).unwrap();
         std::fs::create_dir_all(base.join("bins")).unwrap();
+        std::fs::write(base.join("evidence-pack.json"), "{}").unwrap();
         std::fs::write(base.join("findings.json"), "[{}]").unwrap();
         std::fs::write(base.join("re-findings.jsonl"), "stale\n").unwrap();
         std::fs::write(base.join(".re").join("last_finding.json"), "{}").unwrap();
@@ -1035,6 +1149,7 @@ mod tests {
 
         prepare_output_dir(&base).unwrap();
 
+        assert!(!base.join("evidence-pack.json").exists());
         assert!(!base.join("findings.json").exists());
         assert!(!base.join("re-findings.jsonl").exists());
         assert!(!base.join(".re").exists());
@@ -1130,5 +1245,73 @@ mod tests {
             Some("unresolved")
         );
         assert!(provenance.get("source_path").is_none());
+    }
+
+    #[test]
+    fn agent_evidence_pack_summarizes_findings_for_agents() {
+        let findings = vec![json!({
+            "id": "F-1",
+            "class": "heap_overflow",
+            "severity": "error",
+            "confidence": "high",
+            "evidence": {
+                "memory": {
+                    "operation": "memcpy",
+                    "ptr": 4096,
+                    "size": 64,
+                    "alloc_size": 16
+                },
+                "stacks": {
+                    "call": ["copy (/tmp/project/src/app.c:12)"],
+                    "alloc": ["make_buffer (/tmp/project/src/app.c:6)"]
+                },
+                "alloc_site": "/tmp/project/src/app.c"
+            },
+            "provenance": {
+                "source_status": "resolved",
+                "source_path": "/tmp/project/src/app.c"
+            },
+            "escalation": {
+                "tool": "valgrind",
+                "reason": "len>alloc_size"
+            }
+        })];
+
+        let pack = build_agent_evidence_pack(
+            Path::new("/tmp/crashpack"),
+            Path::new("/tmp/project/build/app"),
+            Path::new("/tmp/crashpack/bins/app"),
+            &findings,
+        );
+
+        assert_eq!(
+            pack.pointer("/summary/total_findings")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/summary/class_counts/heap_overflow")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/summary/source_resolved")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/findings/0/operation")
+                .and_then(Value::as_str),
+            Some("memcpy")
+        );
+        assert_eq!(
+            pack.pointer("/findings/0/source/path")
+                .and_then(Value::as_str),
+            Some("/tmp/project/src/app.c")
+        );
+        assert_eq!(
+            pack.pointer("/artifacts/findings").and_then(Value::as_str),
+            Some("/tmp/crashpack/findings.json")
+        );
     }
 }

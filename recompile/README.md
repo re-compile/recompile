@@ -61,6 +61,7 @@ cargo build --release -p rerun
 
 - Docker-native tracing requires `--privileged --pid=host`
 - `findings.json` is the canonical persisted output
+- `evidence-pack.json` is the agent-readable summary of a crashpack
 - `re-findings.jsonl` and `RE:FINDING:` lines are debug streams only
 - the current runtime source of truth is `runtime/agent/re-mini.c`
 - VM mode, macOS-first development, and the Rust agent are deferred
@@ -72,6 +73,13 @@ cargo build --release -p rerun
 ```bash
 cargo run -p rerun -- run --native build/examples/invalid_free --output build/invalid-free
 ```
+
+Primary outputs:
+
+- `build/invalid-free/findings.json` - canonical finding array
+- `build/invalid-free/evidence-pack.json` - compact evidence pack for coding agents
+- `build/invalid-free/manifest.json` - crashpack metadata
+- `build/invalid-free/re-findings.jsonl` - debug stream
 
 ### Escalate an existing crashpack
 

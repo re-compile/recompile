@@ -152,6 +152,17 @@ findings = json.loads(findings_path.read_text())
 if not isinstance(findings, list):
     raise SystemExit(f"{binary_name}: findings.json is not a JSON array")
 
+evidence_pack_path = findings_path.parent / "evidence-pack.json"
+if not evidence_pack_path.exists():
+    raise SystemExit(f"{binary_name}: missing evidence-pack.json at {evidence_pack_path}")
+evidence_pack = json.loads(evidence_pack_path.read_text())
+summary = evidence_pack.get("summary") or {}
+if summary.get("total_findings") != len(findings):
+    raise SystemExit(
+        f"{binary_name}: evidence-pack total_findings={summary.get('total_findings')} "
+        f"does not match findings count {len(findings)}"
+    )
+
 if expect_none:
     if findings:
         classes = [finding.get("class") for finding in findings if isinstance(finding, dict)]
@@ -171,6 +182,8 @@ finding = findings[0]
 actual_class = finding.get("class")
 if actual_class != expected_class:
     raise SystemExit(f"{binary_name}: expected class {expected_class}, got {actual_class}")
+if (summary.get("class_counts") or {}).get(expected_class) != 1:
+    raise SystemExit(f"{binary_name}: evidence-pack missing class count for {expected_class}")
 
 provenance = finding.get("provenance") or {}
 evidence = finding.get("evidence") or {}
