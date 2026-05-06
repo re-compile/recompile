@@ -45,4 +45,4 @@ agent:
 	cd runtime/agent && clang -O2 -g -Wall -I../bpf -I../shared -o re-mini re-mini.c -lelf -lz -lbpf -ldl
 
 toolchain:
-	cargo build -p rerun -p re-rules -p re-crashpack -p re-escalate -p re-harness -p recc
+	cargo build -p rerun -p re-rules -p re-crashpack -p re-escalate -p recc

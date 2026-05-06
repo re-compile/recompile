@@ -85,15 +85,12 @@ implicitly. If the crashpack binary does not contain ASan instrumentation,
 the adapter returns a structured failure explaining the `-fsanitize=address`
 requirement.
 
-### `re-harness/`
-
-Harness generation utilities.
-
-This is not the current blocker, but it should continue consuming the same canonical crashpack inputs.
-
 ### `re-rules/`
 
 Shared config/types plus symbolization support used by the broader pipeline.
+
+The active finding engine is `runtime/agent/re-mini.c`; stale rule-engine demos
+are not part of the supported runtime path.
 
 ### `recc/` and `llvm-passes/`
 

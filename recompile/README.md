@@ -197,8 +197,7 @@ Running `--tool asan` on a normal binary is rejected with an explicit
 - `runtime/bpf/` - BPF programs
 - `re-crashpack/` - findings/manifests/binary metadata helpers
 - `re-escalate/` - escalation adapters
-- `re-harness/` - repro harness generation
-- `re-rules/` - shared config/types/symbolization support
+- `re-rules/` - shared config/types/symbolization support; not the active finding engine
 - `recc/` - optional compiler wrapper; not required for the native MVP path
 - `llvm-passes/` - optional compiler pass experiments; not required for native runtime analysis
 
