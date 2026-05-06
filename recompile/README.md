@@ -8,6 +8,10 @@ The current supported workflow is Linux-native analysis of C/C++ binaries using 
 
 Phase 0 is complete on the supported Docker-native path.
 Phase 1 is complete for the Linux-native MVP scope.
+Phase 2 is complete for the current issue-backed escalation and evaluation scope.
+
+The next gate before Phase 3 is a full codebase review for dead files, stale
+deferred paths, and hotfix-ish logic.
 
 What is working now:
 
@@ -89,6 +93,17 @@ make rc
 ```
 
 This runs active Rust checks/tests, the golden baseline, and user-style external samples.
+
+### Run the Phase 2 closeout gate
+
+```bash
+make phase2
+make hit-rate
+```
+
+`make phase2` runs the RC gate, Valgrind escalation smoke, and ASan binary
+smoke. `make hit-rate` records native and escalation outcomes for the current
+user-style corpus.
 
 ### Run the golden-only baseline
 

@@ -14,6 +14,7 @@ Current supported path:
 
 Phase 0 is complete on the supported path.
 Phase 1 is complete for the Linux-native MVP scope.
+Phase 2 is complete for the current issue-backed escalation and evaluation scope.
 
 Validated native findings in Docker:
 
@@ -21,7 +22,8 @@ Validated native findings in Docker:
 - `double_free` -> `double_free`
 - `invalid_free` -> `invalid_free`
 
-Current priority is Phase 2: confirm findings with real escalation tools and broaden user-binary coverage.
+Current priority before Phase 3 is a full codebase review for dead files,
+deferred paths, stale Phase 0 remnants, and hotfix-ish logic.
 
 ## Supported Environment
 
@@ -124,14 +126,34 @@ This runs active Rust checks/tests, the three golden regressions, and the user-s
 
 ## Phase 2 Evaluation
 
-The current Phase 2 hit-rate command is:
+The Phase 2 closeout gate is:
+
+```bash
+cd recompile
+make phase2
+make hit-rate
+```
+
+`make phase2` runs the RC gate plus Valgrind and ASan escalation smoke tests.
+`make hit-rate` writes per-case native and escalation outcomes to
+`build/hit-rate/summary.json`.
+
+The optional compiler-wrapper smoke remains separate:
+
+```bash
+cd recompile
+make recc-smoke
+```
+
+`recc` is not part of the primary `rerun run --native <binary>` workflow.
+
+To score only the current native/escalation hit rate:
 
 ```bash
 cd recompile
 make hit-rate
 ```
 
-It writes per-case native and Valgrind escalation outcomes to `build/hit-rate/summary.json`.
 Some Phase 2 classes, such as `use_after_free`, `memory_leak`, and `fd_leak`, are currently Valgrind-first and marked as native-unsupported in that summary.
 
 Native findings include `provenance.source_status` so unresolved source

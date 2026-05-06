@@ -148,8 +148,9 @@ Why the PID namespace matters:
 
 Phase 0 is complete.
 Phase 1 is complete for the Linux-native MVP scope.
+Phase 2 is complete for the current issue-backed escalation and evaluation scope.
 
-The current release gate is:
+The Phase 1 release gate is:
 
 ```bash
 make rc
@@ -157,13 +158,30 @@ make rc
 
 This runs active Rust checks/tests, the three golden regressions, and user-style finding/no-finding samples.
 
-Current Phase 2 candidates:
+The Phase 2 closeout gates are:
 
-1. grow the hit-rate corpus as new bug classes land
-2. broaden ASan-backed coverage beyond the first already-instrumented smoke
+```bash
+make phase2
+make hit-rate
+make recc-smoke
+```
+
+`make recc-smoke` stays optional and outside `make phase2` because `recc` is not
+part of the primary native runtime workflow.
+
+Before Phase 3, the next required step is a full codebase review for:
+
+1. dead files and stale Phase 0 remnants
+2. deferred paths that should be removed, documented, or isolated
+3. hotfix-ish logic that should become modular detection or explicit policy
+
+Phase 3 candidates:
+
+1. grow the hit-rate corpus with real-world user binaries and broader clean negatives
+2. broaden ASan-backed samples beyond the first already-instrumented smoke
 3. improve symbolization beyond primary user frames
-4. add broader clean-negative and real-world user-binary regressions
-5. keep optional `recc`/LLVM pass wiring separate from the primary native flow
+4. add richer escalation adapters beyond Valgrind and already-instrumented ASan
+5. revisit optional `recc`/LLVM pass integration only if a concrete user workflow needs it
 
 ## Evaluation
 

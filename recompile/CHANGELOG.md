@@ -29,6 +29,7 @@
 - Added `make asan-smoke` and included it in `make phase2`.
 - Added `make recc-smoke` for the optional compiler-wrapper and LLVM pass path.
 - `recc` is documented as optional and separate from the primary native runtime flow.
+- Marked Phase 2 complete for the current issue-backed escalation/evaluation scope and documented the pre-Phase-3 code review gate.
 
 ### Fixed
 - PID-scoped native runs no longer depend on the old shell-wrapper launch path.
