@@ -24,7 +24,7 @@ const GENERATED_OUTPUT_FILES: &[&str] = &[
     "re-findings.jsonl",
 ];
 
-const GENERATED_OUTPUT_DIRS: &[&str] = &[".re", "bins", "escalations"];
+const GENERATED_OUTPUT_DIRS: &[&str] = &[".re", "bins", "escalations", "replay"];
 
 #[cfg(target_os = "linux")]
 use libc;
@@ -1141,10 +1141,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join(".re")).unwrap();
         std::fs::create_dir_all(base.join("bins")).unwrap();
+        std::fs::create_dir_all(base.join("replay")).unwrap();
         std::fs::write(base.join("evidence-pack.json"), "{}").unwrap();
         std::fs::write(base.join("findings.json"), "[{}]").unwrap();
         std::fs::write(base.join("re-findings.jsonl"), "stale\n").unwrap();
         std::fs::write(base.join(".re").join("last_finding.json"), "{}").unwrap();
+        std::fs::write(base.join("replay").join("results.json"), "{}").unwrap();
         std::fs::write(base.join("notes.txt"), "keep").unwrap();
 
         prepare_output_dir(&base).unwrap();
@@ -1154,6 +1156,7 @@ mod tests {
         assert!(!base.join("re-findings.jsonl").exists());
         assert!(!base.join(".re").exists());
         assert!(!base.join("bins").exists());
+        assert!(!base.join("replay").exists());
         assert_eq!(
             std::fs::read_to_string(base.join("notes.txt")).unwrap(),
             "keep"

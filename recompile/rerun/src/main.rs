@@ -132,6 +132,24 @@ fn main() -> Result<()> {
                         .help("Output format"),
                 ),
         )
+        .subcommand(
+            Command::new("replay")
+                .about("Replay the binary and args recorded in a crashpack")
+                .arg(
+                    Arg::new("crashpack")
+                        .help("Path to crashpack directory")
+                        .required(true)
+                        .value_hint(ValueHint::DirPath),
+                )
+                .arg(
+                    Arg::new("format")
+                        .long("format")
+                        .value_name("FORMAT")
+                        .default_value("json")
+                        .value_parser(["json"])
+                        .help("Output format"),
+                ),
+        )
         .get_matches();
 
     match matches.subcommand() {
@@ -146,6 +164,9 @@ fn main() -> Result<()> {
         }
         Some(("summarize", sub_matches)) => {
             handle_summarize_command(sub_matches)?;
+        }
+        Some(("replay", sub_matches)) => {
+            handle_replay_command(sub_matches)?;
         }
         _ => {
             // Fallback to legacy behavior for backward compatibility

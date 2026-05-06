@@ -4,11 +4,13 @@ use anyhow::Result;
 use clap::ArgMatches;
 use re_crashpack::EscalationPlan as FindingEscalationPlan;
 use re_escalate::{EscalationConfig, EscalationResult, EscalationRunner, Finding};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Instant;
 
 use crate::native::run_native;
 use crate::summary::{print_findings_summary, read_findings};
@@ -20,6 +22,21 @@ struct NativeRunMetadata {
     source_path: Option<String>,
     #[serde(default)]
     args: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ReplayResult {
+    schema_version: String,
+    crashpack: String,
+    binary_path: String,
+    args: Vec<String>,
+    ran: bool,
+    exit_success: bool,
+    exit_code: Option<i32>,
+    duration_ms: u128,
+    stdout: String,
+    stderr: String,
+    error: Option<String>,
 }
 
 /// Handle the 'run' command
@@ -258,6 +275,98 @@ pub fn handle_summarize_command(matches: &ArgMatches) -> Result<()> {
 
     let summary = summarize_crashpack(&crashpack_path)?;
     println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+/// Handle the 'replay' command
+pub fn handle_replay_command(matches: &ArgMatches) -> Result<()> {
+    let crashpack_path = PathBuf::from(matches.get_one::<String>("crashpack").unwrap());
+    let format = matches.get_one::<String>("format").unwrap();
+    if format != "json" {
+        return Err(anyhow::anyhow!("unsupported replay format: {}", format));
+    }
+
+    let result = replay_crashpack(&crashpack_path)?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+fn replay_crashpack(crashpack_path: &PathBuf) -> Result<ReplayResult> {
+    if !crashpack_path.exists() {
+        return Err(anyhow::anyhow!(
+            "Crashpack not found: {}",
+            crashpack_path.display()
+        ));
+    }
+
+    let analysis = load_analysis_metadata(crashpack_path)?;
+    let binary_path = select_replay_binary(crashpack_path, &analysis.binary_path);
+    let started = Instant::now();
+    let output = Command::new(&binary_path).args(&analysis.args).output();
+    let duration_ms = started.elapsed().as_millis();
+
+    let result = match output {
+        Ok(output) => ReplayResult {
+            schema_version: "1.0".to_string(),
+            crashpack: crashpack_path.display().to_string(),
+            binary_path: binary_path.display().to_string(),
+            args: analysis.args,
+            ran: true,
+            exit_success: output.status.success(),
+            exit_code: output.status.code(),
+            duration_ms,
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            error: None,
+        },
+        Err(error) => ReplayResult {
+            schema_version: "1.0".to_string(),
+            crashpack: crashpack_path.display().to_string(),
+            binary_path: binary_path.display().to_string(),
+            args: analysis.args,
+            ran: false,
+            exit_success: false,
+            exit_code: None,
+            duration_ms,
+            stdout: String::new(),
+            stderr: String::new(),
+            error: Some(error.to_string()),
+        },
+    };
+
+    write_replay_result(crashpack_path, &result)?;
+    Ok(result)
+}
+
+fn select_replay_binary(crashpack_path: &Path, analysis_binary_path: &str) -> PathBuf {
+    if let Some(file_name) = Path::new(analysis_binary_path).file_name() {
+        let captured = crashpack_path.join("bins").join(file_name);
+        if captured.exists() {
+            return captured;
+        }
+    }
+
+    let evidence_pack_path = crashpack_path.join("evidence-pack.json");
+    if let Ok(evidence_pack) = read_json_file(&evidence_pack_path) {
+        if let Some(captured_path) = evidence_pack
+            .pointer("/binary/captured_path")
+            .and_then(Value::as_str)
+        {
+            let captured = PathBuf::from(captured_path);
+            if captured.exists() {
+                return captured;
+            }
+        }
+    }
+
+    PathBuf::from(analysis_binary_path)
+}
+
+fn write_replay_result(crashpack_path: &PathBuf, result: &ReplayResult) -> Result<()> {
+    let replay_dir = crashpack_path.join("replay");
+    fs::create_dir_all(&replay_dir)?;
+    let results_path = replay_dir.join("results.json");
+    fs::write(&results_path, serde_json::to_vec_pretty(result)?)?;
     Ok(())
 }
 
@@ -627,6 +736,7 @@ fn validate_crashpack(path: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn agent_summary_handles_finding_crashpack() {
@@ -821,5 +931,39 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(true)
         );
+    }
+
+    #[test]
+    fn replay_prefers_captured_binary_and_writes_result() {
+        let base = std::env::temp_dir().join(format!("rerun-replay-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("bins")).unwrap();
+
+        let original = base.join("missing-original");
+        let captured = base.join("bins").join("missing-original");
+        fs::write(&captured, "#!/bin/sh\necho replayed:$1\n").unwrap();
+        let mut perms = fs::metadata(&captured).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&captured, perms).unwrap();
+
+        fs::write(
+            base.join("analysis.json"),
+            serde_json::to_vec_pretty(&json!({
+                "binary_path": original.display().to_string(),
+                "args": ["arg1"]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let result = replay_crashpack(&base).unwrap();
+
+        assert!(result.ran);
+        assert!(result.exit_success);
+        assert_eq!(result.stdout.trim(), "replayed:arg1");
+        assert_eq!(PathBuf::from(&result.binary_path), captured);
+        assert!(base.join("replay").join("results.json").exists());
+
+        fs::remove_dir_all(base).unwrap();
     }
 }
