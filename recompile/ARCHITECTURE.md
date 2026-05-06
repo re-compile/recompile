@@ -123,6 +123,11 @@ Current decision:
 optional `escalations/results.json` and emits the compact agent summary used by
 coding agents.
 
+`rerun replay <crashpack> --format json` re-executes the recorded binary and
+arguments from `analysis.json`, preferring the captured binary under `bins/`.
+It writes `replay/results.json`. This is a minimal repro contract, not full
+input/environment replay.
+
 ### Debug contract
 
 - `re-findings.jsonl`

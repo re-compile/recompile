@@ -1,4 +1,4 @@
-.PHONY: all bpf passes agent agent-test toolchain examples user-samples external-smoke escalation-smoke asan-smoke summarize-smoke recc-smoke hit-rate phase1 rc phase2
+.PHONY: all bpf passes agent agent-test toolchain examples user-samples external-smoke escalation-smoke asan-smoke summarize-smoke replay-smoke recc-smoke hit-rate phase1 rc phase2
 
 all: examples
 
@@ -20,6 +20,9 @@ asan-smoke:
 summarize-smoke:
 	./scripts/validate-summarize.sh
 
+replay-smoke:
+	./scripts/validate-replay.sh
+
 recc-smoke:
 	./scripts/validate-recc.sh
 
@@ -38,6 +41,7 @@ phase2:
 	./scripts/validate-escalation.sh
 	./scripts/validate-asan.sh
 	./scripts/validate-summarize.sh
+	./scripts/validate-replay.sh
 
 passes:
 	cmake -S llvm-passes -B build/passes && cmake --build build/passes

@@ -97,6 +97,15 @@ cargo run -p rerun -- summarize build/invalid-free --format json
 This reads `evidence-pack.json` plus optional `escalations/results.json` and
 prints a compact deterministic JSON summary.
 
+### Replay a crashpack
+
+```bash
+cargo run -p rerun -- replay build/invalid-free --format json
+```
+
+This re-executes the recorded binary with args from `analysis.json`, preferring
+the captured binary under `bins/` when present, and writes `replay/results.json`.
+
 ### Validate a crashpack
 
 ```bash
@@ -119,8 +128,8 @@ make hit-rate
 ```
 
 `make phase2` runs the RC gate, Valgrind escalation smoke, ASan binary smoke,
-and agent summary smoke. `make hit-rate` records native and escalation outcomes
-for the current user-style corpus.
+agent summary smoke, and replay smoke. `make hit-rate` records native and
+escalation outcomes for the current user-style corpus.
 
 ### Run the golden-only baseline
 
