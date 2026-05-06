@@ -164,6 +164,7 @@ impl Default for EscalationConfig {
                         "--error-exitcode=99".to_string(),
                         "--leak-check=full".to_string(),
                         "--track-origins=yes".to_string(),
+                        "--track-fds=yes".to_string(),
                         "--show-leak-kinds=all".to_string(),
                     ],
                 },

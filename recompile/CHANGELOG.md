@@ -23,6 +23,7 @@
 - Added `make hit-rate` to score native and Valgrind escalation outcomes across the current user-style corpus.
 - Added Valgrind-first memory leak coverage and the `rerun escalate --scan-binary` alias for no-native-finding binary scans.
 - Added Valgrind-first use-after-free coverage.
+- Added Valgrind-first file descriptor leak coverage with `fd_leak`.
 - Native finding provenance now records explicit `source_status` and can recover source paths from stack summaries or debuginfo-resolved binary-offset frames.
 - Added structured ASan escalation for binaries already built with `-fsanitize=address`.
 - Added `make asan-smoke` and included it in `make phase2`.

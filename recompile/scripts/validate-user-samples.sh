@@ -37,6 +37,8 @@ done
 clean_samples=(
     "build/user-samples/clean_malloc_free"
     "build/user-samples/clean_bounded_memcpy"
+    "build/user-samples/fd_leak_case"
+    "build/user-samples/clean_fd_close"
 )
 
 for binary_path in "${clean_samples[@]}"; do

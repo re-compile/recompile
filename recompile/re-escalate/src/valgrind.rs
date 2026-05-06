@@ -73,6 +73,11 @@ pub fn parse_valgrind_output(stdout: &str, stderr: &str) -> ValgrindReport {
             && !normalized.contains("0 bytes")
         {
             push_detection(&mut detected, "memory_leak", normalized, index + 1);
+            continue;
+        }
+
+        if normalized.starts_with("Open file descriptor ") {
+            push_detection(&mut detected, "fd_leak", normalized, index + 1);
         }
     }
 
@@ -207,6 +212,30 @@ mod tests {
     fn ignores_zero_and_reachable_leak_summaries() {
         let stderr = r#"==1== definitely lost: 0 bytes in 0 blocks
 ==1== still reachable: 64 bytes in 1 blocks
+==1== ERROR SUMMARY: 0 errors from 0 contexts
+"#;
+
+        let report = parse_valgrind_output("", stderr);
+        assert!(!report.confirmed());
+        assert!(report.detected.is_empty());
+    }
+
+    #[test]
+    fn parses_open_file_descriptor_leak() {
+        let stderr = r#"==1== FILE DESCRIPTORS: 4 open (3 std) at exit.
+==1== Open file descriptor 3: /tmp/recompile_fd_leak_case_abc123 (deleted)
+==1==    at 0x495C001: open (open64.c:41)
+==1==    by 0x1091CA: main (fd_leak_case.c:10)
+==1== ERROR SUMMARY: 0 errors from 0 contexts
+"#;
+
+        let report = parse_valgrind_output("", stderr);
+        assert_eq!(report.detected_classes(), vec!["fd_leak"]);
+    }
+
+    #[test]
+    fn clean_file_descriptor_summary_is_not_confirmed() {
+        let stderr = r#"==1== FILE DESCRIPTORS: 3 open (3 std) at exit.
 ==1== ERROR SUMMARY: 0 errors from 0 contexts
 "#;
 

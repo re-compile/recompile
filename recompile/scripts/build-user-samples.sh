@@ -26,8 +26,10 @@ cc "${COMMON_FLAGS[@]}" -o build/user-samples/cache_release_twice samples/user-b
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/free_stack_slot samples/user-binaries/free_stack_slot.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/use_after_free_case samples/user-binaries/use_after_free_case.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/memory_leak_case samples/user-binaries/memory_leak_case.c
+cc "${COMMON_FLAGS[@]}" -o build/user-samples/fd_leak_case samples/user-binaries/fd_leak_case.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_malloc_free samples/user-binaries/clean_malloc_free.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_bounded_memcpy samples/user-binaries/clean_bounded_memcpy.c
+cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_fd_close samples/user-binaries/clean_fd_close.c
 
 cc "${ASAN_FLAGS[@]}" -o build/user-samples-asan/use_after_free_case samples/user-binaries/use_after_free_case.c
 cc "${ASAN_FLAGS[@]}" -o build/user-samples-asan/clean_malloc_free samples/user-binaries/clean_malloc_free.c

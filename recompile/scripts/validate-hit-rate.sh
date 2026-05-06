@@ -41,8 +41,10 @@ samples=(
     "free_stack_slot:invalid_free:invalid_free"
     "use_after_free_case:__unsupported__:use_after_free"
     "memory_leak_case:__unsupported__:memory_leak"
+    "fd_leak_case:__unsupported__:fd_leak"
     "clean_malloc_free:__none__:__none__"
     "clean_bounded_memcpy:__none__:__none__"
+    "clean_fd_close:__none__:__none__"
 )
 
 append_case_record() {
