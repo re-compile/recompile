@@ -6,7 +6,7 @@ use re_crashpack::EscalationPlan as FindingEscalationPlan;
 use re_escalate::{EscalationConfig, EscalationResult, EscalationRunner, Finding};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 
@@ -304,7 +304,7 @@ fn build_agent_summary(
         .map(|findings| {
             findings
                 .iter()
-                .map(compact_agent_finding)
+                .map(|finding| compact_agent_finding(finding, escalation_results))
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -330,7 +330,21 @@ fn build_agent_summary(
     })
 }
 
-fn compact_agent_finding(finding: &Value) -> Value {
+fn compact_agent_finding(finding: &Value, escalation_results: &[Value]) -> Value {
+    let finding_id = finding.get("id").and_then(Value::as_str);
+    let linked_escalation = finding_id
+        .and_then(|id| {
+            escalation_results.iter().find(|result| {
+                result
+                    .get("finding_id")
+                    .and_then(Value::as_str)
+                    .map(|value| value == id)
+                    .unwrap_or(false)
+            })
+        })
+        .map(compact_escalation_result)
+        .unwrap_or(Value::Null);
+
     json!({
         "id": finding.get("id").cloned().unwrap_or(Value::Null),
         "class": finding.get("class").cloned().unwrap_or(Value::Null),
@@ -342,12 +356,14 @@ fn compact_agent_finding(finding: &Value) -> Value {
         "stacks": finding.get("stacks").cloned().unwrap_or(Value::Null),
         "alloc_site": finding.get("alloc_site").cloned().unwrap_or(Value::Null),
         "escalation_plan": finding.get("escalation_plan").cloned().unwrap_or(Value::Null),
+        "escalation_result": linked_escalation,
     })
 }
 
 fn summarize_escalation_results(crashpack_path: &PathBuf, results: &[Value]) -> Value {
     let mut tools = BTreeSet::<String>::new();
     let mut detected_classes = BTreeSet::<String>::new();
+    let mut by_finding = BTreeMap::<String, Value>::new();
     let mut confirmed_runs = 0usize;
     let compact_results = results
         .iter()
@@ -368,14 +384,11 @@ fn summarize_escalation_results(crashpack_path: &PathBuf, results: &[Value]) -> 
                 }
             }
 
-            json!({
-                "tool": result.get("tool").cloned().unwrap_or(Value::Null),
-                "success": result.get("success").cloned().unwrap_or(Value::Null),
-                "confirmed": result.get("confirmed").cloned().unwrap_or(Value::Null),
-                "findings_detected": result.get("findings_detected").cloned().unwrap_or_else(|| json!([])),
-                "output_path": result.get("output_path").cloned().unwrap_or(Value::Null),
-                "error": result.get("error").cloned().unwrap_or(Value::Null),
-            })
+            let compact = compact_escalation_result(result);
+            if let Some(finding_id) = result.get("finding_id").and_then(Value::as_str) {
+                by_finding.insert(finding_id.to_string(), compact.clone());
+            }
+            compact
         })
         .collect::<Vec<_>>();
 
@@ -385,7 +398,22 @@ fn summarize_escalation_results(crashpack_path: &PathBuf, results: &[Value]) -> 
         "confirmed_runs": confirmed_runs,
         "tools": tools.into_iter().collect::<Vec<_>>(),
         "detected_classes": detected_classes.into_iter().collect::<Vec<_>>(),
+        "by_finding_id": by_finding,
         "results": compact_results,
+    })
+}
+
+fn compact_escalation_result(result: &Value) -> Value {
+    json!({
+        "id": result.get("id").cloned().unwrap_or(Value::Null),
+        "finding_id": result.get("finding_id").cloned().unwrap_or(Value::Null),
+        "tool": result.get("tool").cloned().unwrap_or(Value::Null),
+        "success": result.get("success").cloned().unwrap_or(Value::Null),
+        "confirmed": result.get("confirmed").cloned().unwrap_or(Value::Null),
+        "findings_detected": result.get("findings_detected").cloned().unwrap_or_else(|| json!([])),
+        "output_path": result.get("output_path").cloned().unwrap_or(Value::Null),
+        "report_path": result.get("report_path").cloned().unwrap_or(Value::Null),
+        "error": result.get("error").cloned().unwrap_or(Value::Null),
     })
 }
 
@@ -660,6 +688,10 @@ mod tests {
             Some("memcpy")
         );
         assert!(summary.pointer("/findings/0/raw_finding").is_none());
+        assert_eq!(
+            summary.pointer("/findings/0/escalation_result"),
+            Some(&Value::Null)
+        );
     }
 
     #[test]
@@ -705,6 +737,8 @@ mod tests {
             "findings": []
         });
         let escalation_results = vec![json!({
+            "id": "E-1",
+            "finding_id": "F-1",
             "tool": "valgrind",
             "success": true,
             "confirmed": true,
@@ -731,6 +765,61 @@ mod tests {
                 .pointer("/escalation/results/0/tool")
                 .and_then(Value::as_str),
             Some("valgrind")
+        );
+        assert_eq!(
+            summary
+                .pointer("/escalation/by_finding_id/F-1/confirmed")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn agent_summary_links_escalation_result_to_finding() {
+        let pack = json!({
+            "summary": {
+                "total_findings": 1,
+                "class_counts": {
+                    "heap_overflow": 1
+                },
+                "source_resolved": 1,
+                "source_unresolved": 0
+            },
+            "findings": [{
+                "id": "F-heap-overflow-1",
+                "class": "heap_overflow",
+                "severity": "error",
+                "confidence": "high",
+                "source": {
+                    "status": "resolved",
+                    "path": "/tmp/project/src/app.c"
+                },
+                "operation": "memcpy"
+            }]
+        });
+        let escalation_results = vec![json!({
+            "id": "E-1",
+            "finding_id": "F-heap-overflow-1",
+            "tool": "valgrind",
+            "success": true,
+            "confirmed": true,
+            "findings_detected": ["heap_overflow"],
+            "output_path": "/tmp/crash/escalations/valgrind/report.json"
+        })];
+
+        let summary = build_agent_summary(&PathBuf::from("/tmp/crash"), &pack, &escalation_results);
+
+        assert_eq!(
+            summary
+                .pointer("/findings/0/escalation_result/finding_id")
+                .and_then(Value::as_str),
+            Some("F-heap-overflow-1")
+        );
+        assert_eq!(
+            summary
+                .pointer("/findings/0/escalation_result/confirmed")
+                .and_then(Value::as_bool),
+            Some(true)
         );
     }
 }
