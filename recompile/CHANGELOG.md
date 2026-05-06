@@ -27,6 +27,8 @@
 - Native finding provenance now records explicit `source_status` and can recover source paths from stack summaries or debuginfo-resolved binary-offset frames.
 - Added structured ASan escalation for binaries already built with `-fsanitize=address`.
 - Added `make asan-smoke` and included it in `make phase2`.
+- Added `make recc-smoke` for the optional compiler-wrapper and LLVM pass path.
+- `recc` is documented as optional and separate from the primary native runtime flow.
 
 ### Fixed
 - PID-scoped native runs no longer depend on the old shell-wrapper launch path.

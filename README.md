@@ -75,6 +75,16 @@ ASan support is intentionally narrow: the binary must already be built with
 `-fsanitize=address`. `rerun` does not silently rebuild source files or pretend
 ASan applies to a normal binary.
 
+To smoke-test the optional compiler-wrapper path:
+
+```bash
+make recc-smoke
+```
+
+`recc` is an advanced compile-wrapper path. It is not required for the primary
+`rerun run --native <binary>` workflow and is not part of the Phase 2 release
+gate.
+
 To score the current native/escalation hit rate:
 
 ```bash

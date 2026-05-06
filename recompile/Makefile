@@ -1,4 +1,4 @@
-.PHONY: all bpf passes agent toolchain examples user-samples external-smoke escalation-smoke asan-smoke hit-rate phase1 rc phase2
+.PHONY: all bpf passes agent toolchain examples user-samples external-smoke escalation-smoke asan-smoke recc-smoke hit-rate phase1 rc phase2
 
 all: examples
 
@@ -16,6 +16,9 @@ escalation-smoke:
 
 asan-smoke:
 	./scripts/validate-asan.sh
+
+recc-smoke:
+	./scripts/validate-recc.sh
 
 hit-rate:
 	./scripts/validate-hit-rate.sh
@@ -42,4 +45,4 @@ agent:
 	cd runtime/agent && clang -O2 -g -Wall -I../bpf -I../shared -o re-mini re-mini.c -lelf -lz -lbpf -ldl
 
 toolchain:
-	cargo build -p rerun -p re-rules -p re-crashpack -p re-escalate -p re-harness
+	cargo build -p rerun -p re-rules -p re-crashpack -p re-escalate -p re-harness -p recc
