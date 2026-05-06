@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "re:compile Agent Evidence Pack",
+  "type": "object",
+  "required": ["schema_version", "purpose", "artifacts", "binary", "summary", "findings"],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "purpose": {
+      "const": "agent_runtime_evidence"
+    },
+    "artifacts": {
+      "type": "object",
+      "required": ["crashpack_dir", "findings", "manifest", "analysis"],
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "binary": {
+      "type": "object",
+      "required": ["original_path", "captured_path"],
+      "properties": {
+        "original_path": {
+          "type": "string"
+        },
+        "captured_path": {
+          "type": "string"
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["total_findings", "class_counts", "source_resolved", "source_unresolved"],
+      "properties": {
+        "total_findings": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "class_counts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "source_resolved": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_unresolved": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["index", "id", "class", "severity", "confidence", "source", "operation"],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "class": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "string"
+          },
+          "source": {
+            "type": "object",
+            "required": ["status", "path"],
+            "properties": {
+              "status": {
+                "type": "string"
+              },
+              "path": {
+                "type": ["string", "null"]
+              }
+            }
+          },
+          "operation": {
+            "type": "string"
+          },
+          "raw_finding": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  }
+}
