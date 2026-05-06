@@ -162,6 +162,17 @@ make hit-rate
 jq . build/hit-rate/summary.json
 ```
 
+Run the Phase 2 closeout validation:
+
+```bash
+make phase2
+make hit-rate
+make recc-smoke
+```
+
+`make recc-smoke` is intentionally separate from the primary native workflow,
+but it is useful as an optional wiring check before starting Phase 3.
+
 To inspect the no-finding path:
 
 ```bash
@@ -187,3 +198,4 @@ Debug/streaming output only:
 - `invalid_free` may not resolve to a user source file on the current arm64 Docker build even though the finding class is correct
 - VM mode is deferred
 - macOS-first development is deferred
+- before Phase 3, the next planned step is a full codebase review for dead paths and hotfix-ish logic
