@@ -16,6 +16,7 @@ Target ELF binary
   -> findings.json + crashpack artifacts
   -> optional rerun escalate <crashpack> --tool valgrind
   -> optional rerun escalate <crashpack-without-findings> --tool valgrind --scan-binary
+  -> optional rerun escalate <asan-built-crashpack> --tool asan --scan-binary
   -> escalations/results.json + raw tool logs + parsed tool report
 ```
 
@@ -77,6 +78,12 @@ Current expectation:
 Current implemented adapter:
 
 - `valgrind` for existing binaries in crashpacks and explicit binary scans
+- `asan` for binaries that were already compiled with `-fsanitize=address`
+
+ASan does not run against ordinary binaries and does not rebuild source files
+implicitly. If the crashpack binary does not contain ASan instrumentation,
+the adapter returns a structured failure explaining the `-fsanitize=address`
+requirement.
 
 ### `re-harness/`
 
@@ -142,7 +149,7 @@ This runs active Rust checks/tests, the three golden regressions, and user-style
 Current Phase 2 candidates:
 
 1. grow the hit-rate corpus as new bug classes land
-2. implement honest ASan support for already-ASan-built binaries or rebuild-aware flows
+2. broaden ASan-backed coverage beyond the first already-instrumented smoke
 3. improve symbolization beyond primary user frames
 4. add broader clean-negative and real-world user-binary regressions
 5. harden `recc` and LLVM pass wiring outside the MVP gate

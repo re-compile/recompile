@@ -107,7 +107,7 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
         }
         if tool == "all" {
             return Err(anyhow::anyhow!(
-                "--scan-binary requires an explicit tool, such as --tool valgrind"
+                "--scan-binary requires an explicit tool, such as --tool valgrind or --tool asan"
             ));
         }
 
