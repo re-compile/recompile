@@ -88,6 +88,15 @@ cargo run -p rerun -- escalate build/invalid-free --tool valgrind
 jq . build/invalid-free/escalations/results.json
 ```
 
+### Summarize for coding agents
+
+```bash
+cargo run -p rerun -- summarize build/invalid-free --format json
+```
+
+This reads `evidence-pack.json` plus optional `escalations/results.json` and
+prints a compact deterministic JSON summary.
+
 ### Validate a crashpack
 
 ```bash
@@ -109,9 +118,9 @@ make phase2
 make hit-rate
 ```
 
-`make phase2` runs the RC gate, Valgrind escalation smoke, and ASan binary
-smoke. `make hit-rate` records native and escalation outcomes for the current
-user-style corpus.
+`make phase2` runs the RC gate, Valgrind escalation smoke, ASan binary smoke,
+and agent summary smoke. `make hit-rate` records native and escalation outcomes
+for the current user-style corpus.
 
 ### Run the golden-only baseline
 
