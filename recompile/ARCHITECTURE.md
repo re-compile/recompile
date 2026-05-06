@@ -14,10 +14,13 @@ Target ELF binary
   -> eBPF uprobes on libc allocation/copy functions
   -> event normalization
   -> findings.json + crashpack artifacts
+  -> evidence-pack.json
   -> optional rerun escalate <crashpack> --tool valgrind
   -> optional rerun escalate <crashpack-without-findings> --tool valgrind --scan-binary
   -> optional rerun escalate <asan-built-crashpack> --tool asan --scan-binary
   -> escalations/results.json + raw tool logs + parsed tool report
+  -> optional rerun summarize <crashpack> --format json
+  -> optional rerun replay <crashpack> --format json
 ```
 
 The current release path is Docker-native or Linux-host-native. VM mode is deferred.
@@ -35,6 +38,7 @@ Responsibilities:
 - normalize findings into canonical `findings.json`
 - assemble crashpack metadata and binary artifacts
 - invoke escalation and crashpack commands against the canonical output
+- emit agent summaries and minimal replay results from crashpack artifacts
 
 ### `runtime/agent/re-mini.c`
 
@@ -163,6 +167,7 @@ Why the PID namespace matters:
 Phase 0 is complete.
 Phase 1 is complete for the Linux-native MVP scope.
 Phase 2 is complete for the current issue-backed escalation and evaluation scope.
+Phase 3 is complete for the agentic runtime evidence MVP scope.
 
 The Phase 1 release gate is:
 
@@ -172,7 +177,7 @@ make rc
 
 This runs active Rust checks/tests, the three golden regressions, and user-style finding/no-finding samples.
 
-The Phase 2 closeout gates are:
+The current closeout gates are:
 
 ```bash
 make phase2
@@ -183,19 +188,14 @@ make recc-smoke
 `make recc-smoke` stays optional and outside `make phase2` because `recc` is not
 part of the primary native runtime workflow.
 
-Before Phase 3, the next required step is a full codebase review for:
-
-1. dead files and stale Phase 0 remnants
-2. deferred paths that should be removed, documented, or isolated
-3. hotfix-ish logic that should become modular detection or explicit policy
-
-Phase 3 candidates:
+Phase 4 candidates:
 
 1. grow the hit-rate corpus with real-world user binaries and broader clean negatives
 2. broaden ASan-backed samples beyond the first already-instrumented smoke
 3. improve symbolization beyond primary user frames
 4. add richer escalation adapters beyond Valgrind and already-instrumented ASan
 5. revisit optional `recc`/LLVM pass integration only if a concrete user workflow needs it
+6. capture richer replay inputs/environment when a real workflow requires it
 
 ## Evaluation
 

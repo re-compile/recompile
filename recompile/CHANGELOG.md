@@ -30,6 +30,14 @@
 - Added `make recc-smoke` for the optional compiler-wrapper and LLVM pass path.
 - `recc` is documented as optional and separate from the primary native runtime flow.
 - Marked Phase 2 complete for the current issue-backed escalation/evaluation scope and documented the pre-Phase-3 code review gate.
+- Removed stale active workspace surfaces that did not match the supported Linux-native workflow.
+- Added key-based finding dedupe so multiple independent findings in one process are preserved.
+- Added `evidence-pack.json` as the agent-readable crashpack evidence artifact.
+- Added `rerun summarize <crashpack> --format json` for deterministic coding-agent summaries.
+- Escalation summaries now link confirmation state back to original finding IDs.
+- Added `rerun replay <crashpack> --format json` as the minimal replay contract for recorded binary/args.
+- Added `make summarize-smoke` and `make replay-smoke`, both included in `make phase2`.
+- Marked Phase 3 complete for the agentic runtime evidence MVP scope.
 
 ### Fixed
 - PID-scoped native runs no longer depend on the old shell-wrapper launch path.
@@ -38,6 +46,7 @@
 - ASan escalation now rejects non-instrumented binaries clearly instead of attempting an implicit source rebuild.
 - Shared allocator tracking now uses deterministic BPF map keys, fixing valid bounded `memcpy` runs that could report `invalid_free`.
 - PID/binary validation in `re-mini` now uses stronger executable matching and handles `readlink` truncation explicitly.
+- Crashpack repro scripts now target the captured binary name instead of a hardcoded `./bins/target`.
 - The three Linux-native goldens currently verify as distinct findings in the supported Docker path:
   - `invalid_free`
   - `double_free`

@@ -9,18 +9,20 @@ The current supported workflow is Linux-native analysis of C/C++ binaries using 
 Phase 0 is complete on the supported Docker-native path.
 Phase 1 is complete for the Linux-native MVP scope.
 Phase 2 is complete for the current issue-backed escalation and evaluation scope.
-
-The next gate before Phase 3 is a full codebase review for dead files, stale
-deferred paths, and hotfix-ish logic.
+Phase 3 is complete for the agentic runtime evidence MVP scope.
 
 What is working now:
 
 - `rerun run --native <binary>` is the primary execution path
 - findings persist canonically to `findings.json`
+- agent-readable evidence persists to `evidence-pack.json`
 - debug/streaming output goes to `re-findings.jsonl`
 - crashpack and escalation consume explicit provenance instead of guessing from example names
 - Valgrind escalation can confirm a finding from an existing crashpack
 - ASan escalation can confirm an already-ASan-built binary from an existing crashpack
+- `rerun summarize <crashpack> --format json` emits compact agent summaries
+- `rerun replay <crashpack> --format json` replays the recorded command with the captured binary when present
+- multiple independent findings in one process are preserved through key-based dedupe
 - the three goldens validate in Docker with `--privileged --pid=host`
 
 Validated goldens:
@@ -120,16 +122,18 @@ make rc
 
 This runs active Rust checks/tests, the golden baseline, and user-style external samples.
 
-### Run the Phase 2 closeout gate
+### Run the current closeout gates
 
 ```bash
 make phase2
 make hit-rate
+make recc-smoke
 ```
 
 `make phase2` runs the RC gate, Valgrind escalation smoke, ASan binary smoke,
 agent summary smoke, and replay smoke. `make hit-rate` records native and
-escalation outcomes for the current user-style corpus.
+escalation outcomes for the current user-style corpus. `make recc-smoke`
+validates optional compiler-wrapper wiring outside the primary runtime path.
 
 ### Run the golden-only baseline
 
