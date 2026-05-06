@@ -124,6 +124,15 @@ ASan validation uses binaries built under `build/user-samples-asan/`. This is
 deliberate: ASan only applies when the target was compiled with
 `-fsanitize=address`.
 
+### Validate optional recc wiring
+
+```bash
+make recc-smoke
+```
+
+This checks the optional compiler-wrapper path and LLVM pass build. It does not
+replace `rerun run --native`, and it is intentionally not part of `make phase2`.
+
 ### Score hit rate
 
 ```bash
@@ -175,6 +184,8 @@ Running `--tool asan` on a normal binary is rejected with an explicit
 - `re-escalate/` - escalation adapters
 - `re-harness/` - repro harness generation
 - `re-rules/` - shared config/types/symbolization support
+- `recc/` - optional compiler wrapper; not required for the native MVP path
+- `llvm-passes/` - optional compiler pass experiments; not required for native runtime analysis
 
 ## Docs
 

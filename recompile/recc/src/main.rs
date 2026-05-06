@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use clap::{ArgAction, Parser};
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
 use std::os::unix::process::ExitStatusExt;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
 #[derive(Parser, Debug)]
@@ -10,7 +10,7 @@ use std::process::{Command, ExitStatus, Stdio};
 struct Args {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     rest: Vec<OsString>,
-    #[arg(long, action = ArgAction::SetTrue, help = "Only write manifest; skip compile")] 
+    #[arg(long, action = ArgAction::SetTrue, help = "Only write manifest; skip compile")]
     emit_manifest_only: bool,
 }
 
@@ -53,7 +53,9 @@ fn main() -> Result<()> {
     if status.success() {
         if let Some(bin) = detect_output_binary(&args.rest) {
             let manifest_path = write_manifest_stub(&bin).ok(); // best effort in Week-1
-            if let Some(p) = manifest_path { eprintln!("recc: wrote manifest stub at {}", p.display()); }
+            if let Some(p) = manifest_path {
+                eprintln!("recc: wrote manifest stub at {}", p.display());
+            }
         }
     }
 
@@ -116,7 +118,9 @@ fn infer_cxx_mode(args: &[OsString]) -> bool {
 fn detect_output_binary(args: &[OsString]) -> Option<PathBuf> {
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        if a == "-o" { return it.next().map(PathBuf::from); }
+        if a == "-o" {
+            return it.next().map(PathBuf::from);
+        }
     }
     None
 }
@@ -131,7 +135,7 @@ fn write_manifest_stub(binary: &Path) -> Result<PathBuf> {
     let manifest = json!({
         "binary": binary.canonicalize().unwrap_or(binary.to_path_buf()).to_string_lossy(),
         "argv": [binary.file_name().and_then(|s| s.to_str()).unwrap_or("a.out")],
-        "env": {"RE_FRAMEPTR": "1"},
+        "env": {"RE_FRAMEPTR": "1", "RECC_OPTIONAL": "1"},
         "build_id": build_id,
         "dsos": dsos,
         "cwd": cwd.to_string_lossy(),
@@ -149,9 +153,13 @@ fn detect_dsos(binary: &Path) -> Result<Vec<String>> {
         let s = String::from_utf8_lossy(&out.stdout);
         let mut libs = Vec::new();
         for (i, line) in s.lines().enumerate() {
-            if i == 0 { continue; }
+            if i == 0 {
+                continue;
+            }
             let t = line.trim();
-            if t.is_empty() { continue; }
+            if t.is_empty() {
+                continue;
+            }
             if let Some((path, _rest)) = t.split_once(" (") {
                 libs.push(path.trim().to_string());
             }
@@ -163,11 +171,15 @@ fn detect_dsos(binary: &Path) -> Result<Vec<String>> {
         let mut libs = Vec::new();
         for line in s.lines() {
             if let Some((_left, right)) = line.split_once("=>") {
-                let path_part = right.trim().split_whitespace().next().unwrap_or("");
-                if path_part.starts_with('/') { libs.push(path_part.to_string()); }
+                let path_part = right.split_whitespace().next().unwrap_or("");
+                if path_part.starts_with('/') {
+                    libs.push(path_part.to_string());
+                }
             } else {
-                let path_part = line.trim().split_whitespace().next().unwrap_or("");
-                if path_part.starts_with('/') { libs.push(path_part.to_string()); }
+                let path_part = line.split_whitespace().next().unwrap_or("");
+                if path_part.starts_with('/') {
+                    libs.push(path_part.to_string());
+                }
             }
         }
         Ok(libs)
@@ -179,4 +191,38 @@ fn detect_build_id(_binary: &Path) -> Result<String> {
     Ok(String::new())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    fn os_args(args: &[&str]) -> Vec<OsString> {
+        args.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn detects_c_output_binary() {
+        let args = os_args(&["input.c", "-O2", "-o", "build/out"]);
+        assert_eq!(
+            detect_output_binary(&args),
+            Some(PathBuf::from("build/out"))
+        );
+    }
+
+    #[test]
+    fn infers_cxx_from_extension() {
+        let args = os_args(&["main.cpp", "-o", "main"]);
+        assert!(infer_cxx_mode(&args));
+    }
+
+    #[test]
+    fn infers_cxx_from_explicit_language() {
+        let args = os_args(&["-x", "c++", "main.c", "-o", "main"]);
+        assert!(infer_cxx_mode(&args));
+    }
+
+    #[test]
+    fn c_is_default_language_mode() {
+        let args = os_args(&["main.c", "-o", "main"]);
+        assert!(!infer_cxx_mode(&args));
+    }
+}

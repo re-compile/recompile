@@ -95,6 +95,17 @@ This is not the current blocker, but it should continue consuming the same canon
 
 Shared config/types plus symbolization support used by the broader pipeline.
 
+### `recc/` and `llvm-passes/`
+
+Optional compiler-wrapper and compiler-pass experiments.
+
+Current decision:
+
+- `recc` remains an advanced optional path
+- `recc` is not required for `rerun run --native <binary>`
+- LLVM pass building is validated by `make recc-smoke`, not by the native MVP or Phase 2 gates
+- implicit pass injection is deferred until the pass ABI and compiler version contract are stable
+
 ## Contracts
 
 ### Canonical persisted contract
@@ -152,7 +163,7 @@ Current Phase 2 candidates:
 2. broaden ASan-backed coverage beyond the first already-instrumented smoke
 3. improve symbolization beyond primary user frames
 4. add broader clean-negative and real-world user-binary regressions
-5. harden `recc` and LLVM pass wiring outside the MVP gate
+5. keep optional `recc`/LLVM pass wiring separate from the primary native flow
 
 ## Evaluation
 

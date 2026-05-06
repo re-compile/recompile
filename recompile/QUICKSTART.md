@@ -146,6 +146,15 @@ Run the checked ASan escalation smoke:
 make asan-smoke
 ```
 
+Run the optional compiler-wrapper smoke:
+
+```bash
+make recc-smoke
+```
+
+This verifies that `recc` can compile a small C binary, write its manifest, and
+build the optional LLVM pass. It is separate from the primary native workflow.
+
 Run the current hit-rate evaluation:
 
 ```bash

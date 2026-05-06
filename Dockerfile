@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ca-certificates \
     clang \
+    cmake \
     curl \
     file \
     git \
@@ -17,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     lld \
     linux-tools-common \
     llvm \
+    llvm-dev \
     make \
     pkg-config \
     python3 \
