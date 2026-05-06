@@ -89,7 +89,7 @@ fn main() -> Result<()> {
                     Arg::new("scan-binary")
                         .long("scan-binary")
                         .action(ArgAction::SetTrue)
-                        .help("Alias for --check-clean; run the selected tool even with no native findings"),
+                        .help("Run the selected tool against the whole binary instead of per native finding"),
                 ),
         )
         .subcommand(

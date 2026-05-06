@@ -36,15 +36,16 @@ mkdir -p "$cases_dir"
 : >"$cases_jsonl"
 
 samples=(
-    "copy_overrun_case:heap_overflow:heap_overflow"
-    "cache_release_twice:double_free:double_free"
-    "free_stack_slot:invalid_free:invalid_free"
-    "use_after_free_case:__unsupported__:use_after_free"
-    "memory_leak_case:__unsupported__:memory_leak"
-    "fd_leak_case:__unsupported__:fd_leak"
-    "clean_malloc_free:__none__:__none__"
-    "clean_bounded_memcpy:__none__:__none__"
-    "clean_fd_close:__none__:__none__"
+    "copy_overrun_case:heap_overflow:heap_overflow:1"
+    "multi_overrun_case:heap_overflow:heap_overflow:2"
+    "cache_release_twice:double_free:double_free:1"
+    "free_stack_slot:invalid_free:invalid_free:1"
+    "use_after_free_case:__unsupported__:use_after_free:0"
+    "memory_leak_case:__unsupported__:memory_leak:0"
+    "fd_leak_case:__unsupported__:fd_leak:0"
+    "clean_malloc_free:__none__:__none__:0"
+    "clean_bounded_memcpy:__none__:__none__:0"
+    "clean_fd_close:__none__:__none__:0"
 )
 
 append_case_record() {
@@ -52,8 +53,9 @@ append_case_record() {
     local native_expected_class="$2"
     local escalation_expected_class="$3"
     local output_dir="$4"
+    local native_expected_count="$5"
 
-    python3 - "$binary_name" "$native_expected_class" "$escalation_expected_class" "$output_dir" >>"$cases_jsonl" <<'PY'
+    python3 - "$binary_name" "$native_expected_class" "$escalation_expected_class" "$output_dir" "$native_expected_count" >>"$cases_jsonl" <<'PY'
 import json
 import pathlib
 import sys
@@ -62,6 +64,7 @@ binary_name = sys.argv[1]
 native_expected_class = sys.argv[2]
 escalation_expected_class = sys.argv[3]
 output_dir = pathlib.Path(sys.argv[4])
+native_expected_count = int(sys.argv[5])
 findings_path = output_dir / "findings.json"
 results_path = output_dir / "escalations" / "results.json"
 
@@ -85,7 +88,11 @@ if native_expected_class == "__unsupported__":
 elif native_expected_class == "__none__":
     native_outcome = "tn" if not actual_classes else "fp"
 else:
-    native_outcome = "tp" if native_expected_class in actual_classes else "fn"
+    native_outcome = (
+        "tp"
+        if native_expected_class in actual_classes and len(findings) == native_expected_count
+        else "fn"
+    )
 
 escalation_results = []
 if results_path.exists():
@@ -117,6 +124,7 @@ print(json.dumps({
         "actual_classes": actual_classes,
         "source_statuses": source_statuses,
         "finding_count": len(findings),
+        "expected_count": native_expected_count,
     },
     "escalation": {
         "tool": escalation.get("tool"),
@@ -132,7 +140,7 @@ PY
 }
 
 for entry in "${samples[@]}"; do
-    IFS=':' read -r binary_name native_expected_class escalation_expected_class <<<"$entry"
+    IFS=':' read -r binary_name native_expected_class escalation_expected_class native_expected_count <<<"$entry"
     binary_path="build/user-samples/${binary_name}"
     output_dir="${cases_dir}/${binary_name}"
     run_log="${output_dir}.log"
@@ -152,12 +160,15 @@ for entry in "${samples[@]}"; do
     elif [[ "$native_expected_class" == "__unsupported__" ]]; then
         printf '[hit-rate] Valgrind binary scan for %s\n' "$binary_name"
         "$runner_path" escalate "$output_dir" --tool valgrind --scan-binary
+    elif (( native_expected_count > 1 )); then
+        printf '[hit-rate] Valgrind binary scan for multi-finding case %s\n' "$binary_name"
+        "$runner_path" escalate "$output_dir" --tool valgrind --scan-binary
     else
         printf '[hit-rate] Valgrind confirmation for %s\n' "$binary_name"
         "$runner_path" escalate "$output_dir" --tool valgrind
     fi
 
-    append_case_record "$binary_name" "$native_expected_class" "$escalation_expected_class" "$output_dir"
+    append_case_record "$binary_name" "$native_expected_class" "$escalation_expected_class" "$output_dir" "$native_expected_count"
 done
 
 python3 - "$cases_jsonl" "$summary_json" <<'PY'
