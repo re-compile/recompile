@@ -5,7 +5,6 @@ members = [
   "re-rules",
   "re-crashpack",
   "re-escalate",
-  "re-harness",
 ]
 
 resolver = "2"

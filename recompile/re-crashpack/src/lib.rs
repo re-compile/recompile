@@ -238,7 +238,7 @@ impl Crashpack {
         writer.write_binaries(&self.binaries)?;
         writer.write_manifest(&self.manifest)?;
         writer.write_console_log()?;
-        writer.write_repro_script(&self.findings)?;
+        writer.write_repro_script(&self.findings, &self.binaries)?;
 
         Ok(())
     }
