@@ -172,6 +172,7 @@ Current Valgrind-first classes:
 
 - `use_after_free`
 - `memory_leak`
+- `fd_leak`
 
 ## Source Quality
 

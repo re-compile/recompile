@@ -137,6 +137,8 @@ make escalation-smoke
 
 This validates positive confirmations for the current user-style bug samples
 and clean-negative confirmations for the current clean samples.
+The Valgrind-first bug classes currently include `use_after_free`,
+`memory_leak`, and `fd_leak`.
 
 Run the checked ASan escalation smoke:
 

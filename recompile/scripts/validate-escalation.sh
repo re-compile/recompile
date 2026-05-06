@@ -111,6 +111,7 @@ done
 valgrind_only_samples=(
     "build/user-samples/use_after_free_case:use_after_free"
     "build/user-samples/memory_leak_case:memory_leak"
+    "build/user-samples/fd_leak_case:fd_leak"
 )
 
 for entry in "${valgrind_only_samples[@]}"; do
@@ -136,6 +137,7 @@ done
 clean_samples=(
     "build/user-samples/clean_malloc_free"
     "build/user-samples/clean_bounded_memcpy"
+    "build/user-samples/clean_fd_close"
 )
 
 for binary_path in "${clean_samples[@]}"; do
