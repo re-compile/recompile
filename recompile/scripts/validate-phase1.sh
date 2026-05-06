@@ -117,10 +117,20 @@ if not isinstance(findings, list):
 if len(findings) != 1:
     raise SystemExit(f"{name}: expected exactly 1 finding, got {len(findings)}")
 
+evidence_pack_path = findings_path.parent / "evidence-pack.json"
+if not evidence_pack_path.exists():
+    raise SystemExit(f"{name}: missing evidence-pack.json at {evidence_pack_path}")
+evidence_pack = json.loads(evidence_pack_path.read_text())
+summary = evidence_pack.get("summary") or {}
+if summary.get("total_findings") != 1:
+    raise SystemExit(f"{name}: evidence-pack total_findings must be 1")
+
 finding = findings[0]
 actual_class = finding.get("class")
 if actual_class != expected_class:
     raise SystemExit(f"{name}: expected class {expected_class}, got {actual_class}")
+if (summary.get("class_counts") or {}).get(expected_class) != 1:
+    raise SystemExit(f"{name}: evidence-pack missing class count for {expected_class}")
 
 provenance = finding.get("provenance") or {}
 evidence = finding.get("evidence") or {}

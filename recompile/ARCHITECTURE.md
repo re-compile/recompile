@@ -111,6 +111,14 @@ Current decision:
 - JSON array
 - source of truth for downstream tools
 
+### Agent evidence contract
+
+- `evidence-pack.json`
+- JSON object
+- deterministic, agent-readable summary built from canonical crashpack artifacts
+- includes artifact pointers, binary provenance, class counts, source resolution counts, and compact per-finding evidence
+- does not replace `findings.json`
+
 ### Debug contract
 
 - `re-findings.jsonl`
