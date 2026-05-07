@@ -507,6 +507,7 @@ fn observation_target_from_native_result(
     target.timeout_ms = timeout_ms;
     target.findings_count = result.findings_count as u64;
     target.findings_by_class = result.findings_by_class;
+    target.issue_group_count = result.issue_group_count as u64;
     target.replay_command = Some(format!(
         "rerun replay {} --format json",
         target_dir.display()
@@ -767,10 +768,12 @@ fn build_agent_summary(
             "class_counts": evidence_pack.pointer("/summary/class_counts").cloned().unwrap_or_else(|| json!({})),
             "source_resolved": evidence_pack.pointer("/summary/source_resolved").cloned().unwrap_or(Value::Null),
             "source_unresolved": evidence_pack.pointer("/summary/source_unresolved").cloned().unwrap_or(Value::Null),
+            "issue_group_count": evidence_pack.pointer("/summary/issue_group_count").cloned().unwrap_or(Value::Null),
             "escalation_total_runs": escalation_summary.pointer("/total_runs").cloned().unwrap_or(Value::Null),
             "escalation_confirmed_runs": escalation_summary.pointer("/confirmed_runs").cloned().unwrap_or(Value::Null),
             "escalation_detected_classes": escalation_summary.pointer("/detected_classes").cloned().unwrap_or_else(|| json!([])),
         },
+        "issue_groups": evidence_pack.get("issue_groups").cloned().unwrap_or_else(|| json!([])),
         "findings": findings,
         "escalation": escalation_summary,
     })
@@ -793,6 +796,8 @@ fn compact_agent_finding(finding: &Value, escalation_results: &[Value]) -> Value
 
     json!({
         "id": finding.get("id").cloned().unwrap_or(Value::Null),
+        "fingerprint": finding.get("fingerprint").cloned().unwrap_or(Value::Null),
+        "issue_group_id": finding.get("issue_group_id").cloned().unwrap_or(Value::Null),
         "class": finding.get("class").cloned().unwrap_or(Value::Null),
         "severity": finding.get("severity").cloned().unwrap_or(Value::Null),
         "confidence": finding.get("confidence").cloned().unwrap_or(Value::Null),

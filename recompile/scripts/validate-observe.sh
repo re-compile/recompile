@@ -60,7 +60,7 @@ else:
         raise SystemExit(f"{summary_path}: missing class {expected_class} count {expected_count}: {classes}")
 
 artifacts = target.get("artifacts") or {}
-for key in ["crashpack", "findings", "evidence_pack", "analysis", "manifest", "dependencies"]:
+for key in ["crashpack", "findings", "evidence_pack", "analysis", "manifest", "dependencies", "issue_groups"]:
     path = pathlib.Path(artifacts.get(key, ""))
     if not path.exists():
         raise SystemExit(f"{summary_path}: artifact {key} missing at {path}")
@@ -81,6 +81,35 @@ if not isinstance(dependencies.get("elf"), dict):
     raise SystemExit(f"{dependencies_path}: missing elf metadata")
 if not isinstance(dependencies.get("dynamic_dependencies"), list):
     raise SystemExit(f"{dependencies_path}: missing dynamic dependency list")
+
+findings_path = pathlib.Path(artifacts["findings"])
+findings = json.loads(findings_path.read_text())
+issue_groups_path = pathlib.Path(artifacts["issue_groups"])
+issue_groups = json.loads(issue_groups_path.read_text())
+if issue_groups.get("schema_version") != "1.0":
+    raise SystemExit(f"{issue_groups_path}: schema_version must be 1.0")
+if issue_groups.get("purpose") != "issue_groups":
+    raise SystemExit(f"{issue_groups_path}: unexpected purpose {issue_groups.get('purpose')}")
+groups = issue_groups.get("groups")
+if not isinstance(groups, list):
+    raise SystemExit(f"{issue_groups_path}: groups must be a list")
+if target.get("issue_group_count") != len(groups):
+    raise SystemExit(
+        f"{summary_path}: issue_group_count={target.get('issue_group_count')} does not match {len(groups)} groups"
+    )
+if expected_count == 0:
+    if groups:
+        raise SystemExit(f"{issue_groups_path}: expected no issue groups, got {groups}")
+else:
+    if not groups:
+        raise SystemExit(f"{issue_groups_path}: expected at least one issue group")
+    group_ids = {group.get("id") for group in groups}
+    fingerprints = {group.get("fingerprint") for group in groups}
+    for finding in findings:
+        if not finding.get("fingerprint") or finding.get("fingerprint") not in fingerprints:
+            raise SystemExit(f"{findings_path}: finding has missing or unknown fingerprint: {finding}")
+        if not finding.get("issue_group_id") or finding.get("issue_group_id") not in group_ids:
+            raise SystemExit(f"{findings_path}: finding has missing or unknown issue_group_id: {finding}")
 
 status_totals = summary.get("status_totals") or {}
 if status_totals.get(expected_status) != 1:
@@ -128,6 +157,24 @@ assert_observation "$output_root/clean_malloc_free/run-summary.json" clean __non
 printf '[observe] finding binary with default confirmation\n'
 "$runner_path" observe build/user-samples/copy_overrun_case --output "$output_root/copy_overrun_case"
 assert_observation "$output_root/copy_overrun_case/run-summary.json" findings heap_overflow 1 valgrind findings heap_overflow
+
+printf '[observe] repeated finding binary keeps stable fingerprint\n'
+"$runner_path" observe build/user-samples/copy_overrun_case --output "$output_root/copy_overrun_case_repeat"
+assert_observation "$output_root/copy_overrun_case_repeat/run-summary.json" findings heap_overflow 1 valgrind findings heap_overflow
+python3 - "$output_root/copy_overrun_case/targets/copy_overrun_case/issue-groups.json" \
+    "$output_root/copy_overrun_case_repeat/targets/copy_overrun_case/issue-groups.json" <<'PY'
+import json
+import pathlib
+import sys
+
+left = json.loads(pathlib.Path(sys.argv[1]).read_text())
+right = json.loads(pathlib.Path(sys.argv[2]).read_text())
+left_fingerprints = [group.get("fingerprint") for group in left.get("groups") or []]
+right_fingerprints = [group.get("fingerprint") for group in right.get("groups") or []]
+if left_fingerprints != right_fingerprints:
+    raise SystemExit(f"fingerprints are not stable: {left_fingerprints} != {right_fingerprints}")
+print(json.dumps({"stable_fingerprints": left_fingerprints}, sort_keys=True))
+PY
 
 printf '[observe] deep Valgrind-first binary\n'
 "$runner_path" observe --deep build/user-samples/use_after_free_case --output "$output_root/use_after_free_case"

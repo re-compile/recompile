@@ -4,6 +4,7 @@
 //! It invokes the C agent (re-mini) to attach probes and monitor the target binary.
 
 use crate::dependencies::capture_binary_dependency_metadata;
+use crate::issue_groups::{annotate_findings_with_issue_groups, IssueGroupReport};
 use crate::summary::{print_findings_summary, read_findings};
 use anyhow::{Context, Result};
 use re_crashpack::{BinaryInfo, Manifest};
@@ -22,6 +23,7 @@ const GENERATED_OUTPUT_FILES: &[&str] = &[
     "dependencies.json",
     "evidence-pack.json",
     "findings.json",
+    "issue-groups.json",
     "manifest.json",
     "re-findings.jsonl",
 ];
@@ -76,6 +78,7 @@ pub struct NativeRunResult {
     pub duration_ms: u128,
     pub findings_count: usize,
     pub findings_by_class: BTreeMap<String, u64>,
+    pub issue_group_count: usize,
 }
 
 #[allow(dead_code)]
@@ -254,7 +257,7 @@ pub fn run_native_with_options(
     let _ = agent.kill();
     let _ = agent.wait();
 
-    let findings_path = finalize_findings(&config.crashpack_dir, &binary_abs)?;
+    let (findings_path, issue_group_count) = finalize_findings(&config.crashpack_dir, &binary_abs)?;
     let findings = read_findings(&findings_path)?;
     let findings_by_class = class_counts(&findings);
 
@@ -277,6 +280,7 @@ pub fn run_native_with_options(
         duration_ms,
         findings_count: findings.len(),
         findings_by_class,
+        issue_group_count,
     })
 }
 
@@ -718,10 +722,10 @@ fn wait_for_exit_with_timeout(pid: u32, timeout: Option<Duration>) -> Result<Tar
     }
 }
 
-fn finalize_findings(crashpack_dir: &Path, binary_path: &Path) -> Result<PathBuf> {
+fn finalize_findings(crashpack_dir: &Path, binary_path: &Path) -> Result<(PathBuf, usize)> {
     let findings_path = crashpack_dir.join("findings.json");
     let copied_binary_path = write_binary_artifacts(crashpack_dir, binary_path)?;
-    let findings = if findings_path.exists() {
+    let mut findings = if findings_path.exists() {
         let content = std::fs::read_to_string(&findings_path)
             .with_context(|| format!("Failed to read {}", findings_path.display()))?;
         let mut findings = parse_findings_content(&content)
@@ -731,15 +735,23 @@ fn finalize_findings(crashpack_dir: &Path, binary_path: &Path) -> Result<PathBuf
     } else {
         Vec::new()
     };
+    let issue_groups = annotate_findings_with_issue_groups(&mut findings);
 
     std::fs::write(&findings_path, serde_json::to_vec_pretty(&findings)?)
         .with_context(|| format!("Failed to rewrite {}", findings_path.display()))?;
+    write_issue_groups(crashpack_dir, &issue_groups)?;
     write_manifest(crashpack_dir, &findings)?;
     write_dependency_metadata(crashpack_dir, binary_path)?;
-    write_agent_evidence_pack(crashpack_dir, binary_path, &copied_binary_path, &findings)?;
+    write_agent_evidence_pack(
+        crashpack_dir,
+        binary_path,
+        &copied_binary_path,
+        &findings,
+        &issue_groups,
+    )?;
 
     println!("\nFindings saved to: {}", findings_path.display());
-    Ok(findings_path)
+    Ok((findings_path, issue_groups.group_count()))
 }
 
 fn write_analysis_metadata(
@@ -868,17 +880,26 @@ fn write_dependency_metadata(crashpack_dir: &Path, binary_path: &Path) -> Result
     Ok(())
 }
 
+fn write_issue_groups(crashpack_dir: &Path, issue_groups: &IssueGroupReport) -> Result<()> {
+    let issue_groups_path = crashpack_dir.join("issue-groups.json");
+    std::fs::write(&issue_groups_path, serde_json::to_vec_pretty(issue_groups)?)
+        .with_context(|| format!("Failed to write {}", issue_groups_path.display()))?;
+    Ok(())
+}
+
 fn write_agent_evidence_pack(
     crashpack_dir: &Path,
     original_binary_path: &Path,
     copied_binary_path: &Path,
     findings: &[Value],
+    issue_groups: &IssueGroupReport,
 ) -> Result<()> {
     let pack = build_agent_evidence_pack(
         crashpack_dir,
         original_binary_path,
         copied_binary_path,
         findings,
+        issue_groups,
     );
     let pack_path = crashpack_dir.join("evidence-pack.json");
     std::fs::write(&pack_path, serde_json::to_vec_pretty(&pack)?)
@@ -891,6 +912,7 @@ fn build_agent_evidence_pack(
     original_binary_path: &Path,
     copied_binary_path: &Path,
     findings: &[Value],
+    issue_groups: &IssueGroupReport,
 ) -> Value {
     let mut class_counts = BTreeMap::<String, usize>::new();
     let mut resolved_sources = 0usize;
@@ -914,6 +936,8 @@ fn build_agent_evidence_pack(
             json!({
                 "index": index,
                 "id": finding_string(finding, &["id"]).unwrap_or_else(|| format!("finding-{}", index + 1)),
+                "fingerprint": finding.get("fingerprint").cloned().unwrap_or(Value::Null),
+                "issue_group_id": finding.get("issue_group_id").cloned().unwrap_or(Value::Null),
                 "class": class,
                 "severity": finding_string(finding, &["severity"]).unwrap_or_else(|| "unknown".to_string()),
                 "confidence": finding_string(finding, &["confidence"]).unwrap_or_else(|| "unknown".to_string()),
@@ -955,6 +979,7 @@ fn build_agent_evidence_pack(
             "manifest": crashpack_dir.join("manifest.json").display().to_string(),
             "analysis": crashpack_dir.join("analysis.json").display().to_string(),
             "dependencies": crashpack_dir.join("dependencies.json").display().to_string(),
+            "issue_groups": crashpack_dir.join("issue-groups.json").display().to_string(),
             "console_log": crashpack_dir.join("console.log").display().to_string(),
             "debug_stream": crashpack_dir.join("re-findings.jsonl").display().to_string(),
         },
@@ -967,7 +992,9 @@ fn build_agent_evidence_pack(
             "class_counts": class_counts,
             "source_resolved": resolved_sources,
             "source_unresolved": unresolved_sources,
+            "issue_group_count": issue_groups.group_count(),
         },
+        "issue_groups": issue_groups.groups,
         "findings": agent_findings,
     })
 }
@@ -1432,7 +1459,7 @@ mod tests {
 
     #[test]
     fn agent_evidence_pack_summarizes_findings_for_agents() {
-        let findings = vec![json!({
+        let mut findings = vec![json!({
             "id": "F-1",
             "class": "heap_overflow",
             "severity": "error",
@@ -1459,12 +1486,14 @@ mod tests {
                 "reason": "len>alloc_size"
             }
         })];
+        let issue_groups = annotate_findings_with_issue_groups(&mut findings);
 
         let pack = build_agent_evidence_pack(
             Path::new("/tmp/crashpack"),
             Path::new("/tmp/project/build/app"),
             Path::new("/tmp/crashpack/bins/app"),
             &findings,
+            &issue_groups,
         );
 
         assert_eq!(
@@ -1500,6 +1529,21 @@ mod tests {
             pack.pointer("/artifacts/dependencies")
                 .and_then(Value::as_str),
             Some("/tmp/crashpack/dependencies.json")
+        );
+        assert_eq!(
+            pack.pointer("/artifacts/issue_groups")
+                .and_then(Value::as_str),
+            Some("/tmp/crashpack/issue-groups.json")
+        );
+        assert_eq!(
+            pack.pointer("/summary/issue_group_count")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/findings/0/issue_group_id")
+                .and_then(Value::as_str),
+            pack.pointer("/issue_groups/0/id").and_then(Value::as_str)
         );
     }
 }

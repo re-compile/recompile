@@ -79,6 +79,29 @@ Missing `readelf` or `ldd` should degrade the metadata instead of failing the
 observation run. Failure to write the artifact itself is treated as an output
 error because the crashpack would otherwise be incomplete.
 
+## Issue Groups
+
+Each target crashpack writes `issue-groups.json`, annotates each canonical
+finding with `fingerprint` and `issue_group_id`, and links the groups from
+`evidence-pack.json`, `run-summary.json`, and `rerun summarize`.
+
+Fingerprints are deterministic. The current inputs are:
+
+- finding class
+- observed operation or API
+- resolved source path when available
+- normalized call site
+- normalized allocation site
+- normalized free site when available
+- access size
+- allocation size
+
+The fingerprint deliberately excludes pointer addresses, PIDs, timestamps,
+absolute crashpack output directories, and escalation artifact names because
+those vary between runs. Repeated executions of the same bug path should keep
+the same fingerprint. Independent findings should split when their class,
+operation, source site, lifecycle site, or size evidence differs.
+
 ## Current Slice
 
 The current MVP supports one binary, args after `--`, `--cwd`, `--output`, `--timeout-ms`, `--native-only`, and `--deep`.
@@ -97,4 +120,5 @@ Deep escalation policy:
 - ASan `not_applicable` status for normal non-ASan binaries
 
 Dependency metadata is captured for each target.
-Issue groups and project-style fixtures are tracked as later Phase 4 slices.
+Issue groups are captured for each target.
+Project-style fixtures are tracked as a later Phase 4 slice.

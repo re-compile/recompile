@@ -85,6 +85,7 @@ Primary outputs:
 - `build/invalid-free/findings.json` - canonical finding array
 - `build/invalid-free/evidence-pack.json` - compact evidence pack for coding agents
 - `build/invalid-free/dependencies.json` - binary and dynamic dependency metadata
+- `build/invalid-free/issue-groups.json` - stable finding fingerprints and grouped issues
 - `build/invalid-free/manifest.json` - crashpack metadata
 - `build/invalid-free/re-findings.jsonl` - debug stream
 
@@ -109,6 +110,7 @@ Primary outputs:
 - `build/observe-demo/targets/copy_overrun_case/findings.json` - target findings
 - `build/observe-demo/targets/copy_overrun_case/evidence-pack.json` - target evidence pack
 - `build/observe-demo/targets/copy_overrun_case/dependencies.json` - target binary/dependency metadata
+- `build/observe-demo/targets/copy_overrun_case/issue-groups.json` - stable issue groups
 - `build/observe-demo/targets/copy_overrun_case/analysis.json` - target run metadata
 
 ### Escalate an existing crashpack
