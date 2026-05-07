@@ -63,6 +63,22 @@ Each target summary records:
 - replay and summarize commands when available
 - next inspection commands
 
+## Dependency Metadata
+
+Each target crashpack writes `dependencies.json` and links it from both
+`run-summary.json` and `evidence-pack.json`.
+
+The artifact is intentionally non-fatal with respect to optional host tooling:
+
+- `readelf.status` records `available`, `unavailable`, or `failed`
+- `ldd.status` records `available`, `unavailable`, or `failed`
+- `elf` records class, machine, interpreter, build ID, debug-info presence, RPATH, and RUNPATH when available
+- `dynamic_dependencies` records resolved libraries, missing libraries, loader entries, and unknown lines from `ldd`
+
+Missing `readelf` or `ldd` should degrade the metadata instead of failing the
+observation run. Failure to write the artifact itself is treated as an output
+error because the crashpack would otherwise be incomplete.
+
 ## Current Slice
 
 The current MVP supports one binary, args after `--`, `--cwd`, `--output`, `--timeout-ms`, `--native-only`, and `--deep`.
@@ -80,4 +96,5 @@ Deep escalation policy:
 - ASan binary scan when the binary is already ASan-instrumented
 - ASan `not_applicable` status for normal non-ASan binaries
 
-Dependency metadata, issue groups, and project-style fixtures are tracked as later Phase 4 slices.
+Dependency metadata is captured for each target.
+Issue groups and project-style fixtures are tracked as later Phase 4 slices.

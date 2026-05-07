@@ -3,6 +3,7 @@
 //! This module implements direct eBPF-based analysis without a VM.
 //! It invokes the C agent (re-mini) to attach probes and monitor the target binary.
 
+use crate::dependencies::capture_binary_dependency_metadata;
 use crate::summary::{print_findings_summary, read_findings};
 use anyhow::{Context, Result};
 use re_crashpack::{BinaryInfo, Manifest};
@@ -18,6 +19,7 @@ use std::time::{Duration, Instant};
 const GENERATED_OUTPUT_FILES: &[&str] = &[
     "analysis.json",
     "console.log",
+    "dependencies.json",
     "evidence-pack.json",
     "findings.json",
     "manifest.json",
@@ -733,6 +735,7 @@ fn finalize_findings(crashpack_dir: &Path, binary_path: &Path) -> Result<PathBuf
     std::fs::write(&findings_path, serde_json::to_vec_pretty(&findings)?)
         .with_context(|| format!("Failed to rewrite {}", findings_path.display()))?;
     write_manifest(crashpack_dir, &findings)?;
+    write_dependency_metadata(crashpack_dir, binary_path)?;
     write_agent_evidence_pack(crashpack_dir, binary_path, &copied_binary_path, &findings)?;
 
     println!("\nFindings saved to: {}", findings_path.display());
@@ -857,6 +860,14 @@ fn write_manifest(crashpack_dir: &Path, findings: &[Value]) -> Result<()> {
     Ok(())
 }
 
+fn write_dependency_metadata(crashpack_dir: &Path, binary_path: &Path) -> Result<()> {
+    let metadata = capture_binary_dependency_metadata(binary_path);
+    let metadata_path = crashpack_dir.join("dependencies.json");
+    std::fs::write(&metadata_path, serde_json::to_vec_pretty(&metadata)?)
+        .with_context(|| format!("Failed to write {}", metadata_path.display()))?;
+    Ok(())
+}
+
 fn write_agent_evidence_pack(
     crashpack_dir: &Path,
     original_binary_path: &Path,
@@ -943,6 +954,7 @@ fn build_agent_evidence_pack(
             "findings": crashpack_dir.join("findings.json").display().to_string(),
             "manifest": crashpack_dir.join("manifest.json").display().to_string(),
             "analysis": crashpack_dir.join("analysis.json").display().to_string(),
+            "dependencies": crashpack_dir.join("dependencies.json").display().to_string(),
             "console_log": crashpack_dir.join("console.log").display().to_string(),
             "debug_stream": crashpack_dir.join("re-findings.jsonl").display().to_string(),
         },
@@ -1483,6 +1495,11 @@ mod tests {
         assert_eq!(
             pack.pointer("/artifacts/findings").and_then(Value::as_str),
             Some("/tmp/crashpack/findings.json")
+        );
+        assert_eq!(
+            pack.pointer("/artifacts/dependencies")
+                .and_then(Value::as_str),
+            Some("/tmp/crashpack/dependencies.json")
         );
     }
 }

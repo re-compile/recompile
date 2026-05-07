@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{Arg, ArgAction, Command, ValueHint};
 
 mod cli;
+mod dependencies;
 mod native;
 mod observation;
 mod summary;

@@ -18,6 +18,7 @@ What is working now:
 - `rerun observe <binary>` writes `.re/run-summary.json` plus per-target crashpack artifacts
 - findings persist canonically to `findings.json`
 - agent-readable evidence persists to `evidence-pack.json`
+- binary and dynamic dependency metadata persists to `dependencies.json`
 - debug/streaming output goes to `re-findings.jsonl`
 - crashpack and escalation consume explicit provenance instead of guessing from example names
 - Valgrind escalation can confirm a finding from an existing crashpack
@@ -66,6 +67,7 @@ cargo build --release -p rerun
 - Docker-native tracing requires `--privileged --pid=host`
 - `findings.json` is the canonical persisted output
 - `evidence-pack.json` is the agent-readable summary of a crashpack
+- `dependencies.json` records binary identity, ELF metadata, and dynamic dependency resolution status
 - `re-findings.jsonl` and `RE:FINDING:` lines are debug streams only
 - the current runtime source of truth is `runtime/agent/re-mini.c`
 - VM mode, macOS-first development, and the Rust agent are deferred
@@ -82,6 +84,7 @@ Primary outputs:
 
 - `build/invalid-free/findings.json` - canonical finding array
 - `build/invalid-free/evidence-pack.json` - compact evidence pack for coding agents
+- `build/invalid-free/dependencies.json` - binary and dynamic dependency metadata
 - `build/invalid-free/manifest.json` - crashpack metadata
 - `build/invalid-free/re-findings.jsonl` - debug stream
 
@@ -105,6 +108,7 @@ Primary outputs:
 - `build/observe-demo/run-summary.json` - run-level observation summary
 - `build/observe-demo/targets/copy_overrun_case/findings.json` - target findings
 - `build/observe-demo/targets/copy_overrun_case/evidence-pack.json` - target evidence pack
+- `build/observe-demo/targets/copy_overrun_case/dependencies.json` - target binary/dependency metadata
 - `build/observe-demo/targets/copy_overrun_case/analysis.json` - target run metadata
 
 ### Escalate an existing crashpack
