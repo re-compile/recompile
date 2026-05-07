@@ -302,8 +302,9 @@ impl EscalationRunner {
         let stderr_file = output_dir.join(format!("asan_{}.stderr.log", escalation_id));
         let report_file = output_dir.join(format!("asan_{}.json", escalation_id));
 
-        let mut cmd = TokioCommand::new(binary_path);
-        let mut command = vec![binary_path.display().to_string()];
+        let executable_path = canonical_binary_path(binary_path);
+        let mut cmd = TokioCommand::new(&executable_path);
+        let mut command = vec![executable_path.display().to_string()];
         for arg in &self.config.args {
             cmd.arg(arg);
             command.push(arg.clone());
@@ -311,6 +312,7 @@ impl EscalationRunner {
 
         let runtime_flags = self.config.tools.asan.runtime_flags.join(":");
         cmd.env("ASAN_OPTIONS", runtime_flags);
+        self.apply_cwd(&mut cmd, &mut command);
 
         let timeout_duration = TokioDuration::from_millis(self.config.tools.asan.timeout_ms);
         let output = timeout(timeout_duration, cmd.output())
@@ -424,12 +426,14 @@ impl EscalationRunner {
             cmd.arg(flag);
             command.push(flag.clone());
         }
-        cmd.arg(&binary_path);
-        command.push(binary_path.display().to_string());
+        let executable_path = canonical_binary_path(binary_path);
+        cmd.arg(&executable_path);
+        command.push(executable_path.display().to_string());
         for arg in &self.config.args {
             cmd.arg(arg);
             command.push(arg.clone());
         }
+        self.apply_cwd(&mut cmd, &mut command);
 
         let timeout_duration = TokioDuration::from_millis(self.config.tools.valgrind.timeout_ms);
         let output = timeout(timeout_duration, cmd.output())
@@ -563,6 +567,13 @@ impl EscalationRunner {
         )))
     }
 
+    fn apply_cwd(&self, cmd: &mut TokioCommand, command: &mut Vec<String>) {
+        if let Some(cwd) = self.config.cwd.as_deref() {
+            cmd.current_dir(cwd);
+            command.splice(0..0, ["cwd".to_string(), cwd.to_string()]);
+        }
+    }
+
     async fn binary_looks_asan_instrumented(&self, binary_path: &Path) -> Result<bool> {
         let bytes = tokio::fs::read(binary_path).await?;
         let haystack = String::from_utf8_lossy(&bytes);
@@ -577,6 +588,10 @@ fn unix_timestamp() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs()
+}
+
+fn canonical_binary_path(binary_path: &Path) -> PathBuf {
+    std::fs::canonicalize(binary_path).unwrap_or_else(|_| binary_path.to_path_buf())
 }
 
 #[cfg(test)]

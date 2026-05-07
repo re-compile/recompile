@@ -65,6 +65,7 @@ pub struct EscalationConfig {
     pub output_dir: String,
     pub binary_path: Option<String>,
     pub source_file: Option<String>,
+    pub cwd: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
 }
@@ -191,6 +192,7 @@ impl Default for EscalationConfig {
             output_dir: "build/escalations".to_string(),
             binary_path: None,
             source_file: None,
+            cwd: None,
             args: Vec::new(),
         }
     }

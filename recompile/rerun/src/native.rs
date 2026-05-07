@@ -3,7 +3,9 @@
 //! This module implements direct eBPF-based analysis without a VM.
 //! It invokes the C agent (re-mini) to attach probes and monitor the target binary.
 
-use crate::dependencies::capture_binary_dependency_metadata;
+use crate::dependencies::{
+    capture_binary_dependency_metadata, BinaryDependencyMetadata, DependencyStatus,
+};
 use crate::issue_groups::{annotate_findings_with_issue_groups, IssueGroupReport};
 use crate::summary::{print_findings_summary, read_findings};
 use anyhow::{Context, Result};
@@ -741,7 +743,8 @@ fn finalize_findings(crashpack_dir: &Path, binary_path: &Path) -> Result<(PathBu
         .with_context(|| format!("Failed to rewrite {}", findings_path.display()))?;
     write_issue_groups(crashpack_dir, &issue_groups)?;
     write_manifest(crashpack_dir, &findings)?;
-    write_dependency_metadata(crashpack_dir, binary_path)?;
+    let dependency_metadata = write_dependency_metadata(crashpack_dir, binary_path)?;
+    copy_local_dynamic_dependencies(crashpack_dir, &dependency_metadata)?;
     write_agent_evidence_pack(
         crashpack_dir,
         binary_path,
@@ -872,12 +875,54 @@ fn write_manifest(crashpack_dir: &Path, findings: &[Value]) -> Result<()> {
     Ok(())
 }
 
-fn write_dependency_metadata(crashpack_dir: &Path, binary_path: &Path) -> Result<()> {
+fn write_dependency_metadata(
+    crashpack_dir: &Path,
+    binary_path: &Path,
+) -> Result<BinaryDependencyMetadata> {
     let metadata = capture_binary_dependency_metadata(binary_path);
     let metadata_path = crashpack_dir.join("dependencies.json");
     std::fs::write(&metadata_path, serde_json::to_vec_pretty(&metadata)?)
         .with_context(|| format!("Failed to write {}", metadata_path.display()))?;
+    Ok(metadata)
+}
+
+fn copy_local_dynamic_dependencies(
+    crashpack_dir: &Path,
+    metadata: &BinaryDependencyMetadata,
+) -> Result<()> {
+    let bins_lib_dir = crashpack_dir.join("bins").join("lib");
+    for dependency in &metadata.dynamic_dependencies {
+        if dependency.status != DependencyStatus::Resolved {
+            continue;
+        }
+        let Some(path) = dependency.path.as_deref().map(Path::new) else {
+            continue;
+        };
+        if is_system_library_path(path) {
+            continue;
+        }
+        let Some(file_name) = path.file_name() else {
+            continue;
+        };
+        std::fs::create_dir_all(&bins_lib_dir)
+            .with_context(|| format!("Failed to create {}", bins_lib_dir.display()))?;
+        let destination = bins_lib_dir.join(file_name);
+        std::fs::copy(path, &destination).with_context(|| {
+            format!(
+                "Failed to copy dynamic dependency {} to {}",
+                path.display(),
+                destination.display()
+            )
+        })?;
+    }
     Ok(())
+}
+
+fn is_system_library_path(path: &Path) -> bool {
+    path.starts_with("/lib")
+        || path.starts_with("/lib64")
+        || path.starts_with("/usr/lib")
+        || path.starts_with("/usr/lib64")
 }
 
 fn write_issue_groups(crashpack_dir: &Path, issue_groups: &IssueGroupReport) -> Result<()> {
@@ -1369,6 +1414,57 @@ mod tests {
             "keep"
         );
 
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn copies_local_dynamic_dependencies_for_replay_layout() {
+        let base = std::env::temp_dir().join(format!("rerun-dynamic-deps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let source_dir = base.join("source");
+        let crashpack_dir = base.join("crashpack");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::create_dir_all(crashpack_dir.join("bins")).unwrap();
+        let local_lib = source_dir.join("libprojectbug.so");
+        std::fs::write(&local_lib, b"shared-lib").unwrap();
+
+        let metadata = BinaryDependencyMetadata {
+            schema_version: "1.0".to_string(),
+            purpose: "binary_dependency_metadata".to_string(),
+            binary_path: "/tmp/app".to_string(),
+            file_size: None,
+            readelf: crate::dependencies::ToolStatus {
+                tool: "readelf".to_string(),
+                status: crate::dependencies::ToolAvailability::Available,
+                error: None,
+            },
+            ldd: crate::dependencies::ToolStatus {
+                tool: "ldd".to_string(),
+                status: crate::dependencies::ToolAvailability::Available,
+                error: None,
+            },
+            elf: crate::dependencies::ElfMetadata::default(),
+            dynamic_dependencies: vec![
+                crate::dependencies::DynamicDependency {
+                    name: "libprojectbug.so".to_string(),
+                    path: Some(local_lib.display().to_string()),
+                    status: DependencyStatus::Resolved,
+                },
+                crate::dependencies::DynamicDependency {
+                    name: "libc.so.6".to_string(),
+                    path: Some("/lib/aarch64-linux-gnu/libc.so.6".to_string()),
+                    status: DependencyStatus::Resolved,
+                },
+            ],
+        };
+
+        copy_local_dynamic_dependencies(&crashpack_dir, &metadata).unwrap();
+
+        assert_eq!(
+            std::fs::read(crashpack_dir.join("bins/lib/libprojectbug.so")).unwrap(),
+            b"shared-lib"
+        );
+        assert!(!crashpack_dir.join("bins/lib/libc.so.6").exists());
         std::fs::remove_dir_all(base).unwrap();
     }
 

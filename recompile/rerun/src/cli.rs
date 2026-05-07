@@ -25,6 +25,8 @@ struct NativeRunMetadata {
     #[serde(default)]
     source_path: Option<String>,
     #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
     args: Vec<String>,
 }
 
@@ -231,6 +233,7 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
     config.output_dir = crashpack_dir.join("escalations").display().to_string();
     config.binary_path = Some(analysis.binary_path.clone());
     config.source_file = analysis.source_path.clone();
+    config.cwd = analysis.cwd.clone();
     config.args = analysis.args.clone();
 
     if scan_binary {
@@ -389,6 +392,7 @@ fn run_observe_escalation(
     config.output_dir = crashpack_dir.join("escalations").display().to_string();
     config.binary_path = Some(analysis.binary_path.clone());
     config.source_file = analysis.source_path.clone();
+    config.cwd = analysis.cwd.clone();
     config.args = analysis.args.clone();
 
     let runtime = tokio::runtime::Runtime::new()?;
