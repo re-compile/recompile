@@ -121,4 +121,12 @@ Deep escalation policy:
 
 Dependency metadata is captured for each target.
 Issue groups are captured for each target.
-Project-style fixtures are tracked as a later Phase 4 slice.
+Project-style fixtures are covered by `make project-smoke`:
+
+- multi-file heap bug
+- clean multi-file app
+- args/cwd-sensitive app
+- multi-binary project
+- shared-library target with dependency metadata
+- Valgrind-first target
+- timeout target
