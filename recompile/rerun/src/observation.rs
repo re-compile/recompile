@@ -77,6 +77,7 @@ pub struct ObservationTargetSummary {
     pub cwd: String,
     pub env: BTreeMap<String, String>,
     pub status: TargetStatus,
+    pub error: Option<String>,
     pub exit: TargetExitSummary,
     pub duration_ms: Option<u64>,
     pub timeout_ms: Option<u64>,
@@ -108,6 +109,7 @@ impl ObservationTargetSummary {
             cwd: cwd.into(),
             env: BTreeMap::new(),
             status,
+            error: None,
             exit,
             duration_ms: None,
             timeout_ms: None,
@@ -131,6 +133,7 @@ pub struct TargetExitSummary {
 }
 
 impl TargetExitSummary {
+    #[cfg(test)]
     pub fn clean_exit() -> Self {
         Self {
             code: Some(0),
@@ -329,6 +332,7 @@ mod tests {
             "env",
             "status",
             "exit",
+            "error",
             "duration_ms",
             "timeout_ms",
             "findings_count",

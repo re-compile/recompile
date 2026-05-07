@@ -66,6 +66,51 @@ fn main() -> Result<()> {
                 ),
         )
         .subcommand(
+            Command::new("observe")
+                .about("Observe an already-built native binary and write .re/run-summary.json")
+                .arg(
+                    Arg::new("binary")
+                        .help("Binary to observe")
+                        .required(true)
+                        .value_hint(ValueHint::FilePath),
+                )
+                .arg(
+                    Arg::new("cwd")
+                        .long("cwd")
+                        .value_name("PATH")
+                        .value_hint(ValueHint::DirPath)
+                        .help("Working directory for the target process"),
+                )
+                .arg(
+                    Arg::new("output")
+                        .long("output")
+                        .short('o')
+                        .value_name("PATH")
+                        .default_value(".re")
+                        .value_hint(ValueHint::DirPath)
+                        .help("Observation output root"),
+                )
+                .arg(
+                    Arg::new("timeout-ms")
+                        .long("timeout-ms")
+                        .value_name("MS")
+                        .value_parser(clap::value_parser!(u64))
+                        .help("Kill the target if it runs longer than this many milliseconds"),
+                )
+                .arg(
+                    Arg::new("native-only")
+                        .long("native-only")
+                        .action(ArgAction::SetTrue)
+                        .help("Run only native observation; observe-level escalation is added in a later Phase 4 slice"),
+                )
+                .arg(
+                    Arg::new("args")
+                        .help("Arguments to pass to the binary")
+                        .num_args(0..)
+                        .trailing_var_arg(true),
+                ),
+        )
+        .subcommand(
             Command::new("escalate")
                 .about("Run escalation analysis on existing crashpack")
                 .arg(
@@ -156,6 +201,9 @@ fn main() -> Result<()> {
     match matches.subcommand() {
         Some(("run", sub_matches)) => {
             handle_run_command(sub_matches)?;
+        }
+        Some(("observe", sub_matches)) => {
+            handle_observe_command(sub_matches)?;
         }
         Some(("escalate", sub_matches)) => {
             handle_escalate_command(sub_matches)?;

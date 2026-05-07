@@ -1,4 +1,4 @@
-.PHONY: all bpf passes agent agent-test toolchain examples user-samples external-smoke escalation-smoke asan-smoke summarize-smoke replay-smoke recc-smoke hit-rate phase1 rc phase2
+.PHONY: all bpf passes agent agent-test toolchain examples user-samples external-smoke escalation-smoke asan-smoke summarize-smoke replay-smoke observe-smoke recc-smoke hit-rate phase1 rc phase2
 
 all: examples
 
@@ -22,6 +22,9 @@ summarize-smoke:
 
 replay-smoke:
 	./scripts/validate-replay.sh
+
+observe-smoke:
+	./scripts/validate-observe.sh
 
 recc-smoke:
 	./scripts/validate-recc.sh
