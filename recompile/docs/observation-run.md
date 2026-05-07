@@ -2,13 +2,13 @@
 
 Phase 4 introduces the observation run as the top-level local observability artifact.
 
-The future human entry point is:
+The human entry point is:
 
 ```bash
 rerun observe ./build/app -- --input fixtures/input.txt
 ```
 
-The existing `rerun run --native <binary>` command remains the low-level crashpack primitive. `rerun observe` will wrap that primitive, add run-level summaries, and optionally run escalation.
+The existing `rerun run --native <binary>` command remains the low-level crashpack primitive. `rerun observe` wraps that primitive and adds run-level summaries. Observe-level automatic escalation is tracked as a later Phase 4 slice.
 
 ## Layout
 
@@ -53,6 +53,7 @@ Each target summary records:
 - args
 - cwd
 - selected environment summary
+- structured error reason for failed/skipped/timeout targets
 - exit code or signal
 - duration and timeout
 - finding counts by class
@@ -64,4 +65,4 @@ Each target summary records:
 
 ## Current Slice
 
-This contract slice only adds schema, typed model helpers, and tests. It intentionally does not add `rerun observe` execution behavior. That behavior is tracked separately in Phase 4 issue #37.
+The current MVP supports one binary, args after `--`, `--cwd`, `--output`, `--timeout-ms`, and `--native-only`. Automatic escalation, dependency metadata, issue groups, and project-style fixtures are tracked as later Phase 4 slices.

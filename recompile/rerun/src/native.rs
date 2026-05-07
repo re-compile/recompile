@@ -13,7 +13,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const GENERATED_OUTPUT_FILES: &[&str] = &[
     "analysis.json",
@@ -52,6 +52,34 @@ struct NativeRunMetadata {
     binary_path: String,
     source_path: Option<String>,
     args: Vec<String>,
+    cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NativeRunOptions {
+    pub cwd: Option<PathBuf>,
+    pub timeout: Option<Duration>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeRunResult {
+    pub binary_path: PathBuf,
+    pub output_dir: PathBuf,
+    pub args: Vec<String>,
+    pub cwd: Option<PathBuf>,
+    pub exit_code: Option<i32>,
+    pub signal: Option<i32>,
+    pub crashed: bool,
+    pub timed_out: bool,
+    pub duration_ms: u128,
+    pub findings_count: usize,
+    pub findings_by_class: BTreeMap<String, u64>,
+}
+
+#[allow(dead_code)]
+enum TargetWaitResult {
+    Exited(ExitStatus),
+    TimedOut,
 }
 
 struct TargetProcess {
@@ -64,12 +92,12 @@ impl TargetProcess {
     }
 
     #[cfg(target_os = "linux")]
-    fn wait(self) -> Result<ExitStatus> {
-        wait_for_exit(self.pid)
+    fn wait_timeout(self, timeout: Option<Duration>) -> Result<TargetWaitResult> {
+        wait_for_exit_with_timeout(self.pid, timeout)
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn wait(self) -> Result<ExitStatus> {
+    fn wait_timeout(self, _timeout: Option<Duration>) -> Result<TargetWaitResult> {
         let _ = self;
         Err(anyhow::anyhow!("Native mode is only supported on Linux"))
     }
@@ -90,6 +118,25 @@ pub fn run_native(
     _symbolizer_tool: &str,
     args: &[String],
 ) -> Result<()> {
+    run_native_with_options(
+        binary_path,
+        output_dir,
+        _escalate_mode,
+        _symbolizer_tool,
+        args,
+        NativeRunOptions::default(),
+    )?;
+    Ok(())
+}
+
+pub fn run_native_with_options(
+    binary_path: &PathBuf,
+    output_dir: &PathBuf,
+    _escalate_mode: &str,
+    _symbolizer_tool: &str,
+    args: &[String],
+    options: NativeRunOptions,
+) -> Result<NativeRunResult> {
     // Check if we're on Linux
     if !cfg!(target_os = "linux") {
         return Err(anyhow::anyhow!(
@@ -111,10 +158,18 @@ pub fn run_native(
     // Resolve the binary path to absolute
     let binary_abs = std::fs::canonicalize(binary_path)
         .with_context(|| format!("Binary not found: {}", binary_path.display()))?;
+    let cwd_abs = options
+        .cwd
+        .as_ref()
+        .map(|cwd| {
+            std::fs::canonicalize(cwd)
+                .with_context(|| format!("Working directory not found: {}", cwd.display()))
+        })
+        .transpose()?;
 
     // Locate required components
     let config = locate_components(output_dir)?;
-    write_analysis_metadata(&config.crashpack_dir, &binary_abs, args)?;
+    write_analysis_metadata(&config.crashpack_dir, &binary_abs, args, cwd_abs.as_deref())?;
 
     println!("Configuration:");
     println!("  Binary:       {}", binary_abs.display());
@@ -122,13 +177,16 @@ pub fn run_native(
     println!("  Heap tracker: {}", config.heap_tracker_path.display());
     println!("  Copy checker: {}", config.copy_checker_path.display());
     println!("  Libc:         {}", config.libc_path.display());
+    if let Some(cwd) = &cwd_abs {
+        println!("  Cwd:          {}", cwd.display());
+    }
     println!("  Debug log:    {}", config.debug_findings_path.display());
     println!("  Crashpack:    {}", config.crashpack_dir.display());
     println!();
 
     // Start the target in a stopped state so probes are attached before main executes.
     println!("Starting target in paused state...");
-    let target = start_target_paused(&binary_abs, args)?;
+    let target = start_target_paused(&binary_abs, args, cwd_abs.as_deref())?;
     println!("✓ Target paused (PID: {})", target.id());
 
     // Start the re-mini agent
@@ -157,15 +215,34 @@ pub fn run_native(
     // Resume the target now that probes are attached.
     println!("\nRunning target binary...");
     resume_target(target.id())?;
-    let target_status = target
-        .wait()
+    let started = Instant::now();
+    let wait_result = target
+        .wait_timeout(options.timeout)
         .with_context(|| format!("Failed while waiting for {}", binary_abs.display()))?;
+    let duration_ms = started.elapsed().as_millis();
 
-    println!("\nTarget exited with status: {}", target_status);
-    append_console_log(
-        &config.console_log_path,
-        &format!("target_exit_status={}\n", target_status),
-    )?;
+    let (target_status, timed_out) = match wait_result {
+        TargetWaitResult::Exited(status) => {
+            println!("\nTarget exited with status: {}", status);
+            append_console_log(
+                &config.console_log_path,
+                &format!("target_exit_status={}\n", status),
+            )?;
+            (Some(status), false)
+        }
+        TargetWaitResult::TimedOut => {
+            let timeout_ms = options
+                .timeout
+                .map(|timeout| timeout.as_millis())
+                .unwrap_or_default();
+            println!("\nTarget timed out after {}ms", timeout_ms);
+            append_console_log(
+                &config.console_log_path,
+                &format!("target_timeout_ms={}\n", timeout_ms),
+            )?;
+            (None, true)
+        }
+    };
 
     // Give agent time to process final events
     std::thread::sleep(Duration::from_millis(500));
@@ -176,12 +253,29 @@ pub fn run_native(
     let _ = agent.wait();
 
     let findings_path = finalize_findings(&config.crashpack_dir, &binary_abs)?;
+    let findings = read_findings(&findings_path)?;
+    let findings_by_class = class_counts(&findings);
 
     // Read and display findings
     println!("\n=== Findings ===");
-    display_findings(&findings_path)?;
+    print_findings_summary(&findings);
 
-    Ok(())
+    Ok(NativeRunResult {
+        binary_path: binary_abs,
+        output_dir: output_dir.clone(),
+        args: args.to_vec(),
+        cwd: cwd_abs,
+        exit_code: target_status.as_ref().and_then(ExitStatus::code),
+        signal: exit_signal(target_status.as_ref()),
+        crashed: target_status
+            .as_ref()
+            .map(|status| !status.success())
+            .unwrap_or(timed_out),
+        timed_out,
+        duration_ms,
+        findings_count: findings.len(),
+        findings_by_class,
+    })
 }
 
 /// Locate all required components for native mode
@@ -435,13 +529,23 @@ fn start_agent(config: &NativeConfig, binary_path: &Path, target_pid: u32) -> Re
 }
 
 #[cfg(target_os = "linux")]
-fn start_target_paused(binary_path: &Path, args: &[String]) -> Result<TargetProcess> {
+fn start_target_paused(
+    binary_path: &Path,
+    args: &[String],
+    cwd: Option<&Path>,
+) -> Result<TargetProcess> {
     let binary_cstr = CString::new(binary_path.as_os_str().as_bytes()).with_context(|| {
         format!(
             "Binary path contains interior NUL: {}",
             binary_path.display()
         )
     })?;
+    let cwd_cstr = cwd
+        .map(|cwd| {
+            CString::new(cwd.as_os_str().as_bytes())
+                .with_context(|| format!("cwd contains interior NUL: {}", cwd.display()))
+        })
+        .transpose()?;
     let arg_cstrs = args
         .iter()
         .map(|arg| CString::new(arg.as_bytes()).context("Argument contains interior NUL"))
@@ -471,6 +575,11 @@ fn start_target_paused(binary_path: &Path, args: &[String]) -> Result<TargetProc
             ) != 0
             {
                 libc::_exit(126);
+            }
+            if let Some(cwd_cstr) = cwd_cstr.as_ref() {
+                if libc::chdir(cwd_cstr.as_ptr()) != 0 {
+                    libc::_exit(125);
+                }
             }
             libc::execv(binary_cstr.as_ptr(), argv.as_ptr());
             libc::_exit(127);
@@ -535,7 +644,11 @@ fn resume_target(pid: u32) -> Result<()> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn start_target_paused(_binary_path: &Path, _args: &[String]) -> Result<TargetProcess> {
+fn start_target_paused(
+    _binary_path: &Path,
+    _args: &[String],
+    _cwd: Option<&Path>,
+) -> Result<TargetProcess> {
     Err(anyhow::anyhow!("Native mode is only supported on Linux"))
 }
 
@@ -566,6 +679,43 @@ fn wait_for_exit(pid: u32) -> Result<ExitStatus> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn wait_for_exit_with_timeout(pid: u32, timeout: Option<Duration>) -> Result<TargetWaitResult> {
+    let Some(timeout) = timeout else {
+        return wait_for_exit(pid).map(TargetWaitResult::Exited);
+    };
+
+    let started = Instant::now();
+    loop {
+        let mut status = 0;
+        let rc = unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) };
+        if rc == pid as i32 {
+            return Ok(TargetWaitResult::Exited(ExitStatus::from_raw(status)));
+        }
+        if rc < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(anyhow::anyhow!(
+                "Failed to wait for target {}: {}",
+                pid,
+                err
+            ));
+        }
+
+        if started.elapsed() >= timeout {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+            let _ = wait_for_exit(pid);
+            return Ok(TargetWaitResult::TimedOut);
+        }
+
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 fn finalize_findings(crashpack_dir: &Path, binary_path: &Path) -> Result<PathBuf> {
     let findings_path = crashpack_dir.join("findings.json");
     let copied_binary_path = write_binary_artifacts(crashpack_dir, binary_path)?;
@@ -593,15 +743,40 @@ fn write_analysis_metadata(
     crashpack_dir: &Path,
     binary_path: &Path,
     args: &[String],
+    cwd: Option<&Path>,
 ) -> Result<()> {
     let metadata = NativeRunMetadata {
         binary_path: binary_path.display().to_string(),
         source_path: None,
         args: args.to_vec(),
+        cwd: cwd.map(|cwd| cwd.display().to_string()),
     };
     let metadata_path = crashpack_dir.join("analysis.json");
     std::fs::write(metadata_path, serde_json::to_vec_pretty(&metadata)?)?;
     Ok(())
+}
+
+fn class_counts(findings: &[Value]) -> BTreeMap<String, u64> {
+    let mut counts = BTreeMap::new();
+    for finding in findings {
+        let class = finding_string(finding, &["class"])
+            .or_else(|| finding_string(finding, &["kind"]))
+            .unwrap_or_else(|| "unknown".to_string());
+        *counts.entry(class).or_default() += 1;
+    }
+    counts
+}
+
+fn exit_signal(status: Option<&ExitStatus>) -> Option<i32> {
+    #[cfg(target_os = "linux")]
+    {
+        status.and_then(ExitStatusExt::signal)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = status;
+        None
+    }
 }
 
 fn append_console_log(console_log_path: &Path, line: &str) -> Result<()> {
@@ -1004,13 +1179,6 @@ fn strip_trailing_numeric_component(value: &str) -> &str {
     } else {
         value
     }
-}
-
-/// Display findings from the findings file
-fn display_findings(path: &Path) -> Result<()> {
-    let findings = read_findings(path)?;
-    print_findings_summary(&findings);
-    Ok(())
 }
 
 /// Check for required Linux capabilities (CAP_BPF, CAP_PERFMON)

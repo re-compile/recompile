@@ -10,9 +10,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use crate::native::run_native;
+use crate::native::{run_native, run_native_with_options, NativeRunOptions, NativeRunResult};
+use crate::observation::{
+    ObservationArtifacts, ObservationRunSummary, ObservationTargetSummary, TargetExitSummary,
+    TargetStatus,
+};
 use crate::summary::{print_findings_summary, read_findings};
 
 #[derive(Deserialize)]
@@ -90,6 +94,94 @@ pub fn handle_run_command(matches: &ArgMatches) -> Result<()> {
         "Analysis completed. Results saved to: {}",
         output_dir.display()
     );
+    Ok(())
+}
+
+/// Handle the 'observe' command
+pub fn handle_observe_command(matches: &ArgMatches) -> Result<()> {
+    let binary_path = PathBuf::from(matches.get_one::<String>("binary").unwrap());
+    let output_root = PathBuf::from(matches.get_one::<String>("output").unwrap());
+    let cwd = matches.get_one::<String>("cwd").map(PathBuf::from);
+    let timeout_ms = matches.get_one::<u64>("timeout-ms").copied();
+    let native_only = matches.get_flag("native-only");
+    let args: Vec<String> = matches
+        .get_many::<String>("args")
+        .map(|args| args.map(|s| s.to_string()).collect())
+        .unwrap_or_default();
+
+    let target_name = observation_target_name(&binary_path);
+    let target_dir = output_root.join("targets").join(&target_name);
+    fs::create_dir_all(&target_dir)?;
+
+    println!("RECC Sentinel v0.1.0");
+    println!("Observing binary: {}", binary_path.display());
+    println!("Output root: {}", output_root.display());
+    println!("Target output: {}", target_dir.display());
+    if let Some(cwd) = &cwd {
+        println!("Cwd: {}", cwd.display());
+    }
+    if let Some(timeout_ms) = timeout_ms {
+        println!("Timeout: {}ms", timeout_ms);
+    }
+    if native_only {
+        println!("Escalation: native-only");
+    } else {
+        println!("Escalation: deferred in observe MVP");
+    }
+
+    let started = Instant::now();
+    let native_result = run_native_with_options(
+        &binary_path,
+        &target_dir,
+        "never",
+        "llvm",
+        &args,
+        NativeRunOptions {
+            cwd: cwd.clone(),
+            timeout: timeout_ms.map(Duration::from_millis),
+        },
+    );
+
+    let target = match native_result {
+        Ok(result) => observation_target_from_native_result(&target_name, timeout_ms, result),
+        Err(error) => observation_target_from_error(
+            &target_name,
+            &binary_path,
+            &args,
+            cwd.as_deref(),
+            &output_root,
+            timeout_ms,
+            error.to_string(),
+            started.elapsed().as_millis(),
+        ),
+    };
+
+    let had_error = matches!(
+        target.status,
+        TargetStatus::Failed | TargetStatus::Timeout | TargetStatus::Skipped
+    );
+    let summary = ObservationRunSummary::new(
+        output_root.display().to_string(),
+        vec![target],
+        vec![format!(
+            "jq . {}",
+            output_root.join("run-summary.json").display()
+        )],
+    );
+    write_observation_summary(&output_root, &summary)?;
+
+    println!(
+        "Observation summary saved to: {}",
+        output_root.join("run-summary.json").display()
+    );
+
+    if had_error {
+        return Err(anyhow::anyhow!(
+            "Observation completed with target status {}",
+            summary.targets[0].status.as_str()
+        ));
+    }
+
     Ok(())
 }
 
@@ -245,6 +337,124 @@ fn write_escalation_results(crashpack_dir: &PathBuf, results: &[EscalationResult
     fs::write(&results_path, serde_json::to_vec_pretty(results)?)?;
     println!("Escalation results saved to: {}", results_path.display());
     Ok(())
+}
+
+fn write_observation_summary(output_root: &Path, summary: &ObservationRunSummary) -> Result<()> {
+    fs::create_dir_all(output_root)?;
+    let summary_path = output_root.join("run-summary.json");
+    fs::write(&summary_path, serde_json::to_vec_pretty(summary)?)?;
+    Ok(())
+}
+
+fn observation_target_from_native_result(
+    target_name: &str,
+    timeout_ms: Option<u64>,
+    result: NativeRunResult,
+) -> ObservationTargetSummary {
+    let target_dir = result.output_dir.clone();
+    let status = if result.timed_out {
+        TargetStatus::Timeout
+    } else if result.findings_count > 0 {
+        TargetStatus::Findings
+    } else {
+        TargetStatus::Clean
+    };
+    let mut target = ObservationTargetSummary::new(
+        target_name,
+        result.binary_path.display().to_string(),
+        result.args,
+        result
+            .cwd
+            .as_ref()
+            .map(|cwd| cwd.display().to_string())
+            .unwrap_or_else(|| ".".to_string()),
+        status,
+        TargetExitSummary {
+            code: result.exit_code,
+            signal: result.signal,
+            crashed: result.crashed,
+        },
+        ObservationArtifacts::target_defaults(target_dir.display().to_string()),
+    );
+    target.duration_ms = Some(u128_to_u64(result.duration_ms));
+    target.timeout_ms = timeout_ms;
+    target.findings_count = result.findings_count as u64;
+    target.findings_by_class = result.findings_by_class;
+    target.replay_command = Some(format!(
+        "rerun replay {} --format json",
+        target_dir.display()
+    ));
+    target.summarize_command = Some(format!(
+        "rerun summarize {} --format json",
+        target_dir.display()
+    ));
+    target.next_commands = vec![
+        format!("rerun summarize {} --format json", target_dir.display()),
+        format!("rerun replay {} --format json", target_dir.display()),
+    ];
+    if result.timed_out {
+        target.error = Some("target timed out".to_string());
+    }
+    target
+}
+
+#[allow(clippy::too_many_arguments)]
+fn observation_target_from_error(
+    target_name: &str,
+    binary_path: &Path,
+    args: &[String],
+    cwd: Option<&Path>,
+    output_root: &Path,
+    timeout_ms: Option<u64>,
+    error: String,
+    duration_ms: u128,
+) -> ObservationTargetSummary {
+    let target_dir = output_root.join("targets").join(target_name);
+    let mut target = ObservationTargetSummary::new(
+        target_name,
+        binary_path.display().to_string(),
+        args.to_vec(),
+        cwd.map(|cwd| cwd.display().to_string())
+            .unwrap_or_else(|| ".".to_string()),
+        TargetStatus::Failed,
+        TargetExitSummary::not_run(),
+        ObservationArtifacts::target_defaults(target_dir.display().to_string()),
+    );
+    target.error = Some(error);
+    target.duration_ms = Some(u128_to_u64(duration_ms));
+    target.timeout_ms = timeout_ms;
+    target.next_commands = vec![format!(
+        "jq . {}",
+        output_root.join("run-summary.json").display()
+    )];
+    target
+}
+
+fn observation_target_name(binary_path: &Path) -> String {
+    let raw = binary_path
+        .file_stem()
+        .or_else(|| binary_path.file_name())
+        .and_then(|value| value.to_str())
+        .unwrap_or("target");
+    let sanitized = raw
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "target".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn u128_to_u64(value: u128) -> u64 {
+    value.min(u64::MAX as u128) as u64
 }
 
 /// Handle the 'crashpack' command
@@ -965,5 +1175,41 @@ mod tests {
         assert!(base.join("replay").join("results.json").exists());
 
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn observation_target_names_are_filesystem_safe() {
+        assert_eq!(
+            observation_target_name(Path::new("build/my app/test.bin")),
+            "test"
+        );
+        assert_eq!(
+            observation_target_name(Path::new("build/weird target")),
+            "weird_target"
+        );
+        assert_eq!(observation_target_name(Path::new("")), "target");
+    }
+
+    #[test]
+    fn observation_error_target_preserves_failure_reason() {
+        let output_root = PathBuf::from(".re");
+        let target = observation_target_from_error(
+            "app",
+            Path::new("build/app"),
+            &["--flag".to_string()],
+            Some(Path::new("fixtures")),
+            &output_root,
+            Some(100),
+            "native failure".to_string(),
+            25,
+        );
+
+        assert_eq!(target.status, TargetStatus::Failed);
+        assert_eq!(target.error.as_deref(), Some("native failure"));
+        assert_eq!(target.args, vec!["--flag"]);
+        assert_eq!(target.cwd, "fixtures");
+        assert_eq!(target.timeout_ms, Some(100));
+        assert_eq!(target.duration_ms, Some(25));
+        assert_eq!(target.artifacts.crashpack, ".re/targets/app");
     }
 }

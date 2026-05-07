@@ -10,10 +10,12 @@ Phase 0 is complete on the supported Docker-native path.
 Phase 1 is complete for the Linux-native MVP scope.
 Phase 2 is complete for the current issue-backed escalation and evaluation scope.
 Phase 3 is complete for the agentic runtime evidence MVP scope.
+Phase 4 is in progress; `rerun observe` is the new observation-run entry point.
 
 What is working now:
 
 - `rerun run --native <binary>` is the primary execution path
+- `rerun observe <binary>` writes `.re/run-summary.json` plus per-target crashpack artifacts
 - findings persist canonically to `findings.json`
 - agent-readable evidence persists to `evidence-pack.json`
 - debug/streaming output goes to `re-findings.jsonl`
@@ -83,6 +85,25 @@ Primary outputs:
 - `build/invalid-free/manifest.json` - crashpack metadata
 - `build/invalid-free/re-findings.jsonl` - debug stream
 
+### Observe a binary
+
+```bash
+cargo run -p rerun -- observe build/user-samples/copy_overrun_case --output build/observe-demo
+jq . build/observe-demo/run-summary.json
+```
+
+`observe` is the Phase 4 local observability entry point. It currently runs the
+native crashpack path, writes `.re`-style run summaries, supports `--cwd`,
+`--timeout-ms`, `--native-only`, and target args after `--`. Observe-level
+automatic escalation is tracked separately for Phase 4.
+
+Primary outputs:
+
+- `build/observe-demo/run-summary.json` - run-level observation summary
+- `build/observe-demo/targets/copy_overrun_case/findings.json` - target findings
+- `build/observe-demo/targets/copy_overrun_case/evidence-pack.json` - target evidence pack
+- `build/observe-demo/targets/copy_overrun_case/analysis.json` - target run metadata
+
 ### Escalate an existing crashpack
 
 ```bash
@@ -126,14 +147,17 @@ This runs active Rust checks/tests, the golden baseline, and user-style external
 
 ```bash
 make phase2
+make observe-smoke
 make hit-rate
 make recc-smoke
 ```
 
 `make phase2` runs the RC gate, Valgrind escalation smoke, ASan binary smoke,
-agent summary smoke, and replay smoke. `make hit-rate` records native and
-escalation outcomes for the current user-style corpus. `make recc-smoke`
-validates optional compiler-wrapper wiring outside the primary runtime path.
+agent summary smoke, and replay smoke. `make observe-smoke` validates the Phase
+4 observation-run MVP against one clean and one finding binary. `make hit-rate`
+records native and escalation outcomes for the current user-style corpus. `make
+recc-smoke` validates optional compiler-wrapper wiring outside the primary
+runtime path.
 
 ### Run the golden-only baseline
 
