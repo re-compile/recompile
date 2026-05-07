@@ -3,6 +3,7 @@ use clap::{Arg, ArgAction, Command, ValueHint};
 
 mod cli;
 mod native;
+mod observation;
 mod summary;
 
 use cli::*;
