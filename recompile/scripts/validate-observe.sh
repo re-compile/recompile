@@ -60,10 +60,27 @@ else:
         raise SystemExit(f"{summary_path}: missing class {expected_class} count {expected_count}: {classes}")
 
 artifacts = target.get("artifacts") or {}
-for key in ["crashpack", "findings", "evidence_pack", "analysis", "manifest"]:
+for key in ["crashpack", "findings", "evidence_pack", "analysis", "manifest", "dependencies"]:
     path = pathlib.Path(artifacts.get(key, ""))
     if not path.exists():
         raise SystemExit(f"{summary_path}: artifact {key} missing at {path}")
+
+dependencies_path = pathlib.Path(artifacts["dependencies"])
+dependencies = json.loads(dependencies_path.read_text())
+if dependencies.get("schema_version") != "1.0":
+    raise SystemExit(f"{dependencies_path}: schema_version must be 1.0")
+if dependencies.get("purpose") != "binary_dependency_metadata":
+    raise SystemExit(f"{dependencies_path}: unexpected purpose {dependencies.get('purpose')}")
+for tool_name in ["readelf", "ldd"]:
+    tool = dependencies.get(tool_name) or {}
+    if tool.get("tool") != tool_name:
+        raise SystemExit(f"{dependencies_path}: missing tool identity for {tool_name}: {tool}")
+    if tool.get("status") not in ["available", "unavailable", "failed", "not_applicable"]:
+        raise SystemExit(f"{dependencies_path}: invalid {tool_name} status: {tool}")
+if not isinstance(dependencies.get("elf"), dict):
+    raise SystemExit(f"{dependencies_path}: missing elf metadata")
+if not isinstance(dependencies.get("dynamic_dependencies"), list):
+    raise SystemExit(f"{dependencies_path}: missing dynamic dependency list")
 
 status_totals = summary.get("status_totals") or {}
 if status_totals.get(expected_status) != 1:
