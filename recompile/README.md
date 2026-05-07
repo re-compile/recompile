@@ -92,10 +92,13 @@ cargo run -p rerun -- observe build/user-samples/copy_overrun_case --output buil
 jq . build/observe-demo/run-summary.json
 ```
 
-`observe` is the Phase 4 local observability entry point. It currently runs the
-native crashpack path, writes `.re`-style run summaries, supports `--cwd`,
-`--timeout-ms`, `--native-only`, and target args after `--`. Observe-level
-automatic escalation is tracked separately for Phase 4.
+`observe` is the Phase 4 local observability entry point. It runs the native
+crashpack path, writes `.re`-style run summaries, supports `--cwd`,
+`--timeout-ms`, `--native-only`, `--deep`, and target args after `--`.
+
+Default observe behavior runs Valgrind confirmation when native findings exist.
+`--deep` runs a Valgrind binary scan even when native is clean and records ASan
+as `not_applicable` unless the binary is already ASan-instrumented.
 
 Primary outputs:
 

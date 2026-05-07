@@ -101,7 +101,14 @@ fn main() -> Result<()> {
                     Arg::new("native-only")
                         .long("native-only")
                         .action(ArgAction::SetTrue)
-                        .help("Run only native observation; observe-level escalation is added in a later Phase 4 slice"),
+                        .conflicts_with("deep")
+                        .help("Run only native observation and skip observe-level escalation"),
+                )
+                .arg(
+                    Arg::new("deep")
+                        .long("deep")
+                        .action(ArgAction::SetTrue)
+                        .help("Run native observation plus whole-binary Valgrind scan and ASan scan when applicable"),
                 )
                 .arg(
                     Arg::new("args")
