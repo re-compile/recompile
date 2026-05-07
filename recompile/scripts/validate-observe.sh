@@ -20,7 +20,11 @@ assert_observation() {
     local expected_status="$2"
     local expected_class="$3"
     local expected_count="$4"
-    python3 - "$summary_path" "$expected_status" "$expected_class" "$expected_count" <<'PY'
+    local expected_escalation_tool="${5:-__none__}"
+    local expected_escalation_status="${6:-__none__}"
+    local expected_escalation_class="${7:-__none__}"
+    python3 - "$summary_path" "$expected_status" "$expected_class" "$expected_count" \
+        "$expected_escalation_tool" "$expected_escalation_status" "$expected_escalation_class" <<'PY'
 import json
 import pathlib
 import sys
@@ -29,6 +33,9 @@ summary_path = pathlib.Path(sys.argv[1])
 expected_status = sys.argv[2]
 expected_class = sys.argv[3]
 expected_count = int(sys.argv[4])
+expected_escalation_tool = sys.argv[5]
+expected_escalation_status = sys.argv[6]
+expected_escalation_class = sys.argv[7]
 summary = json.loads(summary_path.read_text())
 
 if summary.get("schema_version") != "1.0":
@@ -62,11 +69,37 @@ status_totals = summary.get("status_totals") or {}
 if status_totals.get(expected_status) != 1:
     raise SystemExit(f"{summary_path}: status_totals missing {expected_status}: {status_totals}")
 
+escalations = target.get("escalation") or []
+if expected_escalation_tool == "__none__":
+    if escalations:
+        raise SystemExit(f"{summary_path}: expected no escalation results, got {escalations}")
+else:
+    match = None
+    for result in escalations:
+        if result.get("tool") == expected_escalation_tool and result.get("status") == expected_escalation_status:
+            match = result
+            break
+    if match is None:
+        raise SystemExit(
+            f"{summary_path}: missing escalation {expected_escalation_tool}/{expected_escalation_status}: {escalations}"
+        )
+    if expected_escalation_class != "__none__":
+        detected = match.get("findings_detected") or []
+        if expected_escalation_class not in detected:
+            raise SystemExit(f"{summary_path}: escalation missing class {expected_escalation_class}: {match}")
+        artifact = match.get("artifact_path")
+        if not artifact or not pathlib.Path(artifact).exists():
+            raise SystemExit(f"{summary_path}: escalation artifact missing: {artifact}")
+    totals = ((summary.get("escalation_totals_by_tool") or {}).get(expected_escalation_tool) or {})
+    if totals.get(expected_escalation_status, 0) < 1:
+        raise SystemExit(f"{summary_path}: escalation totals missing {expected_escalation_tool}/{expected_escalation_status}: {totals}")
+
 print(json.dumps({
     "summary": str(summary_path),
     "status": target.get("status"),
     "findings_count": target.get("findings_count"),
     "classes": classes,
+    "escalations": escalations,
 }, sort_keys=True))
 PY
 }
@@ -75,8 +108,24 @@ printf '[observe] clean binary\n'
 "$runner_path" observe build/user-samples/clean_malloc_free --output "$output_root/clean_malloc_free"
 assert_observation "$output_root/clean_malloc_free/run-summary.json" clean __none__ 0
 
-printf '[observe] finding binary\n'
+printf '[observe] finding binary with default confirmation\n'
 "$runner_path" observe build/user-samples/copy_overrun_case --output "$output_root/copy_overrun_case"
-assert_observation "$output_root/copy_overrun_case/run-summary.json" findings heap_overflow 1
+assert_observation "$output_root/copy_overrun_case/run-summary.json" findings heap_overflow 1 valgrind findings heap_overflow
+
+printf '[observe] deep Valgrind-first binary\n'
+"$runner_path" observe --deep build/user-samples/use_after_free_case --output "$output_root/use_after_free_case"
+assert_observation "$output_root/use_after_free_case/run-summary.json" findings __none__ 0 valgrind findings use_after_free
+
+printf '[observe] deep non-ASan binary records ASan not-applicable\n'
+python3 - "$output_root/use_after_free_case/run-summary.json" <<'PY'
+import json
+import pathlib
+import sys
+summary = json.loads(pathlib.Path(sys.argv[1]).read_text())
+escalations = summary["targets"][0].get("escalation") or []
+if not any(result.get("tool") == "asan" and result.get("status") == "not_applicable" for result in escalations):
+    raise SystemExit(f"missing ASan not_applicable escalation: {escalations}")
+print(json.dumps({"asan_not_applicable": True}, sort_keys=True))
+PY
 
 printf '\n[observe] observe smoke passed\n'

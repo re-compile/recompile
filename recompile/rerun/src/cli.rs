@@ -104,6 +104,7 @@ pub fn handle_observe_command(matches: &ArgMatches) -> Result<()> {
     let cwd = matches.get_one::<String>("cwd").map(PathBuf::from);
     let timeout_ms = matches.get_one::<u64>("timeout-ms").copied();
     let native_only = matches.get_flag("native-only");
+    let deep = matches.get_flag("deep");
     let args: Vec<String> = matches
         .get_many::<String>("args")
         .map(|args| args.map(|s| s.to_string()).collect())
@@ -125,8 +126,10 @@ pub fn handle_observe_command(matches: &ArgMatches) -> Result<()> {
     }
     if native_only {
         println!("Escalation: native-only");
+    } else if deep {
+        println!("Escalation: deep");
     } else {
-        println!("Escalation: deferred in observe MVP");
+        println!("Escalation: confirm");
     }
 
     let started = Instant::now();
@@ -142,7 +145,7 @@ pub fn handle_observe_command(matches: &ArgMatches) -> Result<()> {
         },
     );
 
-    let target = match native_result {
+    let mut target = match native_result {
         Ok(result) => observation_target_from_native_result(&target_name, timeout_ms, result),
         Err(error) => observation_target_from_error(
             &target_name,
@@ -156,10 +159,29 @@ pub fn handle_observe_command(matches: &ArgMatches) -> Result<()> {
         ),
     };
 
-    let had_error = matches!(
-        target.status,
-        TargetStatus::Failed | TargetStatus::Timeout | TargetStatus::Skipped
-    );
+    if !native_only && !had_observation_error(target.status) {
+        let escalation_results = run_observe_escalation(&target, deep)?;
+        if !escalation_results.is_empty() {
+            write_escalation_results(
+                &PathBuf::from(&target.artifacts.crashpack),
+                &escalation_results,
+            )?;
+            let escalation_summaries = escalation_results
+                .iter()
+                .map(observation_escalation_summary)
+                .collect::<Vec<_>>();
+            if target.status == TargetStatus::Clean
+                && escalation_summaries
+                    .iter()
+                    .any(|summary| summary.confirmed || !summary.findings_detected.is_empty())
+            {
+                target.status = TargetStatus::Findings;
+            }
+            target.escalation = escalation_summaries;
+        }
+    }
+
+    let had_error = had_observation_error(target.status);
     let summary = ObservationRunSummary::new(
         output_root.display().to_string(),
         vec![target],
@@ -344,6 +366,111 @@ fn write_observation_summary(output_root: &Path, summary: &ObservationRunSummary
     let summary_path = output_root.join("run-summary.json");
     fs::write(&summary_path, serde_json::to_vec_pretty(summary)?)?;
     Ok(())
+}
+
+fn had_observation_error(status: TargetStatus) -> bool {
+    matches!(
+        status,
+        TargetStatus::Failed | TargetStatus::Timeout | TargetStatus::Skipped
+    )
+}
+
+fn run_observe_escalation(
+    target: &ObservationTargetSummary,
+    deep: bool,
+) -> Result<Vec<EscalationResult>> {
+    if target.findings_count == 0 && !deep {
+        return Ok(Vec::new());
+    }
+
+    let crashpack_dir = PathBuf::from(&target.artifacts.crashpack);
+    let analysis = load_analysis_metadata(&crashpack_dir)?;
+    let mut config = EscalationConfig::default();
+    config.output_dir = crashpack_dir.join("escalations").display().to_string();
+    config.binary_path = Some(analysis.binary_path.clone());
+    config.source_file = analysis.source_path.clone();
+    config.args = analysis.args.clone();
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    let mut results = Vec::new();
+
+    if target.findings_count > 0 {
+        let findings_path = crashpack_dir.join("findings.json");
+        let findings = load_findings(&findings_path)?;
+        let mut valgrind_results = runtime.block_on(async {
+            let mut results = Vec::new();
+            for mut finding in findings {
+                let mut plan = finding.escalation.unwrap_or(FindingEscalationPlan {
+                    tool: "valgrind".to_string(),
+                    reason: "observe_confirm".to_string(),
+                    estimated_cost: "medium".to_string(),
+                    cooldown_ms: 0,
+                });
+                plan.tool = "valgrind".to_string();
+                finding.escalation = Some(plan);
+                let mut runner = EscalationRunner::new(config.clone());
+                results.push(runner.escalate(&finding).await?);
+            }
+            Ok::<Vec<EscalationResult>, anyhow::Error>(results)
+        })?;
+        results.append(&mut valgrind_results);
+    } else if deep {
+        let valgrind_result = runtime.block_on(async {
+            let mut runner = EscalationRunner::new(config.clone());
+            runner.check_clean_binary("valgrind").await
+        })?;
+        results.push(valgrind_result);
+    }
+
+    if deep {
+        let asan_result = runtime.block_on(async {
+            let mut runner = EscalationRunner::new(config);
+            runner.check_clean_binary("asan").await
+        })?;
+        results.push(asan_result);
+    }
+
+    Ok(results)
+}
+
+fn observation_escalation_summary(
+    result: &EscalationResult,
+) -> crate::observation::ObservationEscalationSummary {
+    crate::observation::ObservationEscalationSummary {
+        tool: result.tool.clone(),
+        status: escalation_status(result),
+        confirmed: result.confirmed,
+        findings_detected: result.findings_detected.clone(),
+        artifact_path: result
+            .report_path
+            .clone()
+            .or_else(|| result.output_path.clone()),
+        error: result.error.clone(),
+    }
+}
+
+fn escalation_status(result: &EscalationResult) -> TargetStatus {
+    if result.tool == "asan"
+        && !result.success
+        && result
+            .error
+            .as_deref()
+            .map(|error| error.contains("-fsanitize=address"))
+            .unwrap_or(false)
+    {
+        return TargetStatus::NotApplicable;
+    }
+    if !result.tool_available {
+        return TargetStatus::ToolUnavailable;
+    }
+    if !result.success {
+        return TargetStatus::Failed;
+    }
+    if result.confirmed {
+        TargetStatus::Findings
+    } else {
+        TargetStatus::Clean
+    }
 }
 
 fn observation_target_from_native_result(
@@ -1211,5 +1338,42 @@ mod tests {
         assert_eq!(target.timeout_ms, Some(100));
         assert_eq!(target.duration_ms, Some(25));
         assert_eq!(target.artifacts.crashpack, ".re/targets/app");
+    }
+
+    #[test]
+    fn escalation_status_maps_tool_results_for_observe() {
+        let mut result = EscalationResult {
+            id: "E-1".to_string(),
+            finding_id: "F-1".to_string(),
+            tool: "valgrind".to_string(),
+            success: true,
+            tool_available: true,
+            duration_ms: 1,
+            output_path: Some(".re/targets/app/escalations/valgrind/report.json".to_string()),
+            stdout_path: None,
+            stderr_path: None,
+            report_path: None,
+            command: Vec::new(),
+            exit_code: Some(99),
+            confirmed: true,
+            error: None,
+            findings_detected: vec!["heap_overflow".to_string()],
+            timestamp: 1,
+        };
+        assert_eq!(escalation_status(&result), TargetStatus::Findings);
+
+        result.confirmed = false;
+        result.findings_detected.clear();
+        assert_eq!(escalation_status(&result), TargetStatus::Clean);
+
+        result.success = false;
+        result.tool_available = false;
+        result.error = Some("valgrind not found in PATH".to_string());
+        assert_eq!(escalation_status(&result), TargetStatus::ToolUnavailable);
+
+        result.tool = "asan".to_string();
+        result.tool_available = false;
+        result.error = Some("ASan requires a binary built with -fsanitize=address".to_string());
+        assert_eq!(escalation_status(&result), TargetStatus::NotApplicable);
     }
 }

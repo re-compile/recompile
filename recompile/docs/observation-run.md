@@ -8,7 +8,7 @@ The human entry point is:
 rerun observe ./build/app -- --input fixtures/input.txt
 ```
 
-The existing `rerun run --native <binary>` command remains the low-level crashpack primitive. `rerun observe` wraps that primitive and adds run-level summaries. Observe-level automatic escalation is tracked as a later Phase 4 slice.
+The existing `rerun run --native <binary>` command remains the low-level crashpack primitive. `rerun observe` wraps that primitive, adds run-level summaries, and records observe-level escalation results.
 
 ## Layout
 
@@ -36,7 +36,7 @@ The existing `rerun run --native <binary>` command remains the low-level crashpa
 Each observed target has exactly one primary status:
 
 - `clean`: the target ran and no findings were observed on that executed path
-- `findings`: the target ran and produced one or more findings
+- `findings`: the target ran and native or escalation evidence observed one or more findings
 - `failed`: the target failed before or during observation for a non-timeout reason
 - `timeout`: the target exceeded its configured timeout
 - `skipped`: the target was not executed because validation or setup failed
@@ -65,4 +65,19 @@ Each target summary records:
 
 ## Current Slice
 
-The current MVP supports one binary, args after `--`, `--cwd`, `--output`, `--timeout-ms`, and `--native-only`. Automatic escalation, dependency metadata, issue groups, and project-style fixtures are tracked as later Phase 4 slices.
+The current MVP supports one binary, args after `--`, `--cwd`, `--output`, `--timeout-ms`, `--native-only`, and `--deep`.
+
+Default escalation policy:
+
+- native first
+- Valgrind confirmation when native findings exist
+- no heavy scan when native is clean
+
+Deep escalation policy:
+
+- native first
+- Valgrind binary scan even when native is clean
+- ASan binary scan when the binary is already ASan-instrumented
+- ASan `not_applicable` status for normal non-ASan binaries
+
+Dependency metadata, issue groups, and project-style fixtures are tracked as later Phase 4 slices.
