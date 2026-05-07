@@ -51,6 +51,24 @@
         "source_unresolved": {
           "type": "integer",
           "minimum": 0
+        },
+        "issue_group_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "issue_groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "fingerprint", "class", "operation", "finding_count"],
+        "properties": {
+          "id": {"type": "string"},
+          "fingerprint": {"type": "string"},
+          "class": {"type": "string"},
+          "operation": {"type": "string"},
+          "finding_count": {"type": "integer", "minimum": 1}
         }
       }
     },
@@ -66,6 +84,12 @@
           },
           "id": {
             "type": "string"
+          },
+          "fingerprint": {
+            "type": ["string", "null"]
+          },
+          "issue_group_id": {
+            "type": ["string", "null"]
           },
           "class": {
             "type": "string"

@@ -68,6 +68,17 @@ if expected_class != "__none__":
     if class_counts.get(expected_class) != expected_total:
         raise SystemExit(f"{summary_path}: missing class count for {expected_class}")
 
+issue_group_count = (summary.get("summary") or {}).get("issue_group_count")
+issue_groups = summary.get("issue_groups") or []
+if expected_total == 0:
+    if issue_group_count not in (0, None):
+        raise SystemExit(f"{summary_path}: expected zero issue groups, got {issue_group_count}")
+else:
+    if issue_group_count != len(issue_groups) or issue_group_count < 1:
+        raise SystemExit(
+            f"{summary_path}: issue_group_count={issue_group_count} does not match issue_groups={issue_groups}"
+        )
+
 if expected_escalation_class != "__none__":
     detected = (summary.get("summary") or {}).get("escalation_detected_classes") or []
     if expected_escalation_class not in detected:
@@ -79,6 +90,8 @@ if expect_linked_finding:
     findings = summary.get("findings") or []
     if not findings:
         raise SystemExit(f"{summary_path}: expected at least one finding")
+    if not findings[0].get("fingerprint") or not findings[0].get("issue_group_id"):
+        raise SystemExit(f"{summary_path}: expected finding fingerprint and issue_group_id")
     linked = findings[0].get("escalation_result")
     if not isinstance(linked, dict):
         raise SystemExit(f"{summary_path}: expected linked escalation_result")
