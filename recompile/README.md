@@ -158,6 +158,7 @@ This runs active Rust checks/tests, the golden baseline, and user-style external
 make phase2
 make observe-smoke
 make project-smoke
+make observe-hit-rate
 make hit-rate
 make recc-smoke
 ```
@@ -167,9 +168,12 @@ agent summary smoke, and replay smoke. `make observe-smoke` validates the Phase
 4 observation-run MVP against clean, finding, deep-escalation, and fingerprint
 stability cases. `make project-smoke` validates project-shaped observation
 fixtures including multi-file, args/cwd, multi-binary, shared-library,
-Valgrind-first, and timeout cases. `make hit-rate` records native and escalation
-outcomes for the current user-style corpus. `make recc-smoke` validates optional
-compiler-wrapper wiring outside the primary runtime path.
+Valgrind-first, and timeout cases. `make observe-hit-rate` writes
+`build/observe-hit-rate/summary.json` with observation-run target statuses,
+native findings, issue groups, escalation outcomes, next commands, and generated
+agent summaries for the project corpus. `make hit-rate` records native and
+escalation outcomes for the current user-style corpus. `make recc-smoke`
+validates optional compiler-wrapper wiring outside the primary runtime path.
 
 ### Run the golden-only baseline
 

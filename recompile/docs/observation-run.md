@@ -130,3 +130,20 @@ Project-style fixtures are covered by `make project-smoke`:
 - shared-library target with dependency metadata
 - Valgrind-first target
 - timeout target
+
+## Observation Hit Rate
+
+`make observe-hit-rate` evaluates the project fixture corpus through the
+top-level observation path and writes `build/observe-hit-rate/summary.json`.
+
+The report includes:
+
+- target status totals
+- expected vs actual native findings
+- issue group counts and fingerprints
+- observe-level escalation outcomes
+- target `next_commands`
+- a generated `agent-summary.json` for each target crashpack
+
+This is separate from `make hit-rate`, which remains the lower-level
+native/escalation corpus report for single-binary user samples.
