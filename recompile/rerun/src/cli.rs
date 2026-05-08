@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use crate::native::{run_native, run_native_with_options, NativeRunOptions, NativeRunResult};
+use crate::native::{
+    finalize_findings, run_native, run_native_with_options, NativeRunOptions, NativeRunResult,
+};
 use crate::observation::{
     ObservationArtifacts, ObservationRunSummary, ObservationTargetSummary, TargetExitSummary,
     TargetStatus,
@@ -43,6 +45,20 @@ struct ReplayResult {
     stdout: String,
     stderr: String,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CrashpackFindingSnapshot {
+    count: u64,
+    class_counts: BTreeMap<String, u64>,
+    issue_group_count: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ToolDetection {
+    class: String,
+    summary: String,
+    line: Option<u64>,
 }
 
 /// Handle the 'run' command
@@ -180,6 +196,14 @@ pub fn handle_observe_command(matches: &ArgMatches) -> Result<()> {
                 target.status = TargetStatus::Findings;
             }
             target.escalation = escalation_summaries;
+            if let Some(snapshot) = promote_tool_findings_to_crashpack(
+                &PathBuf::from(&target.artifacts.crashpack),
+                &escalation_results,
+            )? {
+                target.findings_count = snapshot.count;
+                target.findings_by_class = snapshot.class_counts;
+                target.issue_group_count = snapshot.issue_group_count;
+            }
         }
     }
 
@@ -311,6 +335,7 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
     })?;
 
     write_escalation_results(&crashpack_dir, &results)?;
+    let _ = promote_tool_findings_to_crashpack(&crashpack_dir, &results)?;
     println!("Escalation analysis completed.");
     Ok(())
 }
@@ -349,7 +374,9 @@ fn run_binary_escalation_scan(
         }
     }
 
-    write_escalation_results(crashpack_dir, &[result])?;
+    let results = vec![result];
+    write_escalation_results(crashpack_dir, &results)?;
+    let _ = promote_tool_findings_to_crashpack(crashpack_dir, &results)?;
     println!("Escalation analysis completed.");
     Ok(())
 }
@@ -362,6 +389,174 @@ fn write_escalation_results(crashpack_dir: &PathBuf, results: &[EscalationResult
     fs::write(&results_path, serde_json::to_vec_pretty(results)?)?;
     println!("Escalation results saved to: {}", results_path.display());
     Ok(())
+}
+
+fn promote_tool_findings_to_crashpack(
+    crashpack_dir: &PathBuf,
+    results: &[EscalationResult],
+) -> Result<Option<CrashpackFindingSnapshot>> {
+    let findings_path = crashpack_dir.join("findings.json");
+    if !findings_path.exists() {
+        return Ok(None);
+    }
+
+    let analysis = load_analysis_metadata(crashpack_dir)?;
+    let mut findings = read_json_file(&findings_path)?
+        .as_array()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("{} must contain a JSON array", findings_path.display()))?;
+    let mut known_classes = findings
+        .iter()
+        .filter_map(finding_class)
+        .collect::<BTreeSet<_>>();
+
+    let mut appended = 0usize;
+    for result in results
+        .iter()
+        .filter(|result| result.success && result.confirmed && !result.findings_detected.is_empty())
+    {
+        for (index, detection) in tool_detections(result).into_iter().enumerate() {
+            if known_classes.contains(&detection.class) {
+                continue;
+            }
+            known_classes.insert(detection.class.clone());
+            findings.push(tool_backed_finding(result, &detection, index, &analysis));
+            appended += 1;
+        }
+    }
+
+    if appended == 0 {
+        return Ok(None);
+    }
+
+    fs::write(&findings_path, serde_json::to_vec_pretty(&findings)?)?;
+    let (_, issue_group_count) =
+        finalize_findings(crashpack_dir, Path::new(&analysis.binary_path))?;
+    let refreshed = read_json_file(&findings_path)?
+        .as_array()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("{} must contain a JSON array", findings_path.display()))?;
+
+    Ok(Some(CrashpackFindingSnapshot {
+        count: refreshed.len() as u64,
+        class_counts: class_counts_for_values(&refreshed),
+        issue_group_count: issue_group_count as u64,
+    }))
+}
+
+fn tool_detections(result: &EscalationResult) -> Vec<ToolDetection> {
+    if let Some(report_path) = result.report_path.as_deref() {
+        if let Ok(content) = fs::read_to_string(report_path) {
+            if let Ok(report) = serde_json::from_str::<Value>(&content) {
+                if let Some(detected) = report.get("detected").and_then(Value::as_array) {
+                    let detections = detected
+                        .iter()
+                        .filter_map(|value| {
+                            Some(ToolDetection {
+                                class: value.get("class")?.as_str()?.to_string(),
+                                summary: value
+                                    .get("summary")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("tool-backed finding")
+                                    .to_string(),
+                                line: value.get("line").and_then(Value::as_u64),
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    if !detections.is_empty() {
+                        return detections;
+                    }
+                }
+            }
+        }
+    }
+
+    result
+        .findings_detected
+        .iter()
+        .map(|class| ToolDetection {
+            class: class.clone(),
+            summary: format!("{} detected {}", result.tool, class),
+            line: None,
+        })
+        .collect()
+}
+
+fn tool_backed_finding(
+    result: &EscalationResult,
+    detection: &ToolDetection,
+    index: usize,
+    analysis: &NativeRunMetadata,
+) -> Value {
+    let summary = detection.summary.trim();
+    json!({
+        "schema_version": "1.0",
+        "id": format!("F-{}-{}-{}-{}", result.tool, detection.class, result.id, index + 1),
+        "origin": result.tool,
+        "class": detection.class,
+        "confidence": "tool_confirmed",
+        "severity": severity_for_tool_class(&detection.class),
+        "timestamp": result.timestamp,
+        "pid": 0,
+        "message": summary,
+        "evidence": {
+            "api": result.tool,
+            "tool": {
+                "name": result.tool,
+                "result_id": result.id,
+                "finding_id": result.finding_id,
+                "summary": summary,
+                "line": detection.line,
+                "report_path": result.report_path,
+                "stdout_path": result.stdout_path,
+                "stderr_path": result.stderr_path,
+                "command": result.command,
+                "exit_code": result.exit_code
+            },
+            "stacks": {
+                "alloc": [],
+                "call": [summary]
+            },
+            "event_sequence": [{
+                "source": "escalation",
+                "tool": result.tool,
+                "class": detection.class,
+                "summary": summary
+            }]
+        },
+        "provenance": {
+            "original_binary_path": analysis.binary_path,
+            "source_status": "unresolved"
+        },
+        "related": []
+    })
+}
+
+fn severity_for_tool_class(class: &str) -> &'static str {
+    match class {
+        "use_after_free" | "double_free" => "critical",
+        "heap_overflow" | "stack_overflow" | "global_overflow" | "invalid_free" => "error",
+        "memory_leak" | "fd_leak" => "warning",
+        _ => "warning",
+    }
+}
+
+fn finding_class(finding: &Value) -> Option<String> {
+    finding
+        .get("class")
+        .or_else(|| finding.get("kind"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn class_counts_for_values(findings: &[Value]) -> BTreeMap<String, u64> {
+    let mut counts = BTreeMap::new();
+    for finding in findings {
+        if let Some(class) = finding_class(finding) {
+            *counts.entry(class).or_default() += 1;
+        }
+    }
+    counts
 }
 
 fn write_observation_summary(output_root: &Path, summary: &ObservationRunSummary) -> Result<()> {
@@ -806,6 +1001,7 @@ fn compact_agent_finding(finding: &Value, escalation_results: &[Value]) -> Value
 
     json!({
         "id": finding.get("id").cloned().unwrap_or(Value::Null),
+        "origin": finding.get("origin").cloned().unwrap_or(Value::Null),
         "fingerprint": finding.get("fingerprint").cloned().unwrap_or(Value::Null),
         "issue_group_id": finding.get("issue_group_id").cloned().unwrap_or(Value::Null),
         "class": finding.get("class").cloned().unwrap_or(Value::Null),
@@ -816,6 +1012,7 @@ fn compact_agent_finding(finding: &Value, escalation_results: &[Value]) -> Value
         "memory": finding.get("memory").cloned().unwrap_or(Value::Null),
         "stacks": finding.get("stacks").cloned().unwrap_or(Value::Null),
         "alloc_site": finding.get("alloc_site").cloned().unwrap_or(Value::Null),
+        "tool": finding.get("tool").cloned().unwrap_or(Value::Null),
         "escalation_plan": finding.get("escalation_plan").cloned().unwrap_or(Value::Null),
         "escalation_result": linked_escalation,
     })
@@ -1283,6 +1480,114 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(true)
         );
+    }
+
+    #[test]
+    fn tool_escalation_promotion_writes_first_class_finding_artifacts() {
+        let base =
+            std::env::temp_dir().join(format!("rerun-tool-finding-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("escalations").join("valgrind")).unwrap();
+
+        let binary = base.join("app");
+        fs::write(&binary, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut perms = fs::metadata(&binary).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&binary, perms).unwrap();
+
+        fs::write(base.join("findings.json"), "[]").unwrap();
+        fs::write(
+            base.join("analysis.json"),
+            serde_json::to_vec_pretty(&json!({
+                "binary_path": binary.display().to_string(),
+                "args": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let report_path = base
+            .join("escalations")
+            .join("valgrind")
+            .join("report.json");
+        fs::write(
+            &report_path,
+            serde_json::to_vec_pretty(&json!({
+                "tool": "valgrind",
+                "detected": [{
+                    "class": "use_after_free",
+                    "summary": "Invalid read of size 1",
+                    "line": 1
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let result = EscalationResult {
+            id: "E-tool".to_string(),
+            finding_id: "clean-run".to_string(),
+            tool: "valgrind".to_string(),
+            success: true,
+            tool_available: true,
+            duration_ms: 10,
+            output_path: Some(report_path.display().to_string()),
+            stdout_path: None,
+            stderr_path: None,
+            report_path: Some(report_path.display().to_string()),
+            command: vec!["valgrind".to_string(), binary.display().to_string()],
+            exit_code: Some(99),
+            confirmed: true,
+            error: None,
+            findings_detected: vec!["use_after_free".to_string()],
+            timestamp: 123,
+        };
+
+        let snapshot = promote_tool_findings_to_crashpack(&base, &[result])
+            .unwrap()
+            .expect("expected promoted finding");
+        assert_eq!(snapshot.count, 1);
+        assert_eq!(snapshot.class_counts.get("use_after_free"), Some(&1));
+        assert_eq!(snapshot.issue_group_count, 1);
+
+        let findings = read_json_file(&base.join("findings.json")).unwrap();
+        assert_eq!(
+            findings.pointer("/0/origin").and_then(Value::as_str),
+            Some("valgrind")
+        );
+        assert_eq!(
+            findings.pointer("/0/class").and_then(Value::as_str),
+            Some("use_after_free")
+        );
+        assert_eq!(
+            findings
+                .pointer("/0/fingerprint")
+                .and_then(Value::as_str)
+                .is_some(),
+            true
+        );
+
+        let evidence_pack = read_json_file(&base.join("evidence-pack.json")).unwrap();
+        assert_eq!(
+            evidence_pack
+                .pointer("/summary/total_findings")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            evidence_pack
+                .pointer("/findings/0/origin")
+                .and_then(Value::as_str),
+            Some("valgrind")
+        );
+        assert_eq!(
+            evidence_pack
+                .pointer("/summary/issue_group_count")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

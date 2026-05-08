@@ -178,7 +178,7 @@ PY
 
 printf '[observe] deep Valgrind-first binary\n'
 "$runner_path" observe --deep build/user-samples/use_after_free_case --output "$output_root/use_after_free_case"
-assert_observation "$output_root/use_after_free_case/run-summary.json" findings __none__ 0 valgrind findings use_after_free
+assert_observation "$output_root/use_after_free_case/run-summary.json" findings use_after_free 1 valgrind findings use_after_free
 
 printf '[observe] deep non-ASan binary records ASan not-applicable\n'
 python3 - "$output_root/use_after_free_case/run-summary.json" <<'PY'
