@@ -102,9 +102,10 @@ those vary between runs. Repeated executions of the same bug path should keep
 the same fingerprint. Independent findings should split when their class,
 operation, source site, lifecycle site, or size evidence differs.
 
-## Current Slice
+## Phase 4 Complete Scope
 
-The current MVP supports one binary, args after `--`, `--cwd`, `--output`, `--timeout-ms`, `--native-only`, and `--deep`.
+The current Phase 4 baseline supports one binary, args after `--`, `--cwd`,
+`--output`, `--timeout-ms`, `--native-only`, and `--deep`.
 
 Default escalation policy:
 
@@ -121,6 +122,7 @@ Deep escalation policy:
 
 Dependency metadata is captured for each target.
 Issue groups are captured for each target.
+Replay uses the captured binary and recorded cwd when available.
 Project-style fixtures are covered by `make project-smoke`:
 
 - multi-file heap bug
@@ -147,3 +149,101 @@ The report includes:
 
 This is separate from `make hit-rate`, which remains the lower-level
 native/escalation corpus report for single-binary user samples.
+
+## Manual Linux Validation Checklist
+
+Phase 4 should be validated on Linux or in the supported Docker-native setup.
+The container must use `--privileged --pid=host` so eBPF events and target PIDs
+line up.
+
+From the repository root:
+
+```bash
+docker build -t recompile-bootstrap:host .
+docker run --rm -it --privileged --pid=host \
+  -e RECOMPILE_SKIP_BOOTSTRAP=1 \
+  -v "$PWD":/workspace/recompile \
+  -w /workspace/recompile/recompile \
+  recompile-bootstrap:host bash
+```
+
+Inside the container:
+
+```bash
+make phase4
+```
+
+The equivalent expanded gate is:
+
+```bash
+make phase2
+make observe-smoke
+make project-smoke
+make observe-hit-rate
+make hit-rate
+make recc-smoke
+```
+
+### Manual Dry Run
+
+This checks the baseline path a technical early user would exercise: build a
+small project fixture, observe it with args and cwd, summarize it for an agent,
+and replay the captured command.
+
+```bash
+./scripts/build-project-fixtures.sh
+cargo build -q -p rerun --release
+rm -rf build/manual-phase4
+
+./target/release/rerun observe \
+  --output build/manual-phase4 \
+  --cwd build/project-fixtures/args-cwd/run \
+  build/project-fixtures/args-cwd/app \
+  -- trigger payload.bin
+
+./target/release/rerun summarize \
+  build/manual-phase4/targets/app \
+  --format json > build/manual-phase4/agent-summary.json
+
+./target/release/rerun replay \
+  build/manual-phase4/targets/app \
+  --format json > build/manual-phase4/replay.json
+
+jq . build/manual-phase4/run-summary.json
+jq . build/manual-phase4/agent-summary.json
+jq . build/manual-phase4/replay.json
+```
+
+Expected baseline:
+
+- `run-summary.json` exists with one target.
+- the target status is `findings`.
+- the target links `analysis.json`, `findings.json`, `evidence-pack.json`,
+  `dependencies.json`, `issue-groups.json`, escalation results, and next
+  commands.
+- `agent-summary.json` includes at least one finding with a stable fingerprint
+  and issue group.
+- `replay.json` reports `ran: true` and uses the captured binary plus recorded
+  cwd.
+
+## Known Limitations
+
+- `rerun observe` currently supports one binary per invocation. Multi-binary
+  observation remains represented by project fixtures and future run-level
+  orchestration work.
+- Build-system takeover is intentionally deferred. Users build their project
+  first, then point `rerun observe` at the binary they want to inspect.
+- Crashpacks are evidence packs, not fully portable bundles. Local shared
+  libraries are copied when detected, but arbitrary inputs/configs/services are
+  not automatically captured.
+- Replay is minimal binary/args/cwd replay. It is not deterministic
+  record/replay and does not restore the full environment, filesystem, network,
+  stdin, or scheduler state.
+- Native eBPF analysis requires Linux and the supported Docker/native
+  permissions. macOS, VM mode, and the Rust agent are deferred.
+- ASan escalation applies only to binaries that were already built with ASan.
+  `re:compile` does not implicitly rebuild user projects with sanitizers.
+- Valgrind/ASan/readelf/ldd availability is reported as structured evidence;
+  missing optional tools should not be interpreted as target cleanliness.
+- Clean means "no finding on the observed executed path", not "the whole
+  codebase is memory safe".

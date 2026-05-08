@@ -643,15 +643,21 @@ fn replay_crashpack(crashpack_path: &PathBuf) -> Result<ReplayResult> {
 
     let analysis = load_analysis_metadata(crashpack_path)?;
     let binary_path = select_replay_binary(crashpack_path, &analysis.binary_path);
+    let executable_path = fs::canonicalize(&binary_path).unwrap_or_else(|_| binary_path.clone());
     let started = Instant::now();
-    let output = Command::new(&binary_path).args(&analysis.args).output();
+    let mut command = Command::new(&executable_path);
+    command.args(&analysis.args);
+    if let Some(cwd) = analysis.cwd.as_deref() {
+        command.current_dir(cwd);
+    }
+    let output = command.output();
     let duration_ms = started.elapsed().as_millis();
 
     let result = match output {
         Ok(output) => ReplayResult {
             schema_version: "1.0".to_string(),
             crashpack: crashpack_path.display().to_string(),
-            binary_path: binary_path.display().to_string(),
+            binary_path: executable_path.display().to_string(),
             args: analysis.args,
             ran: true,
             exit_success: output.status.success(),
@@ -664,7 +670,7 @@ fn replay_crashpack(crashpack_path: &PathBuf) -> Result<ReplayResult> {
         Err(error) => ReplayResult {
             schema_version: "1.0".to_string(),
             crashpack: crashpack_path.display().to_string(),
-            binary_path: binary_path.display().to_string(),
+            binary_path: executable_path.display().to_string(),
             args: analysis.args,
             ran: false,
             exit_success: false,
@@ -1307,8 +1313,46 @@ mod tests {
         assert!(result.ran);
         assert!(result.exit_success);
         assert_eq!(result.stdout.trim(), "replayed:arg1");
-        assert_eq!(PathBuf::from(&result.binary_path), captured);
+        assert_eq!(
+            PathBuf::from(&result.binary_path),
+            fs::canonicalize(&captured).unwrap()
+        );
         assert!(base.join("replay").join("results.json").exists());
+
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn replay_uses_recorded_cwd() {
+        let base =
+            std::env::temp_dir().join(format!("rerun-replay-cwd-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("bins")).unwrap();
+        fs::create_dir_all(base.join("work")).unwrap();
+        fs::write(base.join("work").join("payload.txt"), "from-cwd\n").unwrap();
+
+        let captured = base.join("bins").join("cwd-reader");
+        fs::write(&captured, "#!/bin/sh\ncat payload.txt\n").unwrap();
+        let mut perms = fs::metadata(&captured).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&captured, perms).unwrap();
+
+        fs::write(
+            base.join("analysis.json"),
+            serde_json::to_vec_pretty(&json!({
+                "binary_path": captured.display().to_string(),
+                "cwd": base.join("work").display().to_string(),
+                "args": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let result = replay_crashpack(&base).unwrap();
+
+        assert!(result.ran);
+        assert!(result.exit_success);
+        assert_eq!(result.stdout.trim(), "from-cwd");
 
         fs::remove_dir_all(base).unwrap();
     }

@@ -8,17 +8,18 @@ Supported execution path:
 
 ```text
 Target ELF binary
-  -> rerun run --native
+  -> rerun observe
+  -> per-target rerun run --native plumbing
   -> paused post-exec target attach
   -> re-mini (C runtime agent)
   -> eBPF uprobes on libc allocation/copy functions
   -> event normalization
   -> findings.json + crashpack artifacts
+  -> dependencies.json + issue-groups.json
   -> evidence-pack.json
-  -> optional rerun escalate <crashpack> --tool valgrind
-  -> optional rerun escalate <crashpack-without-findings> --tool valgrind --scan-binary
-  -> optional rerun escalate <asan-built-crashpack> --tool asan --scan-binary
+  -> observe-level escalation policy
   -> escalations/results.json + raw tool logs + parsed tool report
+  -> run-summary.json
   -> optional rerun summarize <crashpack> --format json
   -> optional rerun replay <crashpack> --format json
 ```
@@ -38,6 +39,7 @@ Responsibilities:
 - normalize findings into canonical `findings.json`
 - assemble crashpack metadata and binary artifacts
 - invoke escalation and crashpack commands against the canonical output
+- write observation-run summaries through `rerun observe`
 - emit agent summaries and minimal replay results from crashpack artifacts
 
 ### `runtime/agent/re-mini.c`
@@ -128,9 +130,27 @@ optional `escalations/results.json` and emits the compact agent summary used by
 coding agents.
 
 `rerun replay <crashpack> --format json` re-executes the recorded binary and
-arguments from `analysis.json`, preferring the captured binary under `bins/`.
-It writes `replay/results.json`. This is a minimal repro contract, not full
-input/environment replay.
+arguments from `analysis.json`, applies the recorded cwd when present, and
+prefers the captured binary under `bins/`. It writes `replay/results.json`.
+This is a minimal repro contract, not full input/environment replay.
+
+### Observation-run contract
+
+- `run-summary.json`
+- JSON object
+- source of truth for a local observation run
+- links one or more target crashpacks
+- records target status, finding totals, escalation state, dependency metadata
+  paths, issue group counts, and next inspection commands
+
+`rerun observe <binary>` is the current default entry point. It supports a
+single binary per invocation, args after `--`, `--cwd`, `--output`,
+`--timeout-ms`, `--native-only`, and `--deep`.
+
+Default observe policy runs native first and asks Valgrind to confirm only when
+native findings exist. Deep observe policy additionally asks Valgrind to scan
+clean native runs and asks ASan to scan only when the binary is already
+ASan-instrumented.
 
 ### Debug contract
 
@@ -168,6 +188,7 @@ Phase 0 is complete.
 Phase 1 is complete for the Linux-native MVP scope.
 Phase 2 is complete for the current issue-backed escalation and evaluation scope.
 Phase 3 is complete for the agentic runtime evidence MVP scope.
+Phase 4 is complete for the local runtime observability foundation.
 
 The Phase 1 release gate is:
 
@@ -177,25 +198,26 @@ make rc
 
 This runs active Rust checks/tests, the three golden regressions, and user-style finding/no-finding samples.
 
-The current closeout gates are:
+The current closeout gate is:
 
 ```bash
-make phase2
-make hit-rate
-make recc-smoke
+make phase4
 ```
 
-`make recc-smoke` stays optional and outside `make phase2` because `recc` is not
+`make phase4` runs the Phase 2 gate, observe smoke tests, project-shaped
+fixtures, observation hit-rate scoring, lower-level hit-rate scoring, and
+optional `recc` wiring validation. `recc` remains optional because it is not
 part of the primary native runtime workflow.
 
-Phase 4 candidates:
+Post-Phase-4 candidates:
 
-1. grow the hit-rate corpus with real-world user binaries and broader clean negatives
-2. broaden ASan-backed samples beyond the first already-instrumented smoke
-3. improve symbolization beyond primary user frames
-4. add richer escalation adapters beyond Valgrind and already-instrumented ASan
-5. revisit optional `recc`/LLVM pass integration only if a concrete user workflow needs it
-6. capture richer replay inputs/environment when a real workflow requires it
+1. grow memory/resource coverage without changing the observation contract
+2. add already-instrumented sanitizer adapters for UBSan/TSan/MSan/LSan
+3. add native resource lifecycle tracing where feasible
+4. add repeated-run and `rr`-backed nondeterminism evidence
+5. improve symbolization and source narratives beyond primary user frames
+6. capture richer replay inputs/environment when real workflows require it
+7. revisit optional `recc`/LLVM pass integration only if a concrete user workflow needs it
 
 ## Evaluation
 

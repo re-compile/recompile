@@ -10,22 +10,26 @@ Phase 0 is complete on the supported Docker-native path.
 Phase 1 is complete for the Linux-native MVP scope.
 Phase 2 is complete for the current issue-backed escalation and evaluation scope.
 Phase 3 is complete for the agentic runtime evidence MVP scope.
-Phase 4 is in progress; `rerun observe` is the new observation-run entry point.
+Phase 4 is complete for the local runtime observability foundation.
+`rerun observe` is the primary human/agent observation-run entry point.
 
 What is working now:
 
 - `rerun run --native <binary>` is the primary execution path
 - `rerun observe <binary>` writes `.re/run-summary.json` plus per-target crashpack artifacts
+- `rerun observe` supports args, `--cwd`, timeouts, native-only mode, and deep escalation mode
 - findings persist canonically to `findings.json`
 - agent-readable evidence persists to `evidence-pack.json`
 - binary and dynamic dependency metadata persists to `dependencies.json`
+- stable fingerprints and issue groups persist to `issue-groups.json`
 - debug/streaming output goes to `re-findings.jsonl`
 - crashpack and escalation consume explicit provenance instead of guessing from example names
 - Valgrind escalation can confirm a finding from an existing crashpack
 - ASan escalation can confirm an already-ASan-built binary from an existing crashpack
 - `rerun summarize <crashpack> --format json` emits compact agent summaries
-- `rerun replay <crashpack> --format json` replays the recorded command with the captured binary when present
+- `rerun replay <crashpack> --format json` replays the recorded command with the captured binary and recorded cwd when present
 - multiple independent findings in one process are preserved through key-based dedupe
+- project-style fixtures validate multi-file, args/cwd, multi-binary, shared-library, timeout, and Valgrind-first paths
 - the three goldens validate in Docker with `--privileged --pid=host`
 
 Validated goldens:
@@ -52,6 +56,12 @@ Inside the container:
 ```bash
 cd /workspace/recompile/recompile
 make rc
+```
+
+For the full current closeout gate:
+
+```bash
+make phase4
 ```
 
 ### Native Linux host
@@ -135,8 +145,9 @@ prints a compact deterministic JSON summary.
 cargo run -p rerun -- replay build/invalid-free --format json
 ```
 
-This re-executes the recorded binary with args from `analysis.json`, preferring
-the captured binary under `bins/` when present, and writes `replay/results.json`.
+This re-executes the recorded binary with args and cwd from `analysis.json`,
+preferring the captured binary under `bins/` when present, and writes
+`replay/results.json`.
 
 ### Validate a crashpack
 
@@ -152,7 +163,17 @@ make rc
 
 This runs active Rust checks/tests, the golden baseline, and user-style external samples.
 
-### Run the current closeout gates
+### Run the current closeout gate
+
+```bash
+make phase4
+```
+
+`make phase4` runs the Phase 2 gate, observation-run smoke tests,
+project-shaped fixtures, observation hit-rate scoring, lower-level hit-rate
+scoring, and optional `recc` wiring validation.
+
+The individual gates remain available:
 
 ```bash
 make phase2
@@ -165,7 +186,7 @@ make recc-smoke
 
 `make phase2` runs the RC gate, Valgrind escalation smoke, ASan binary smoke,
 agent summary smoke, and replay smoke. `make observe-smoke` validates the Phase
-4 observation-run MVP against clean, finding, deep-escalation, and fingerprint
+4 observation-run path against clean, finding, deep-escalation, and fingerprint
 stability cases. `make project-smoke` validates project-shaped observation
 fixtures including multi-file, args/cwd, multi-binary, shared-library,
 Valgrind-first, and timeout cases. `make observe-hit-rate` writes
