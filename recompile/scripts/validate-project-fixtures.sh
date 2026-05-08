@@ -162,7 +162,7 @@ test -f "$output_root/shared-lib/targets/app/bins/lib/libprojectbug.so"
 
 printf '[project] Valgrind-first target\n'
 "$runner_path" observe --deep build/project-fixtures/valgrind-first/app --output "$output_root/valgrind-first"
-assert_observation "$output_root/valgrind-first/run-summary.json" findings __none__ 0 valgrind findings use_after_free
+assert_observation "$output_root/valgrind-first/run-summary.json" findings use_after_free 1 valgrind findings use_after_free
 
 printf '[project] timeout target\n'
 if "$runner_path" observe build/project-fixtures/timeout/app --timeout-ms 100 --output "$output_root/timeout"; then

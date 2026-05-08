@@ -724,7 +724,10 @@ fn wait_for_exit_with_timeout(pid: u32, timeout: Option<Duration>) -> Result<Tar
     }
 }
 
-fn finalize_findings(crashpack_dir: &Path, binary_path: &Path) -> Result<(PathBuf, usize)> {
+pub(crate) fn finalize_findings(
+    crashpack_dir: &Path,
+    binary_path: &Path,
+) -> Result<(PathBuf, usize)> {
     let findings_path = crashpack_dir.join("findings.json");
     let copied_binary_path = write_binary_artifacts(crashpack_dir, binary_path)?;
     let mut findings = if findings_path.exists() {
@@ -981,6 +984,7 @@ fn build_agent_evidence_pack(
             json!({
                 "index": index,
                 "id": finding_string(finding, &["id"]).unwrap_or_else(|| format!("finding-{}", index + 1)),
+                "origin": finding_string(finding, &["origin"]).unwrap_or_else(|| "ebpf".to_string()),
                 "fingerprint": finding.get("fingerprint").cloned().unwrap_or(Value::Null),
                 "issue_group_id": finding.get("issue_group_id").cloned().unwrap_or(Value::Null),
                 "class": class,
@@ -1006,6 +1010,10 @@ fn build_agent_evidence_pack(
                     .unwrap_or_else(|| json!({})),
                 "alloc_site": finding.get("evidence")
                     .and_then(|value| value.get("alloc_site"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "tool": finding.get("evidence")
+                    .and_then(|value| value.get("tool"))
                     .cloned()
                     .unwrap_or(Value::Null),
                 "escalation_plan": finding.get("escalation").cloned().unwrap_or(Value::Null),

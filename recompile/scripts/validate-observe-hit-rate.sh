@@ -85,6 +85,16 @@ target = summary["targets"][0]
 artifacts = target.get("artifacts") or {}
 crashpack = pathlib.Path(artifacts["crashpack"])
 findings = json.loads(pathlib.Path(artifacts["findings"]).read_text())
+native_findings = [
+    finding
+    for finding in findings
+    if isinstance(finding, dict) and (finding.get("origin") in (None, "ebpf"))
+]
+tool_findings = [
+    finding
+    for finding in findings
+    if isinstance(finding, dict) and finding.get("origin") not in (None, "ebpf")
+]
 issue_groups = json.loads(pathlib.Path(artifacts["issue_groups"]).read_text()).get("groups") or []
 evidence_pack = json.loads(pathlib.Path(artifacts["evidence_pack"]).read_text())
 agent_summary_path = case_dir / "agent-summary.json"
@@ -97,15 +107,20 @@ agent_summary_json = json.loads(agent_summary)
 
 actual_status = target.get("status")
 classes = target.get("findings_by_class") or {}
+native_classes = {}
+for finding in native_findings:
+    cls = finding.get("class")
+    if cls:
+        native_classes[cls] = native_classes.get(cls, 0) + 1
 escalations = target.get("escalation") or []
 
 status_outcome = "match" if actual_status == expected_status else "mismatch"
 if expected_class == "__none__":
-    native_outcome = "tn" if not classes and not findings else "fp"
+    native_outcome = "tn" if not native_classes and not native_findings else "fp"
 else:
     native_outcome = (
         "tp"
-        if classes.get(expected_class) == expected_count and len(findings) == expected_count
+        if native_classes.get(expected_class) == expected_count and len(native_findings) == expected_count
         else "fn"
     )
 
@@ -155,7 +170,10 @@ print(json.dumps({
         "expected_class": None if expected_class == "__none__" else expected_class,
         "expected_count": expected_count,
         "actual_classes": classes,
-        "finding_count": len(findings),
+        "native_classes": native_classes,
+        "finding_count": len(native_findings),
+        "total_finding_count": len(findings),
+        "tool_backed_finding_count": len(tool_findings),
         "outcome": native_outcome,
     },
     "issue_groups": {

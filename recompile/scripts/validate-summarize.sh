@@ -121,11 +121,11 @@ assert_summary "${output_root}/clean_malloc_free" 0 __none__ __none__
 printf '[summarize] Valgrind binary-scan crashpack\n'
 run_native_case use_after_free_case
 "$runner_path" escalate "${output_root}/use_after_free_case" --tool valgrind --scan-binary
-assert_summary "${output_root}/use_after_free_case" 0 __none__ use_after_free
+assert_summary "${output_root}/use_after_free_case" 1 use_after_free use_after_free
 
 printf '[summarize] ASan binary-scan crashpack\n'
 run_native_case asan_use_after_free_case build/user-samples-asan/use_after_free_case
 "$runner_path" escalate "${output_root}/asan_use_after_free_case" --tool asan --scan-binary
-assert_summary "${output_root}/asan_use_after_free_case" 0 __none__ use_after_free
+assert_summary "${output_root}/asan_use_after_free_case" 1 use_after_free use_after_free
 
 printf '\n[summarize] agent summary smoke passed\n'

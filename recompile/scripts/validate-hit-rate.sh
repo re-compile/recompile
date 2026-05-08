@@ -72,14 +72,24 @@ findings = json.loads(findings_path.read_text())
 if not isinstance(findings, list):
     raise SystemExit(f"{binary_name}: findings.json is not a JSON array")
 
+native_findings = [
+    finding
+    for finding in findings
+    if isinstance(finding, dict) and finding.get("origin") in (None, "ebpf")
+]
+tool_findings = [
+    finding
+    for finding in findings
+    if isinstance(finding, dict) and finding.get("origin") not in (None, "ebpf")
+]
 actual_classes = [
     finding.get("class")
-    for finding in findings
+    for finding in native_findings
     if isinstance(finding, dict) and finding.get("class")
 ]
 source_statuses = [
     (finding.get("provenance") or {}).get("source_status")
-    for finding in findings
+    for finding in native_findings
     if isinstance(finding, dict)
 ]
 
@@ -90,7 +100,7 @@ elif native_expected_class == "__none__":
 else:
     native_outcome = (
         "tp"
-        if native_expected_class in actual_classes and len(findings) == native_expected_count
+        if native_expected_class in actual_classes and len(native_findings) == native_expected_count
         else "fn"
     )
 
@@ -123,7 +133,9 @@ print(json.dumps({
         "outcome": native_outcome,
         "actual_classes": actual_classes,
         "source_statuses": source_statuses,
-        "finding_count": len(findings),
+        "finding_count": len(native_findings),
+        "total_finding_count": len(findings),
+        "tool_backed_finding_count": len(tool_findings),
         "expected_count": native_expected_count,
     },
     "escalation": {
