@@ -11,6 +11,8 @@ COMMON_FLAGS=(
   -fno-omit-frame-pointer
   -fno-builtin
   -fno-builtin-memcpy
+  -fno-builtin-memmove
+  -fno-builtin-memset
   -fno-builtin-free
   -fno-builtin-malloc
   -fno-builtin-calloc
@@ -21,4 +23,3 @@ cc "${COMMON_FLAGS[@]}" -o build/examples/memcpy_overflow examples/memcpy_overfl
 cc "${COMMON_FLAGS[@]}" -o build/examples/double_free examples/double_free.c
 cc "${COMMON_FLAGS[@]}" -o build/examples/invalid_free examples/invalid_free.c
 echo "Built examples under build/examples/"
-

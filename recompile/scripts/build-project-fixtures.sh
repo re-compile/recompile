@@ -21,6 +21,8 @@ COMMON_FLAGS=(
   -fno-omit-frame-pointer
   -fno-builtin
   -fno-builtin-memcpy
+  -fno-builtin-memmove
+  -fno-builtin-memset
   -fno-builtin-free
   -fno-builtin-malloc
   -fno-builtin-calloc

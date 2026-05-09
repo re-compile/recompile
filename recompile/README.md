@@ -266,9 +266,10 @@ make hit-rate
 jq . build/hit-rate/summary.json
 ```
 
-The current corpus includes native-confirmed heap/double/invalid-free cases,
-clean negatives, and Valgrind-first `use_after_free`, `memory_leak`, and
-`fd_leak` cases.
+The current corpus includes native-confirmed heap write overflows through
+`memcpy`, `memmove`, and `memset`, native double/invalid-free cases, clean
+negatives, and Valgrind-first `use_after_free`, `memory_leak`, and `fd_leak`
+cases.
 
 For one external binary:
 

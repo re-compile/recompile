@@ -84,6 +84,8 @@ PY
 
 positive_samples=(
     "build/user-samples/copy_overrun_case:heap_overflow"
+    "build/user-samples/memmove_overrun_case:heap_overflow"
+    "build/user-samples/memset_overrun_case:heap_overflow"
     "build/user-samples/cache_release_twice:double_free"
     "build/user-samples/free_stack_slot:invalid_free"
 )
@@ -137,6 +139,8 @@ done
 clean_samples=(
     "build/user-samples/clean_malloc_free"
     "build/user-samples/clean_bounded_memcpy"
+    "build/user-samples/clean_bounded_memmove"
+    "build/user-samples/clean_bounded_memset"
     "build/user-samples/clean_fd_close"
 )
 

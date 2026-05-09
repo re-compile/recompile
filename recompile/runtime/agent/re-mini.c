@@ -307,13 +307,38 @@ static void emit_v1_finding(const char *finding_json, const char *output_dir)
     }
 }
 
-static void emit_memcpy_finding(const struct re_sentinel_event *ev,
+static const char *heap_write_api_name(const struct re_sentinel_event *ev)
+{
+    switch (ev->errno_code) {
+    case 1:
+        return "memcpy";
+    case 2:
+        return "memmove";
+    case 3:
+        return "memset";
+    default:
+        break;
+    }
+
+    switch (ev->type) {
+    case RE_SENTINEL_TYPE_MEMMOVE:
+        return "memmove";
+    case RE_SENTINEL_TYPE_MEMSET:
+        return "memset";
+    case RE_SENTINEL_TYPE_MEMCPY:
+    default:
+        return "memcpy";
+    }
+}
+
+static void emit_heap_write_finding(const struct re_sentinel_event *ev,
     struct frame_info *call_frames, int call_count,
     struct frame_info *alloc_frames, int alloc_count)
 {
     const struct frame_info *primary_call = select_primary(call_frames, call_count);
     const struct frame_info *primary_alloc = select_primary(alloc_frames, alloc_count);
     const struct frame_info *primary = choose_primary_frame(primary_call, primary_alloc);
+    const char *api = heap_write_api_name(ev);
 
     bool known_cap = ev->alloc_size > 0;
     bool hard_overflow = known_cap && ev->len > ev->alloc_size;
@@ -328,14 +353,16 @@ static void emit_memcpy_finding(const struct re_sentinel_event *ev,
     char message[512];
     if (known_cap) {
         snprintf(message, sizeof(message),
-                 "memcpy overflow: copied %llu bytes into 0x%llx (capacity %u) at %s",
+                 "%s overflow: wrote %llu bytes into 0x%llx (capacity %u) at %s",
+                 api,
                  (unsigned long long)ev->len,
                  (unsigned long long)ev->addr,
                  ev->alloc_size,
                  location_summary);
     } else {
         snprintf(message, sizeof(message),
-                 "memcpy overflow suspicion: copied %llu bytes into 0x%llx (capacity unknown) at %s",
+                 "%s overflow suspicion: wrote %llu bytes into 0x%llx (capacity unknown) at %s",
+                 api,
                  (unsigned long long)ev->len,
                  (unsigned long long)ev->addr,
                  location_summary);
@@ -376,9 +403,10 @@ static void emit_memcpy_finding(const struct re_sentinel_event *ev,
     snprintf(finding, sizeof(finding),
              "RE:FINDING: {\"id\":\"F-heap-overflow-%llu\",\"origin\":\"ebpf\",\"kind\":\"heap_overflow\","
              "\"severity\":\"%s\",\"message\":\"%s\",\"primaryLocation\":%s,"
-             "\"evidence\":{\"api\":\"memcpy\",\"len\":%llu,\"dest_alloc\":{\"ptr\":\"0x%llx\",\"size\":%u},"
+             "\"evidence\":{\"api\":\"%s\",\"len\":%llu,\"dest_alloc\":{\"ptr\":\"0x%llx\",\"size\":%u},"
              "\"stacks\":{\"alloc\":%s,\"call\":%s}},\"fixHints\":[\"%s\"],\"dataQuality\":{\"eventsDropped\":0}}\n",
              (unsigned long long)ev->ts_ns, severity, escaped_message, primary_json,
+             api,
              (unsigned long long)ev->len, (unsigned long long)ev->addr,
              ev->alloc_size, alloc_stack_json, call_stack_json, escaped_fix);
 
@@ -389,19 +417,20 @@ static void emit_memcpy_finding(const struct re_sentinel_event *ev,
     snprintf(v1_finding, sizeof(v1_finding),
              "{\"schema_version\":\"1.0\",\"id\":\"F-heap-overflow-%llu\",\"class\":\"heap_overflow\","
              "\"confidence\":\"high\",\"severity\":\"%s\",\"timestamp\":%llu,\"pid\":%u,"
-             "\"evidence\":{\"memory\":{\"ptr\":%llu,\"size\":%u,\"alloc_size\":%u,\"operation\":\"memcpy\"},"
+             "\"evidence\":{\"memory\":{\"ptr\":%llu,\"size\":%u,\"alloc_size\":%u,\"operation\":\"%s\"},"
              "\"stacks\":{\"alloc\":%s,\"call\":%s},\"alloc_site\":\"%s\"},"
              "\"escalation\":{\"tool\":\"asan\",\"reason\":\"len>alloc_size\",\"estimated_cost\":\"low\",\"cooldown_ms\":10000},"
              "\"related\":[]}",
              (unsigned long long)ev->ts_ns, severity, (unsigned long long)ev->ts_ns, ev->pid,
              (unsigned long long)ev->addr, ev->len, ev->alloc_size,
+             api,
              alloc_stack_json, call_stack_json, primary ? primary->file : "unknown");
 
     emit_v1_finding(v1_finding, crashpack_dir ? crashpack_dir : "crashpack");
 
     const char *top = (primary_call && primary_call->summary[0]) ? primary_call->summary : location_summary;
-    log_line("heap overflow: pid=%u len=%u dst_size=%u dst=0x%llx at %s",
-             ev->pid, ev->len, ev->alloc_size,
+    log_line("heap overflow: api=%s pid=%u len=%u dst_size=%u dst=0x%llx at %s",
+             api, ev->pid, ev->len, ev->alloc_size,
              (unsigned long long)ev->addr, top);
 }
 
@@ -532,7 +561,9 @@ static int on_sentinel_event(void *ctx, void *data, size_t len)
     }
 
     switch (ev.type) {
-    case RE_SENTINEL_TYPE_MEMCPY: {
+    case RE_SENTINEL_TYPE_MEMCPY:
+    case RE_SENTINEL_TYPE_MEMMOVE:
+    case RE_SENTINEL_TYPE_MEMSET: {
         // Treat heap overflow as a tracked-allocation signal only. Unknown
         // destination capacity produces too many libc-internal false positives
         // in the current native pipeline.
@@ -560,7 +591,7 @@ static int on_sentinel_event(void *ctx, void *data, size_t len)
 
         mark_finding_emitted(&key);
         last_drop_reason[0] = '\0';
-        emit_memcpy_finding(&ev, call_frames, call_count, alloc_frames, alloc_count);
+        emit_heap_write_finding(&ev, call_frames, call_count, alloc_frames, alloc_count);
         break;
     }
     case RE_SENTINEL_TYPE_FREE: {
@@ -616,6 +647,26 @@ static const char *preferred_symbol_aliases(const char *symbol, int idx)
             "memcpy@GLIBC_2.2.5",
             "memcpy",
             "__memcpy",
+            NULL,
+        };
+        return aliases[idx];
+    }
+
+    if (strcmp(symbol, "memmove") == 0) {
+        static const char *aliases[] = {
+            "memmove@GLIBC_2.2.5",
+            "memmove",
+            "__memmove",
+            NULL,
+        };
+        return aliases[idx];
+    }
+
+    if (strcmp(symbol, "memset") == 0) {
+        static const char *aliases[] = {
+            "memset@GLIBC_2.2.5",
+            "memset",
+            "__memset",
             NULL,
         };
         return aliases[idx];
@@ -687,12 +738,14 @@ static struct bpf_link *attach_uprobe_by_name(const struct bpf_program *prog, bo
         return link;
     }
 
-    if (strcmp(symbol, "memcpy") != 0)
+    if (strcmp(symbol, "memcpy") != 0
+        && strcmp(symbol, "memmove") != 0
+        && strcmp(symbol, "memset") != 0)
         return NULL;
 
-    // IFUNC-backed memcpy on aarch64 glibc can fail name-based attachment.
-    // Resolve the actual implementation address from the loaded libc and
-    // attach by offset as a narrow fallback.
+    // IFUNC-backed libc memory routines on aarch64 glibc can fail
+    // name-based attachment. Resolve the actual implementation address from
+    // the loaded libc and attach by offset as a narrow fallback.
     void *handle = dlopen(binary_path, RTLD_LAZY | RTLD_LOCAL);
     if (!handle)
         return NULL;
@@ -1405,7 +1458,7 @@ static int run_dedupe_self_test(void)
 static void usage(const char *argv0){
     fprintf(stderr,
         "usage: %s [--heap <heap_tracker.o>] --obj <copy_checker.o> [--sentinel <sentinel.o>]\n"
-        "       [--binary <path>] [--pid <pid>] [--libc <libc.so>] [--func memcpy]\n"
+        "       [--binary <path>] [--pid <pid>] [--libc <libc.so>] [--func memcpy|memmove|memset]\n"
         "       [--out <path>] [--crashpack <dir>] [--self-test-dedupe]\n"
         "\n"
         "Options:\n"
@@ -1415,7 +1468,7 @@ static void usage(const char *argv0){
         "  --binary <path>    Filter events to this binary only\n"
         "  --pid <pid>        Attach to one target PID only\n"
         "  --libc <path>      Path to libc.so.6 (auto-detected if not specified)\n"
-        "  --func <name>      Filter to specific function (e.g., memcpy)\n"
+        "  --func <name>      Filter to specific function (e.g., memcpy, memmove, memset)\n"
         "  --out <path>       Output file for events (default: stdout)\n"
         "  --crashpack <dir>  Directory for findings (default: ./crashpack)\n"
         "  --self-test-dedupe Run runtime dedupe self-test and exit\n",
