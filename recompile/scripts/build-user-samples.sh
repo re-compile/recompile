@@ -9,6 +9,8 @@ COMMON_FLAGS=(
   -fno-omit-frame-pointer
   -fno-builtin
   -fno-builtin-memcpy
+  -fno-builtin-memmove
+  -fno-builtin-memset
   -fno-builtin-free
   -fno-builtin-malloc
   -fno-builtin-calloc
@@ -33,6 +35,8 @@ UBSAN_FLAGS=(
 )
 
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/copy_overrun_case samples/user-binaries/copy_overrun_case.c
+cc "${COMMON_FLAGS[@]}" -o build/user-samples/memmove_overrun_case samples/user-binaries/memmove_overrun_case.c
+cc "${COMMON_FLAGS[@]}" -o build/user-samples/memset_overrun_case samples/user-binaries/memset_overrun_case.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/multi_overrun_case samples/user-binaries/multi_overrun_case.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/cache_release_twice samples/user-binaries/cache_release_twice.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/free_stack_slot samples/user-binaries/free_stack_slot.c
@@ -41,6 +45,8 @@ cc "${COMMON_FLAGS[@]}" -o build/user-samples/memory_leak_case samples/user-bina
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/fd_leak_case samples/user-binaries/fd_leak_case.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_malloc_free samples/user-binaries/clean_malloc_free.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_bounded_memcpy samples/user-binaries/clean_bounded_memcpy.c
+cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_bounded_memmove samples/user-binaries/clean_bounded_memmove.c
+cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_bounded_memset samples/user-binaries/clean_bounded_memset.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_fd_close samples/user-binaries/clean_fd_close.c
 
 cc "${ASAN_FLAGS[@]}" -o build/user-samples-asan/use_after_free_case samples/user-binaries/use_after_free_case.c

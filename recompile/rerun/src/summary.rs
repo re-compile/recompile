@@ -62,7 +62,7 @@ pub fn print_no_findings_help() {
     println!("\nNo-finding checklist:");
     println!("  - If running in Docker, use --privileged --pid=host");
     println!("  - Build the target with debug info (-g) and frame pointers");
-    println!("  - Avoid optimizer/builtin rewrites for allocator and memcpy calls");
+    println!("  - Avoid optimizer/builtin rewrites for allocator and libc memory calls");
     println!("  - Confirm the test run actually executes the bug path");
     println!("  - Check re-findings.jsonl for attach or symbolization diagnostics");
 }

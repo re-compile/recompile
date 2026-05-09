@@ -68,7 +68,8 @@ Build your binary with debug info and avoid compiler rewrites that can remove th
 
 ```bash
 clang -g -O0 -fno-omit-frame-pointer \
-  -fno-builtin -fno-builtin-memcpy -fno-builtin-free \
+  -fno-builtin -fno-builtin-memcpy -fno-builtin-memmove \
+  -fno-builtin-memset -fno-builtin-free \
   -o my_test my_test.c
 ```
 

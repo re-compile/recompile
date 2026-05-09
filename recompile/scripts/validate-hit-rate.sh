@@ -37,6 +37,8 @@ mkdir -p "$cases_dir"
 
 samples=(
     "copy_overrun_case:heap_overflow:heap_overflow:1"
+    "memmove_overrun_case:heap_overflow:heap_overflow:1"
+    "memset_overrun_case:heap_overflow:heap_overflow:1"
     "multi_overrun_case:heap_overflow:heap_overflow:2"
     "cache_release_twice:double_free:double_free:1"
     "free_stack_slot:invalid_free:invalid_free:1"
@@ -45,6 +47,8 @@ samples=(
     "fd_leak_case:__unsupported__:fd_leak:0"
     "clean_malloc_free:__none__:__none__:0"
     "clean_bounded_memcpy:__none__:__none__:0"
+    "clean_bounded_memmove:__none__:__none__:0"
+    "clean_bounded_memset:__none__:__none__:0"
     "clean_fd_close:__none__:__none__:0"
 )
 

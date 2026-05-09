@@ -113,14 +113,13 @@ static __always_inline __u32 saturate_u32(__u64 value)
 
 enum {
     RE_MEM_API_MEMCPY = 1,
+    RE_MEM_API_MEMMOVE = 2,
+    RE_MEM_API_MEMSET = 3,
 };
 
-SEC("uprobe/memcpy")
-int BPF_KPROBE(on_memcpy)
+static __always_inline int record_heap_write(struct pt_regs *ctx, void *dst, __u64 len,
+                                             __u16 event_type, __s32 api)
 {
-    void *dst        = (void *)PT_REGS_PARM1(ctx);
-    __u64 len        = (__u64)PT_REGS_PARM3(ctx);
-
     __u32 k = 0;
     __u64 *c = bpf_map_lookup_elem(&hits, &k);
     if (c)
@@ -152,7 +151,7 @@ int BPF_KPROBE(on_memcpy)
 
     int stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
 
-    evt->type = RE_SENTINEL_TYPE_MEMCPY;
+    evt->type = event_type;
     evt->addr = key.addr;
     evt->stack_id = stack_id;
     if (stack_id >= 0)
@@ -160,12 +159,39 @@ int BPF_KPROBE(on_memcpy)
     evt->len = saturate_u32(len);
     evt->alloc_size = saturate_u32(cap);
 
-    evt->errno_code = RE_MEM_API_MEMCPY;
+    evt->errno_code = api;
     if (alloc_sid >= 0)
         evt->site_id = (unsigned)(alloc_sid + 1);
 
     sentinel_event_submit(evt);
     return 0;
+}
+
+SEC("uprobe/memcpy")
+int BPF_KPROBE(on_memcpy)
+{
+    void *dst = (void *)PT_REGS_PARM1(ctx);
+    __u64 len = (__u64)PT_REGS_PARM3(ctx);
+
+    return record_heap_write(ctx, dst, len, RE_SENTINEL_TYPE_MEMCPY, RE_MEM_API_MEMCPY);
+}
+
+SEC("uprobe/memmove")
+int BPF_KPROBE(on_memmove)
+{
+    void *dst = (void *)PT_REGS_PARM1(ctx);
+    __u64 len = (__u64)PT_REGS_PARM3(ctx);
+
+    return record_heap_write(ctx, dst, len, RE_SENTINEL_TYPE_MEMMOVE, RE_MEM_API_MEMMOVE);
+}
+
+SEC("uprobe/memset")
+int BPF_KPROBE(on_memset)
+{
+    void *dst = (void *)PT_REGS_PARM1(ctx);
+    __u64 len = (__u64)PT_REGS_PARM3(ctx);
+
+    return record_heap_write(ctx, dst, len, RE_SENTINEL_TYPE_MEMSET, RE_MEM_API_MEMSET);
 }
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
