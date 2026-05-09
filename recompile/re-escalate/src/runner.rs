@@ -1,8 +1,8 @@
 //! Escalation runner - orchestrates tool execution
 
 use crate::{
-    parse_asan_output, parse_valgrind_output, EscalationConfig, EscalationError, EscalationResult,
-    Finding, Result,
+    parse_asan_output, parse_ubsan_output, parse_valgrind_output, EscalationConfig,
+    EscalationError, EscalationResult, Finding, Result,
 };
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -52,6 +52,7 @@ impl EscalationRunner {
         let duration_start = start_time;
         let result = match escalation_plan.tool.as_str() {
             "asan" => self.run_asan_result(finding, &escalation_id).await,
+            "ubsan" => self.run_ubsan_result(finding, &escalation_id).await,
             "valgrind" => self.run_valgrind_escalation(finding, &escalation_id).await,
             "gdb" => self.run_gdb_result(finding, &escalation_id).await,
             tool => Ok(self.failure_result(
@@ -86,6 +87,7 @@ impl EscalationRunner {
         let result = match tool {
             "valgrind" => self.run_valgrind_clean_check(&escalation_id).await,
             "asan" => self.run_asan_clean_check(&escalation_id).await,
+            "ubsan" => self.run_ubsan_clean_check(&escalation_id).await,
             "gdb" => Ok(self.result_failure(
                 "clean-run",
                 &escalation_id,
@@ -195,6 +197,28 @@ impl EscalationRunner {
                 error.to_string(),
             )),
         }
+    }
+
+    async fn run_ubsan_result(
+        &self,
+        finding: &Finding,
+        escalation_id: &str,
+    ) -> Result<EscalationResult> {
+        let start_time = Instant::now();
+        if !self.config.tools.ubsan.enabled {
+            return Ok(self.failure_result(
+                finding,
+                escalation_id,
+                "ubsan",
+                false,
+                start_time.elapsed().as_millis() as u64,
+                "UBSan escalation is disabled".to_string(),
+            ));
+        }
+
+        let binary_path = self.find_binary(finding)?;
+        self.run_ubsan_binary(&finding.id, &binary_path, escalation_id, start_time)
+            .await
     }
 
     fn failure_result(
@@ -336,6 +360,113 @@ impl EscalationRunner {
             id: escalation_id.to_string(),
             finding_id: finding_id.to_string(),
             tool: "asan".to_string(),
+            success: true,
+            tool_available: true,
+            duration_ms: start_time.elapsed().as_millis() as u64,
+            output_path: Some(report_file.display().to_string()),
+            stdout_path: Some(stdout_file.display().to_string()),
+            stderr_path: Some(stderr_file.display().to_string()),
+            report_path: Some(report_file.display().to_string()),
+            command,
+            exit_code: output.status.code(),
+            confirmed: report.confirmed(),
+            error: None,
+            findings_detected,
+            timestamp: unix_timestamp(),
+        })
+    }
+
+    async fn run_ubsan_clean_check(&self, escalation_id: &str) -> Result<EscalationResult> {
+        let start_time = Instant::now();
+        if !self.config.tools.ubsan.enabled {
+            return Ok(self.result_failure(
+                "clean-run",
+                escalation_id,
+                "ubsan",
+                false,
+                start_time.elapsed().as_millis() as u64,
+                "UBSan escalation is disabled".to_string(),
+            ));
+        }
+
+        let binary_path = self
+            .config
+            .binary_path
+            .as_deref()
+            .map(PathBuf::from)
+            .filter(|path| path.exists())
+            .ok_or_else(|| {
+                EscalationError::Config(
+                    "Clean UBSan check requires an existing binary_path".to_string(),
+                )
+            })?;
+
+        self.run_ubsan_binary("clean-run", &binary_path, escalation_id, start_time)
+            .await
+    }
+
+    async fn run_ubsan_binary(
+        &self,
+        finding_id: &str,
+        binary_path: &Path,
+        escalation_id: &str,
+        start_time: Instant,
+    ) -> Result<EscalationResult> {
+        if !self.binary_looks_ubsan_instrumented(binary_path).await? {
+            return Ok(self.result_failure(
+                finding_id,
+                escalation_id,
+                "ubsan",
+                false,
+                start_time.elapsed().as_millis() as u64,
+                format!(
+                    "UBSan requires a binary built with -fsanitize=undefined: {}",
+                    binary_path.display()
+                ),
+            ));
+        }
+
+        let output_dir = Path::new(&self.config.output_dir).join("ubsan");
+        tokio::fs::create_dir_all(&output_dir).await?;
+
+        let stdout_file = output_dir.join(format!("ubsan_{}.stdout.log", escalation_id));
+        let stderr_file = output_dir.join(format!("ubsan_{}.stderr.log", escalation_id));
+        let report_file = output_dir.join(format!("ubsan_{}.json", escalation_id));
+
+        let executable_path = canonical_binary_path(binary_path);
+        let mut cmd = TokioCommand::new(&executable_path);
+        let mut command = vec![executable_path.display().to_string()];
+        for arg in &self.config.args {
+            cmd.arg(arg);
+            command.push(arg.clone());
+        }
+
+        let runtime_flags = self.config.tools.ubsan.runtime_flags.join(":");
+        cmd.env("UBSAN_OPTIONS", runtime_flags);
+        self.apply_cwd(&mut cmd, &mut command);
+
+        let timeout_duration = TokioDuration::from_millis(self.config.tools.ubsan.timeout_ms);
+        let output = timeout(timeout_duration, cmd.output())
+            .await
+            .map_err(|_| EscalationError::Timeout("UBSan execution timed out".to_string()))?;
+
+        let output = output.map_err(|error| EscalationError::ToolExecution(error.to_string()))?;
+
+        let output_str = String::from_utf8_lossy(&output.stdout);
+        let error_str = String::from_utf8_lossy(&output.stderr);
+        let report = parse_ubsan_output(&output_str, &error_str);
+
+        tokio::fs::write(&stdout_file, output_str.as_bytes()).await?;
+        tokio::fs::write(&stderr_file, error_str.as_bytes()).await?;
+        tokio::fs::write(&report_file, serde_json::to_vec_pretty(&report)?).await?;
+
+        let findings_detected = report.detected_classes();
+
+        log::info!("UBSan escalation completed: {}", report_file.display());
+        Ok(EscalationResult {
+            id: escalation_id.to_string(),
+            finding_id: finding_id.to_string(),
+            tool: "ubsan".to_string(),
             success: true,
             tool_available: true,
             duration_ms: start_time.elapsed().as_millis() as u64,
@@ -581,6 +712,14 @@ impl EscalationRunner {
             || haystack.contains("libasan")
             || haystack.contains("AddressSanitizer"))
     }
+
+    async fn binary_looks_ubsan_instrumented(&self, binary_path: &Path) -> Result<bool> {
+        let bytes = tokio::fs::read(binary_path).await?;
+        let haystack = String::from_utf8_lossy(&bytes);
+        Ok(haystack.contains("__ubsan_")
+            || haystack.contains("libubsan")
+            || haystack.contains("UndefinedBehaviorSanitizer"))
+    }
 }
 
 fn unix_timestamp() -> u64 {
@@ -686,6 +825,32 @@ mod tests {
         let runner = EscalationRunner::new(EscalationConfig::default());
         assert!(!runner
             .binary_looks_asan_instrumented(&binary)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn detects_ubsan_instrumentation_markers() {
+        let dir = unique_test_dir("ubsan-marker");
+        let binary = dir.join("target-bin");
+        fs::write(&binary, b"\0__ubsan_handle_add_overflow\0").unwrap();
+
+        let runner = EscalationRunner::new(EscalationConfig::default());
+        assert!(runner
+            .binary_looks_ubsan_instrumented(&binary)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn rejects_non_ubsan_binaries() {
+        let dir = unique_test_dir("non-ubsan-marker");
+        let binary = dir.join("target-bin");
+        fs::write(&binary, b"plain elf-ish bytes").unwrap();
+
+        let runner = EscalationRunner::new(EscalationConfig::default());
+        assert!(!runner
+            .binary_looks_ubsan_instrumented(&binary)
             .await
             .unwrap());
     }

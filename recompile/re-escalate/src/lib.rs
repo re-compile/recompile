@@ -9,10 +9,12 @@ use thiserror::Error;
 pub mod asan;
 pub mod config;
 pub mod runner;
+pub mod ubsan;
 pub mod valgrind;
 
 pub use asan::*;
 pub use runner::*;
+pub use ubsan::*;
 pub use valgrind::*;
 
 /// Escalation result
@@ -73,6 +75,8 @@ pub struct EscalationConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolConfig {
     pub asan: AsanConfig,
+    #[serde(default)]
+    pub ubsan: UbsanConfig,
     pub valgrind: ValgrindConfig,
     pub gdb: GdbConfig,
 }
@@ -83,6 +87,26 @@ pub struct AsanConfig {
     pub timeout_ms: u64,
     pub compile_flags: Vec<String>,
     pub runtime_flags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UbsanConfig {
+    pub enabled: bool,
+    pub timeout_ms: u64,
+    pub runtime_flags: Vec<String>,
+}
+
+impl Default for UbsanConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            timeout_ms: 30000,
+            runtime_flags: vec![
+                "print_stacktrace=1".to_string(),
+                "halt_on_error=1".to_string(),
+            ],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +161,7 @@ impl Default for EscalationConfig {
     fn default() -> Self {
         let mut cooldown_per_tool = HashMap::new();
         cooldown_per_tool.insert("asan".to_string(), 5000);
+        cooldown_per_tool.insert("ubsan".to_string(), 5000);
         cooldown_per_tool.insert("valgrind".to_string(), 10000);
         cooldown_per_tool.insert("gdb".to_string(), 3000);
 
@@ -158,6 +183,7 @@ impl Default for EscalationConfig {
                         "check_initialization_order=1".to_string(),
                     ],
                 },
+                ubsan: UbsanConfig::default(),
                 valgrind: ValgrindConfig {
                     enabled: true,
                     timeout_ms: 60000,
