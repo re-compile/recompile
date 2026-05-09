@@ -146,6 +146,12 @@ Run the checked ASan escalation smoke:
 make asan-smoke
 ```
 
+Run the checked LSan escalation smoke:
+
+```bash
+make lsan-smoke
+```
+
 Run the checked UBSan escalation smoke:
 
 ```bash
