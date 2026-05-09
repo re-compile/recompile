@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IssueGroupReport {
@@ -53,6 +54,9 @@ pub struct IssueFingerprintInputs {
     pub free_site: Option<String>,
     pub access_size: Option<u64>,
     pub alloc_size: Option<u64>,
+    pub tool: Option<String>,
+    pub tool_summary: Option<String>,
+    pub binary_identity: Option<String>,
 }
 
 impl IssueGroupReport {
@@ -128,6 +132,29 @@ pub fn annotate_findings_with_issue_groups(findings: &mut [Value]) -> IssueGroup
 }
 
 fn fingerprint_inputs(finding: &Value) -> IssueFingerprintInputs {
+    let tool = tool_name(finding);
+    let source_path = finding_string(finding, &["provenance", "source_path"])
+        .or_else(|| finding_file_uri(finding, &["primaryLocation", "uri"]));
+    let call_site = tool_frame(finding, "call_frame").or_else(|| first_stack_site(finding, "call"));
+    let alloc_site = finding_string(finding, &["evidence", "alloc_site"])
+        .filter(|value| stable_non_unknown(value))
+        .or_else(|| tool_frame(finding, "alloc_frame"))
+        .or_else(|| first_stack_site(finding, "alloc"));
+    let free_site = finding_string(finding, &["evidence", "free_site"])
+        .filter(|value| stable_non_unknown(value))
+        .or_else(|| tool_frame(finding, "free_frame"))
+        .or_else(|| first_stack_site(finding, "free"));
+    let binary_identity = if tool.is_some()
+        && source_path.is_none()
+        && call_site.is_none()
+        && alloc_site.is_none()
+        && free_site.is_none()
+    {
+        binary_identity(finding)
+    } else {
+        None
+    };
+
     IssueFingerprintInputs {
         class: finding_string(finding, &["class"])
             .or_else(|| finding_string(finding, &["kind"]))
@@ -135,17 +162,15 @@ fn fingerprint_inputs(finding: &Value) -> IssueFingerprintInputs {
         operation: finding_string(finding, &["evidence", "memory", "operation"])
             .or_else(|| finding_string(finding, &["evidence", "api"]))
             .unwrap_or_else(|| "unknown".to_string()),
-        source_path: finding_string(finding, &["provenance", "source_path"])
-            .or_else(|| finding_file_uri(finding, &["primaryLocation", "uri"])),
-        call_site: first_stack_site(finding, "call"),
-        alloc_site: finding_string(finding, &["evidence", "alloc_site"])
-            .filter(|value| stable_non_unknown(value))
-            .or_else(|| first_stack_site(finding, "alloc")),
-        free_site: finding_string(finding, &["evidence", "free_site"])
-            .filter(|value| stable_non_unknown(value))
-            .or_else(|| first_stack_site(finding, "free")),
+        source_path,
+        call_site,
+        alloc_site,
+        free_site,
         access_size: finding_u64(finding, &["evidence", "memory", "size"]),
         alloc_size: finding_u64(finding, &["evidence", "memory", "alloc_size"]),
+        tool,
+        tool_summary: normalized_tool_summary(finding),
+        binary_identity,
     }
 }
 
@@ -158,7 +183,7 @@ fn issue_fingerprint(inputs: &IssueFingerprintInputs) -> String {
         .alloc_size
         .map(|value| value.to_string())
         .unwrap_or_default();
-    let fields = [
+    let mut fields = vec![
         inputs.class.as_str(),
         inputs.operation.as_str(),
         inputs.source_path.as_deref().unwrap_or(""),
@@ -168,6 +193,11 @@ fn issue_fingerprint(inputs: &IssueFingerprintInputs) -> String {
         access_size.as_str(),
         alloc_size.as_str(),
     ];
+    if inputs.tool.is_some() {
+        fields.push(inputs.tool.as_deref().unwrap_or(""));
+        fields.push(inputs.tool_summary.as_deref().unwrap_or(""));
+        fields.push(inputs.binary_identity.as_deref().unwrap_or(""));
+    }
     format!("re-issue-v1-{:016x}", fnv1a64(&fields.join("\x1f")))
 }
 
@@ -220,7 +250,73 @@ fn normalize_stack_site(frame: &str) -> Option<String> {
         return None;
     }
 
-    normalize_source_location(frame).or_else(|| Some(frame.to_string()))
+    normalize_source_location(frame).or_else(|| Some(normalize_volatile_tokens(frame)))
+}
+
+fn tool_frame(finding: &Value, field: &str) -> Option<String> {
+    finding_string(finding, &["evidence", "tool", field])
+        .and_then(|frame| normalize_stack_site(&frame))
+}
+
+fn tool_name(finding: &Value) -> Option<String> {
+    finding_string(finding, &["evidence", "tool", "name"])
+        .or_else(|| finding_string(finding, &["origin"]))
+        .filter(|value| value != "ebpf" && stable_non_unknown(value))
+}
+
+fn normalized_tool_summary(finding: &Value) -> Option<String> {
+    finding_string(finding, &["evidence", "tool", "summary"])
+        .or_else(|| finding_string(finding, &["message"]))
+        .map(|summary| normalize_volatile_tokens(&summary))
+        .filter(|summary| stable_non_unknown(summary))
+}
+
+fn binary_identity(finding: &Value) -> Option<String> {
+    finding_string(finding, &["provenance", "original_binary_path"])
+        .or_else(|| finding_string(finding, &["provenance", "binary_path"]))
+        .and_then(|path| {
+            Path::new(&path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string)
+        })
+        .filter(|value| stable_non_unknown(value))
+}
+
+fn normalize_volatile_tokens(value: &str) -> String {
+    value
+        .split_whitespace()
+        .map(normalize_volatile_token)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn normalize_volatile_token(token: &str) -> String {
+    let trimmed = token.trim_matches(|ch: char| ch == ',' || ch == ';' || ch == ':');
+    if trimmed.starts_with("0x") && trimmed[2..].chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return token.replace(trimmed, "0xADDR");
+    }
+    if let Some(normalized_pid) = normalize_pid_prefix(trimmed) {
+        return token.replace(trimmed, &normalized_pid);
+    }
+    if trimmed.starts_with("==")
+        && trimmed.ends_with("==")
+        && trimmed[2..trimmed.len().saturating_sub(2)]
+            .chars()
+            .all(|ch| ch.is_ascii_digit())
+    {
+        return token.replace(trimmed, "==PID==");
+    }
+    token.to_string()
+}
+
+fn normalize_pid_prefix(token: &str) -> Option<String> {
+    let rest = token.strip_prefix("==")?;
+    let end = rest.find("==")?;
+    if end == 0 || !rest[..end].chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!("==PID=={}", &rest[end + 2..]))
 }
 
 fn normalize_source_location(location: &str) -> Option<String> {
@@ -378,5 +474,152 @@ mod tests {
             Some("/tmp/project/src/app.c:12")
         );
         assert_eq!(normalize_source_location("/tmp/project/src/app.c"), None);
+    }
+
+    #[test]
+    fn normalizes_asan_pid_and_address_tokens() {
+        assert_eq!(
+            normalize_volatile_tokens(
+                "==12345==ERROR: AddressSanitizer: heap-use-after-free on address 0x503000000040"
+            ),
+            "==PID==ERROR: AddressSanitizer: heap-use-after-free on address 0xADDR"
+        );
+    }
+
+    #[test]
+    fn tool_fingerprints_ignore_volatile_tool_fields() {
+        let first = json!({
+            "id": "F-valgrind-use_after_free-run-one",
+            "origin": "valgrind",
+            "class": "use_after_free",
+            "severity": "critical",
+            "confidence": "tool_confirmed",
+            "timestamp": 1,
+            "evidence": {
+                "api": "valgrind",
+                "tool": {
+                    "name": "valgrind",
+                    "result_id": "uuid-one",
+                    "summary": "Invalid read of size 1 at 0x4a45040",
+                    "line": 6,
+                    "call_frame": "cache_line_score (/tmp/run-one/use_after_free_case.c:17)",
+                    "report_path": "/tmp/run-one/valgrind_uuid-one.json",
+                    "stderr_path": "/tmp/run-one/valgrind_uuid-one.stderr.log"
+                },
+                "stacks": {
+                    "call": ["cache_line_score (/tmp/run-one/use_after_free_case.c:17)", "Invalid read of size 1 at 0x4a45040"]
+                }
+            },
+            "provenance": {
+                "source_status": "resolved",
+                "source_path": "/tmp/run-one/use_after_free_case.c",
+                "original_binary_path": "/tmp/run-one/use_after_free_case"
+            }
+        });
+
+        let second = json!({
+            "id": "F-valgrind-use_after_free-run-two",
+            "origin": "valgrind",
+            "class": "use_after_free",
+            "severity": "critical",
+            "confidence": "tool_confirmed",
+            "timestamp": 999,
+            "evidence": {
+                "api": "valgrind",
+                "tool": {
+                    "name": "valgrind",
+                    "result_id": "uuid-two",
+                    "summary": "Invalid read of size 1 at 0x7fff1234",
+                    "line": 18,
+                    "call_frame": "cache_line_score (/tmp/run-one/use_after_free_case.c:17)",
+                    "report_path": "/tmp/run-two/valgrind_uuid-two.json",
+                    "stderr_path": "/tmp/run-two/valgrind_uuid-two.stderr.log"
+                },
+                "stacks": {
+                    "call": ["cache_line_score (/tmp/run-one/use_after_free_case.c:17)", "Invalid read of size 1 at 0x7fff1234"]
+                }
+            },
+            "provenance": {
+                "source_status": "resolved",
+                "source_path": "/tmp/run-one/use_after_free_case.c",
+                "original_binary_path": "/tmp/run-two/use_after_free_case"
+            }
+        });
+
+        assert_eq!(
+            issue_fingerprint(&fingerprint_inputs(&first)),
+            issue_fingerprint(&fingerprint_inputs(&second))
+        );
+    }
+
+    #[test]
+    fn tool_fingerprints_split_independent_source_frames() {
+        let mut first = json!({
+            "origin": "asan",
+            "class": "use_after_free",
+            "evidence": {
+                "api": "asan",
+                "tool": {
+                    "name": "asan",
+                    "summary": "ERROR: AddressSanitizer: heap-use-after-free on address 0x603000000040",
+                    "call_frame": "/tmp/project/cache.c:17"
+                }
+            },
+            "provenance": {"source_status": "resolved", "source_path": "/tmp/project/cache.c"}
+        });
+        let mut second = first.clone();
+        second["evidence"]["tool"]["call_frame"] = Value::String("/tmp/project/cache.c:44".into());
+
+        let first_fingerprint = issue_fingerprint(&fingerprint_inputs(&first));
+        let second_fingerprint = issue_fingerprint(&fingerprint_inputs(&second));
+        assert_ne!(first_fingerprint, second_fingerprint);
+
+        first["evidence"]["tool"]["result_id"] = Value::String("run-one".into());
+        second["evidence"]["tool"]["result_id"] = Value::String("run-two".into());
+        assert_ne!(
+            issue_fingerprint(&fingerprint_inputs(&first)),
+            issue_fingerprint(&fingerprint_inputs(&second))
+        );
+    }
+
+    #[test]
+    fn tool_fingerprints_use_binary_fallback_when_sources_are_missing() {
+        let first = json!({
+            "origin": "valgrind",
+            "class": "fd_leak",
+            "evidence": {
+                "api": "valgrind",
+                "tool": {
+                    "name": "valgrind",
+                    "summary": "Open file descriptor 3: /tmp/data"
+                }
+            },
+            "provenance": {
+                "source_status": "unresolved",
+                "original_binary_path": "/tmp/run-one/server"
+            }
+        });
+        let second = json!({
+            "origin": "valgrind",
+            "class": "fd_leak",
+            "evidence": {
+                "api": "valgrind",
+                "tool": {
+                    "name": "valgrind",
+                    "summary": "Open file descriptor 3: /tmp/data"
+                }
+            },
+            "provenance": {
+                "source_status": "unresolved",
+                "original_binary_path": "/tmp/run-two/server"
+            }
+        });
+
+        let inputs = fingerprint_inputs(&first);
+        assert_eq!(inputs.binary_identity.as_deref(), Some("server"));
+        assert_eq!(
+            issue_fingerprint(&inputs),
+            issue_fingerprint(&fingerprint_inputs(&second))
+        );
     }
 }

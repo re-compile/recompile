@@ -180,6 +180,24 @@ printf '[observe] deep Valgrind-first binary\n'
 "$runner_path" observe --deep build/user-samples/use_after_free_case --output "$output_root/use_after_free_case"
 assert_observation "$output_root/use_after_free_case/run-summary.json" findings use_after_free 1 valgrind findings use_after_free
 
+printf '[observe] repeated deep Valgrind-first binary keeps stable tool fingerprint\n'
+"$runner_path" observe --deep build/user-samples/use_after_free_case --output "$output_root/use_after_free_case_repeat"
+assert_observation "$output_root/use_after_free_case_repeat/run-summary.json" findings use_after_free 1 valgrind findings use_after_free
+python3 - "$output_root/use_after_free_case/targets/use_after_free_case/issue-groups.json" \
+    "$output_root/use_after_free_case_repeat/targets/use_after_free_case/issue-groups.json" <<'PY'
+import json
+import pathlib
+import sys
+
+left = json.loads(pathlib.Path(sys.argv[1]).read_text())
+right = json.loads(pathlib.Path(sys.argv[2]).read_text())
+left_fingerprints = [group.get("fingerprint") for group in left.get("groups") or []]
+right_fingerprints = [group.get("fingerprint") for group in right.get("groups") or []]
+if left_fingerprints != right_fingerprints:
+    raise SystemExit(f"tool fingerprints are not stable: {left_fingerprints} != {right_fingerprints}")
+print(json.dumps({"stable_tool_fingerprints": left_fingerprints}, sort_keys=True))
+PY
+
 printf '[observe] deep non-ASan binary records ASan not-applicable\n'
 python3 - "$output_root/use_after_free_case/run-summary.json" <<'PY'
 import json

@@ -169,6 +169,33 @@ assert_asan_confirmed \
     "use_after_free_case" \
     "use_after_free"
 
+positive_repeat_output="build/asan-smoke/use_after_free_case_repeat"
+./scripts/validate-binary.sh \
+    --binary build/user-samples-asan/use_after_free_case \
+    --expect-none \
+    --runner "$runner_path" \
+    --output "$positive_repeat_output"
+
+printf '[asan] repeated ASan binary scan keeps stable tool fingerprint\n'
+"$runner_path" escalate "$positive_repeat_output" --tool asan --scan-binary
+assert_asan_confirmed \
+    "$positive_repeat_output/escalations/results.json" \
+    "use_after_free_case_repeat" \
+    "use_after_free"
+python3 - "$positive_output/findings.json" "$positive_repeat_output/findings.json" <<'PY'
+import json
+import pathlib
+import sys
+
+left = json.loads(pathlib.Path(sys.argv[1]).read_text())
+right = json.loads(pathlib.Path(sys.argv[2]).read_text())
+left_fingerprints = [finding.get("fingerprint") for finding in left]
+right_fingerprints = [finding.get("fingerprint") for finding in right]
+if left_fingerprints != right_fingerprints:
+    raise SystemExit(f"ASan tool fingerprints are not stable: {left_fingerprints} != {right_fingerprints}")
+print(json.dumps({"stable_asan_fingerprints": left_fingerprints}, sort_keys=True))
+PY
+
 clean_output="build/asan-smoke/clean_malloc_free"
 ./scripts/validate-binary.sh \
     --binary build/user-samples-asan/clean_malloc_free \
