@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::native::{
     finalize_findings, run_native, run_native_with_options, NativeRunOptions, NativeRunResult,
@@ -266,7 +266,7 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
     if scan_binary {
         if tool == "all" {
             return Err(anyhow::anyhow!(
-                "--scan-binary requires an explicit tool, such as --tool valgrind, --tool asan, or --tool ubsan"
+                "--scan-binary requires an explicit tool, such as --tool valgrind, --tool asan, --tool lsan, or --tool ubsan"
             ));
         }
         return run_binary_escalation_scan(&crashpack_dir, tool, config);
@@ -280,7 +280,7 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
         }
         if tool == "all" {
             return Err(anyhow::anyhow!(
-                "--check-clean requires an explicit tool, such as --tool valgrind, --tool asan, or --tool ubsan"
+                "--check-clean requires an explicit tool, such as --tool valgrind, --tool asan, --tool lsan, or --tool ubsan"
             ));
         }
 
@@ -509,6 +509,7 @@ fn attach_tool_frames(result: &EscalationResult, detection: &mut ToolDetection) 
     match result.tool.as_str() {
         "valgrind" => attach_valgrind_frames(window, detection),
         "asan" => attach_asan_frames(window, detection),
+        "lsan" => attach_lsan_frames(window, detection),
         "ubsan" => attach_ubsan_frames(window, detection),
         _ => {}
     }
@@ -576,6 +577,24 @@ fn attach_asan_frames(lines: &[&str], detection: &mut ToolDetection) {
     });
     if let Some(marker) = free_marker {
         detection.free_frame = lines
+            .iter()
+            .skip(marker)
+            .find_map(|line| stable_asan_stack_frame(line));
+    }
+}
+
+fn attach_lsan_frames(lines: &[&str], detection: &mut ToolDetection) {
+    if detection.call_frame.is_none() {
+        detection.call_frame = lines.iter().find_map(|line| {
+            stable_asan_summary_frame(line).or_else(|| stable_asan_stack_frame(line))
+        });
+    }
+
+    let alloc_marker = lines
+        .iter()
+        .position(|line| line.contains("allocated from:"));
+    if let Some(marker) = alloc_marker {
+        detection.alloc_frame = lines
             .iter()
             .skip(marker)
             .find_map(|line| stable_asan_stack_frame(line));
@@ -800,34 +819,107 @@ fn run_observe_escalation(
                 plan.tool = "valgrind".to_string();
                 finding.escalation = Some(plan);
                 let mut runner = EscalationRunner::new(config.clone());
-                results.push(runner.escalate(&finding).await?);
+                let result = runner.escalate(&finding).await.unwrap_or_else(|error| {
+                    observe_escalation_failure(&finding.id, "valgrind", error.to_string())
+                });
+                results.push(result);
             }
             Ok::<Vec<EscalationResult>, anyhow::Error>(results)
         })?;
         results.append(&mut valgrind_results);
-    } else if deep {
+    } else if deep && !binary_has_sanitizer_runtime(&analysis.binary_path) {
         let valgrind_result = runtime.block_on(async {
             let mut runner = EscalationRunner::new(config.clone());
-            runner.check_clean_binary("valgrind").await
-        })?;
+            runner
+                .check_clean_binary("valgrind")
+                .await
+                .unwrap_or_else(|error| {
+                    observe_escalation_failure("clean-run", "valgrind", error.to_string())
+                })
+        });
         results.push(valgrind_result);
     }
 
     if deep {
         let asan_result = runtime.block_on(async {
             let mut runner = EscalationRunner::new(config.clone());
-            runner.check_clean_binary("asan").await
-        })?;
+            runner
+                .check_clean_binary("asan")
+                .await
+                .unwrap_or_else(|error| {
+                    observe_escalation_failure("clean-run", "asan", error.to_string())
+                })
+        });
         results.push(asan_result);
+
+        let lsan_result = runtime.block_on(async {
+            let mut runner = EscalationRunner::new(config.clone());
+            runner
+                .check_clean_binary("lsan")
+                .await
+                .unwrap_or_else(|error| {
+                    observe_escalation_failure("clean-run", "lsan", error.to_string())
+                })
+        });
+        results.push(lsan_result);
 
         let ubsan_result = runtime.block_on(async {
             let mut runner = EscalationRunner::new(config);
-            runner.check_clean_binary("ubsan").await
-        })?;
+            runner
+                .check_clean_binary("ubsan")
+                .await
+                .unwrap_or_else(|error| {
+                    observe_escalation_failure("clean-run", "ubsan", error.to_string())
+                })
+        });
         results.push(ubsan_result);
     }
 
     Ok(results)
+}
+
+fn binary_has_sanitizer_runtime(binary_path: &str) -> bool {
+    let Ok(bytes) = fs::read(binary_path) else {
+        return false;
+    };
+    let haystack = String::from_utf8_lossy(&bytes);
+    haystack.contains("__asan_")
+        || haystack.contains("libasan")
+        || haystack.contains("AddressSanitizer")
+        || haystack.contains("__lsan_")
+        || haystack.contains("liblsan")
+        || haystack.contains("LeakSanitizer")
+        || haystack.contains("__ubsan_")
+        || haystack.contains("libubsan")
+        || haystack.contains("UndefinedBehaviorSanitizer")
+}
+
+fn observe_escalation_failure(finding_id: &str, tool: &str, error: String) -> EscalationResult {
+    EscalationResult {
+        id: format!("observe-{}-failed", tool),
+        finding_id: finding_id.to_string(),
+        tool: tool.to_string(),
+        success: false,
+        tool_available: true,
+        duration_ms: 0,
+        output_path: None,
+        stdout_path: None,
+        stderr_path: None,
+        report_path: None,
+        command: Vec::new(),
+        exit_code: None,
+        confirmed: false,
+        error: Some(error),
+        findings_detected: Vec::new(),
+        timestamp: current_unix_timestamp(),
+    }
+}
+
+fn current_unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 fn observation_escalation_summary(
@@ -847,7 +939,7 @@ fn observation_escalation_summary(
 }
 
 fn escalation_status(result: &EscalationResult) -> TargetStatus {
-    if (result.tool == "asan" || result.tool == "ubsan")
+    if (result.tool == "asan" || result.tool == "lsan" || result.tool == "ubsan")
         && !result.success
         && result
             .error

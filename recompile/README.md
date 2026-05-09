@@ -230,6 +230,16 @@ ASan validation uses binaries built under `build/user-samples-asan/`. This is
 deliberate: ASan only applies when the target was compiled with
 `-fsanitize=address`.
 
+### Validate LSan escalation
+
+```bash
+make lsan-smoke
+```
+
+LSan validation uses binaries built under `build/user-samples-lsan/`. This is
+deliberate: standalone LSan only applies when the target was compiled with
+`-fsanitize=leak`. Leak support for normal binaries remains Valgrind-backed.
+
 ### Validate UBSan escalation
 
 ```bash
@@ -290,6 +300,18 @@ jq . build/asan-demo/escalations/results.json
 
 Running `--tool asan` on a normal binary is rejected with an explicit
 `-fsanitize=address` build requirement.
+
+To run LSan on a no-finding crashpack, use an LSan-instrumented target:
+
+```bash
+./scripts/build-user-samples.sh
+./target/release/rerun run --native build/user-samples-lsan/direct_leak --output build/lsan-demo
+./target/release/rerun escalate build/lsan-demo --tool lsan --scan-binary
+jq . build/lsan-demo/escalations/results.json
+```
+
+Running `--tool lsan` on a normal binary is rejected with an explicit
+`-fsanitize=leak` build requirement.
 
 To run UBSan on a no-finding crashpack, use a UBSan-instrumented target:
 
