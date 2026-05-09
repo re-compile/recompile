@@ -59,6 +59,9 @@ struct ToolDetection {
     class: String,
     summary: String,
     line: Option<u64>,
+    call_frame: Option<String>,
+    alloc_frame: Option<String>,
+    free_frame: Option<String>,
 }
 
 /// Handle the 'run' command
@@ -452,7 +455,7 @@ fn tool_detections(result: &EscalationResult) -> Vec<ToolDetection> {
                     let detections = detected
                         .iter()
                         .filter_map(|value| {
-                            Some(ToolDetection {
+                            let mut detection = ToolDetection {
                                 class: value.get("class")?.as_str()?.to_string(),
                                 summary: value
                                     .get("summary")
@@ -460,7 +463,12 @@ fn tool_detections(result: &EscalationResult) -> Vec<ToolDetection> {
                                     .unwrap_or("tool-backed finding")
                                     .to_string(),
                                 line: value.get("line").and_then(Value::as_u64),
-                            })
+                                call_frame: None,
+                                alloc_frame: None,
+                                free_frame: None,
+                            };
+                            attach_tool_frames(result, &mut detection);
+                            Some(detection)
                         })
                         .collect::<Vec<_>>();
                     if !detections.is_empty() {
@@ -478,8 +486,160 @@ fn tool_detections(result: &EscalationResult) -> Vec<ToolDetection> {
             class: class.clone(),
             summary: format!("{} detected {}", result.tool, class),
             line: None,
+            call_frame: None,
+            alloc_frame: None,
+            free_frame: None,
         })
         .collect()
+}
+
+fn attach_tool_frames(result: &EscalationResult, detection: &mut ToolDetection) {
+    let Some(output) = read_tool_output(result) else {
+        return;
+    };
+    let lines = output.lines().collect::<Vec<_>>();
+    let start = detection
+        .line
+        .and_then(|line| usize::try_from(line.saturating_sub(1)).ok())
+        .unwrap_or(0)
+        .min(lines.len().saturating_sub(1));
+    let window_end = (start + 24).min(lines.len());
+    let window = &lines[start..window_end];
+
+    match result.tool.as_str() {
+        "valgrind" => attach_valgrind_frames(window, detection),
+        "asan" => attach_asan_frames(window, detection),
+        _ => {}
+    }
+}
+
+fn read_tool_output(result: &EscalationResult) -> Option<String> {
+    let mut parts = Vec::new();
+    for path in [result.stdout_path.as_deref(), result.stderr_path.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        if let Ok(content) = fs::read_to_string(path) {
+            if !content.trim().is_empty() {
+                parts.push(content);
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
+}
+
+fn attach_valgrind_frames(lines: &[&str], detection: &mut ToolDetection) {
+    let source_frames = lines
+        .iter()
+        .filter_map(|line| stable_valgrind_frame(line))
+        .collect::<Vec<_>>();
+    if detection.call_frame.is_none() {
+        detection.call_frame = source_frames.first().cloned();
+    }
+
+    let free_marker = lines
+        .iter()
+        .position(|line| line.contains("free'd") || line.contains("freed"));
+    if let Some(marker) = free_marker {
+        detection.free_frame = lines
+            .iter()
+            .skip(marker)
+            .filter_map(|line| stable_valgrind_frame(line))
+            .next();
+    }
+
+    let alloc_marker = lines
+        .iter()
+        .position(|line| line.contains("alloc'd") || line.contains("allocated"));
+    if let Some(marker) = alloc_marker {
+        detection.alloc_frame = lines
+            .iter()
+            .skip(marker)
+            .filter_map(|line| stable_valgrind_frame(line))
+            .next();
+    }
+}
+
+fn attach_asan_frames(lines: &[&str], detection: &mut ToolDetection) {
+    if detection.call_frame.is_none() {
+        detection.call_frame = lines.iter().find_map(|line| {
+            stable_asan_summary_frame(line).or_else(|| stable_asan_stack_frame(line))
+        });
+    }
+    let free_marker = lines.iter().position(|line| {
+        line.contains("freed by thread") || line.contains("previously allocated by thread")
+    });
+    if let Some(marker) = free_marker {
+        detection.free_frame = lines
+            .iter()
+            .skip(marker)
+            .find_map(|line| stable_asan_stack_frame(line));
+    }
+}
+
+fn stable_valgrind_frame(line: &str) -> Option<String> {
+    let normalized = strip_valgrind_prefix(line).trim();
+    let frame = normalized
+        .strip_prefix("at ")
+        .or_else(|| normalized.strip_prefix("by "))?
+        .trim();
+    if frame.contains("vg_replace_") || !frame.contains('(') || !frame.contains(')') {
+        return None;
+    }
+    Some(frame.to_string())
+}
+
+fn strip_valgrind_prefix(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with("==") {
+        return trimmed;
+    }
+    let Some(rest) = trimmed.get(2..) else {
+        return trimmed;
+    };
+    let Some(end) = rest.find("==") else {
+        return trimmed;
+    };
+    &rest[end + 2..]
+}
+
+fn stable_asan_stack_frame(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('#') {
+        return None;
+    }
+    let in_split = trimmed.split_once(" in ").map(|(_, tail)| tail)?;
+    let location = in_split
+        .rsplit_once(' ')
+        .map(|(_, tail)| tail)
+        .unwrap_or(in_split)
+        .trim();
+    if location.contains(':') {
+        Some(location.to_string())
+    } else {
+        None
+    }
+}
+
+fn stable_asan_summary_frame(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if !trimmed.contains("SUMMARY: AddressSanitizer:")
+        && !trimmed.contains("SUMMARY: LeakSanitizer:")
+    {
+        return None;
+    }
+    trimmed
+        .split_whitespace()
+        .find(|token| token.matches(':').count() >= 1 && token.chars().any(|ch| ch == '.'))
+        .map(|token| {
+            token
+                .trim_matches(|ch: char| ch == ',' || ch == ';')
+                .to_string()
+        })
 }
 
 fn tool_backed_finding(
@@ -507,6 +667,9 @@ fn tool_backed_finding(
                 "finding_id": result.finding_id,
                 "summary": summary,
                 "line": detection.line,
+                "call_frame": detection.call_frame,
+                "alloc_frame": detection.alloc_frame,
+                "free_frame": detection.free_frame,
                 "report_path": result.report_path,
                 "stdout_path": result.stdout_path,
                 "stderr_path": result.stderr_path,
@@ -514,8 +677,9 @@ fn tool_backed_finding(
                 "exit_code": result.exit_code
             },
             "stacks": {
-                "alloc": [],
-                "call": [summary]
+                "alloc": detection.alloc_frame.iter().cloned().collect::<Vec<_>>(),
+                "free": detection.free_frame.iter().cloned().collect::<Vec<_>>(),
+                "call": detection.call_frame.iter().cloned().chain(std::iter::once(summary.to_string())).collect::<Vec<_>>()
             },
             "event_sequence": [{
                 "source": "escalation",
