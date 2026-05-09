@@ -230,6 +230,16 @@ ASan validation uses binaries built under `build/user-samples-asan/`. This is
 deliberate: ASan only applies when the target was compiled with
 `-fsanitize=address`.
 
+### Validate UBSan escalation
+
+```bash
+make ubsan-smoke
+```
+
+UBSan validation uses binaries built under `build/user-samples-ubsan/`. This is
+deliberate: UBSan only applies when the target was compiled with
+`-fsanitize=undefined`.
+
 ### Validate optional recc wiring
 
 ```bash
@@ -280,6 +290,18 @@ jq . build/asan-demo/escalations/results.json
 
 Running `--tool asan` on a normal binary is rejected with an explicit
 `-fsanitize=address` build requirement.
+
+To run UBSan on a no-finding crashpack, use a UBSan-instrumented target:
+
+```bash
+./scripts/build-user-samples.sh
+./target/release/rerun run --native build/user-samples-ubsan/signed_overflow --output build/ubsan-demo
+./target/release/rerun escalate build/ubsan-demo --tool ubsan --scan-binary
+jq . build/ubsan-demo/escalations/results.json
+```
+
+Running `--tool ubsan` on a normal binary is rejected with an explicit
+`-fsanitize=undefined` build requirement.
 
 ## Active Components
 

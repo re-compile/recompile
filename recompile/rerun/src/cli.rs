@@ -266,7 +266,7 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
     if scan_binary {
         if tool == "all" {
             return Err(anyhow::anyhow!(
-                "--scan-binary requires an explicit tool, such as --tool valgrind or --tool asan"
+                "--scan-binary requires an explicit tool, such as --tool valgrind, --tool asan, or --tool ubsan"
             ));
         }
         return run_binary_escalation_scan(&crashpack_dir, tool, config);
@@ -280,7 +280,7 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
         }
         if tool == "all" {
             return Err(anyhow::anyhow!(
-                "--scan-binary requires an explicit tool, such as --tool valgrind or --tool asan"
+                "--check-clean requires an explicit tool, such as --tool valgrind, --tool asan, or --tool ubsan"
             ));
         }
 
@@ -509,6 +509,7 @@ fn attach_tool_frames(result: &EscalationResult, detection: &mut ToolDetection) 
     match result.tool.as_str() {
         "valgrind" => attach_valgrind_frames(window, detection),
         "asan" => attach_asan_frames(window, detection),
+        "ubsan" => attach_ubsan_frames(window, detection),
         _ => {}
     }
 }
@@ -581,6 +582,14 @@ fn attach_asan_frames(lines: &[&str], detection: &mut ToolDetection) {
     }
 }
 
+fn attach_ubsan_frames(lines: &[&str], detection: &mut ToolDetection) {
+    if detection.call_frame.is_none() {
+        detection.call_frame = lines
+            .iter()
+            .find_map(|line| stable_ubsan_location(line).or_else(|| stable_asan_stack_frame(line)));
+    }
+}
+
 fn stable_valgrind_frame(line: &str) -> Option<String> {
     let normalized = strip_valgrind_prefix(line).trim();
     let frame = normalized
@@ -642,6 +651,19 @@ fn stable_asan_summary_frame(line: &str) -> Option<String> {
         })
 }
 
+fn stable_ubsan_location(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if !trimmed.contains("runtime error:") {
+        return None;
+    }
+    let location = trimmed.split_once(": runtime error:")?.0;
+    if location.contains(':') {
+        Some(location.to_string())
+    } else {
+        None
+    }
+}
+
 fn tool_backed_finding(
     result: &EscalationResult,
     detection: &ToolDetection,
@@ -700,6 +722,12 @@ fn severity_for_tool_class(class: &str) -> &'static str {
     match class {
         "use_after_free" | "double_free" => "critical",
         "heap_overflow" | "stack_overflow" | "global_overflow" | "invalid_free" => "error",
+        "signed_integer_overflow"
+        | "shift_out_of_bounds"
+        | "null_pointer_use"
+        | "misaligned_pointer"
+        | "bounds"
+        | "undefined_behavior" => "error",
         "memory_leak" | "fd_leak" => "warning",
         _ => "warning",
     }
@@ -787,10 +815,16 @@ fn run_observe_escalation(
 
     if deep {
         let asan_result = runtime.block_on(async {
-            let mut runner = EscalationRunner::new(config);
+            let mut runner = EscalationRunner::new(config.clone());
             runner.check_clean_binary("asan").await
         })?;
         results.push(asan_result);
+
+        let ubsan_result = runtime.block_on(async {
+            let mut runner = EscalationRunner::new(config);
+            runner.check_clean_binary("ubsan").await
+        })?;
+        results.push(ubsan_result);
     }
 
     Ok(results)
@@ -813,12 +847,12 @@ fn observation_escalation_summary(
 }
 
 fn escalation_status(result: &EscalationResult) -> TargetStatus {
-    if result.tool == "asan"
+    if (result.tool == "asan" || result.tool == "ubsan")
         && !result.success
         && result
             .error
             .as_deref()
-            .map(|error| error.contains("-fsanitize=address"))
+            .map(|error| error.contains("-fsanitize="))
             .unwrap_or(false)
     {
         return TargetStatus::NotApplicable;
