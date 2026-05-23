@@ -52,9 +52,11 @@ samples=(
     "cxx_malloc_delete_mismatch:allocator_mismatch:allocator_mismatch:1"
     "cxx_new_array_delete_mismatch:allocator_mismatch:allocator_mismatch:1"
     "cxx_new_delete_array_mismatch:allocator_mismatch:allocator_mismatch:1"
+    "fd_leak_case:fd_leak:fd_leak:1"
+    "fd_double_close_case:double_close:__unsupported__:1"
+    "fd_invalid_close_case:invalid_close:__unsupported__:1"
     "use_after_free_case:__unsupported__:use_after_free:0"
     "memory_leak_case:__unsupported__:memory_leak:0"
-    "fd_leak_case:__unsupported__:fd_leak:0"
     "clean_malloc_free:__none__:__none__:0"
     "clean_realloc_grow:__none__:__none__:0"
     "clean_failed_realloc:__none__:__none__:0"
@@ -136,7 +138,9 @@ if results_path.exists():
 
 escalation = escalation_results[0] if escalation_results else {}
 escalation_detected = escalation.get("findings_detected") or []
-if escalation_expected_class == "__none__":
+if escalation_expected_class == "__unsupported__":
+    escalation_outcome = "unsupported"
+elif escalation_expected_class == "__none__":
     escalation_outcome = (
         "tn"
         if escalation.get("success") and not escalation.get("confirmed") and not escalation_detected
@@ -152,7 +156,7 @@ else:
 print(json.dumps({
     "binary": binary_name,
     "native_expected_class": None if native_expected_class.startswith("__") else native_expected_class,
-    "escalation_expected_class": None if escalation_expected_class == "__none__" else escalation_expected_class,
+    "escalation_expected_class": None if escalation_expected_class.startswith("__") else escalation_expected_class,
     "native": {
         "outcome": native_outcome,
         "actual_classes": actual_classes,
@@ -190,7 +194,9 @@ for entry in "${samples[@]}"; do
         exit 1
     fi
 
-    if [[ "$escalation_expected_class" == "__none__" ]]; then
+    if [[ "$escalation_expected_class" == "__unsupported__" ]]; then
+        printf '[hit-rate] skipping unsupported escalation for %s\n' "$binary_name"
+    elif [[ "$escalation_expected_class" == "__none__" ]]; then
         printf '[hit-rate] clean Valgrind check for %s\n' "$binary_name"
         "$runner_path" escalate "$output_dir" --tool valgrind --check-clean
     elif [[ "$native_expected_class" == "__unsupported__" ]]; then

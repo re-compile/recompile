@@ -34,6 +34,9 @@ samples=(
     "build/user-samples/cxx_malloc_delete_mismatch:allocator_mismatch:delete:malloc:delete"
     "build/user-samples/cxx_new_array_delete_mismatch:allocator_mismatch:delete:new[]:delete"
     "build/user-samples/cxx_new_delete_array_mismatch:allocator_mismatch:delete[]:new:delete[]"
+    "build/user-samples/fd_leak_case:fd_leak:fd_leak"
+    "build/user-samples/fd_double_close_case:double_close:double_close"
+    "build/user-samples/fd_invalid_close_case:invalid_close:invalid_close"
 )
 
 for entry in "${samples[@]}"; do
@@ -62,7 +65,14 @@ memory_blocks = [
     for finding in findings
     if isinstance(finding, dict)
 ]
-operations = [memory.get("operation") for memory in memory_blocks]
+resource_blocks = [
+    ((finding.get("evidence") or {}).get("resource") or {})
+    for finding in findings
+    if isinstance(finding, dict)
+]
+operations = [memory.get("operation") for memory in memory_blocks] + [
+    resource.get("operation") for resource in resource_blocks
+]
 if expected_operation not in operations:
     raise SystemExit(f"{binary_name}: expected operation {expected_operation}, got {operations}")
 if expected_alloc_family:
@@ -98,7 +108,6 @@ clean_samples=(
     "build/user-samples/clean_bounded_memset"
     "build/user-samples/clean_bounded_strcpy"
     "build/user-samples/clean_bounded_strncpy"
-    "build/user-samples/fd_leak_case"
     "build/user-samples/clean_fd_close"
 )
 
