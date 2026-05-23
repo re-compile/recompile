@@ -24,8 +24,12 @@ samples=(
     "build/user-samples/memset_overrun_case:heap_overflow:memset"
     "build/user-samples/strcpy_overrun_case:heap_overflow:strcpy"
     "build/user-samples/strncpy_overrun_case:heap_overflow:strncpy"
+    "build/user-samples/posix_memalign_overrun_case:heap_overflow:memset"
+    "build/user-samples/aligned_alloc_overrun_case:heap_overflow:memset"
+    "build/user-samples/strdup_overrun_case:heap_overflow:memset"
     "build/user-samples/cache_release_twice:double_free:free"
     "build/user-samples/free_stack_slot:invalid_free:free"
+    "build/user-samples/realloc_zero_double_free:double_free:free"
 )
 
 for entry in "${samples[@]}"; do
@@ -64,6 +68,13 @@ done
 
 clean_samples=(
     "build/user-samples/clean_malloc_free"
+    "build/user-samples/clean_realloc_grow"
+    "build/user-samples/clean_failed_realloc"
+    "build/user-samples/clean_realloc_null"
+    "build/user-samples/clean_realloc_zero"
+    "build/user-samples/clean_posix_memalign"
+    "build/user-samples/clean_aligned_alloc"
+    "build/user-samples/clean_strdup"
     "build/user-samples/clean_bounded_memcpy"
     "build/user-samples/clean_bounded_memmove"
     "build/user-samples/clean_bounded_memset"

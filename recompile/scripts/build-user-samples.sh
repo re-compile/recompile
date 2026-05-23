@@ -17,6 +17,9 @@ COMMON_FLAGS=(
   -fno-builtin-malloc
   -fno-builtin-calloc
   -fno-builtin-realloc
+  -fno-builtin-posix_memalign
+  -fno-builtin-aligned_alloc
+  -fno-builtin-strdup
 )
 
 ASAN_FLAGS=(
@@ -42,12 +45,23 @@ cc "${COMMON_FLAGS[@]}" -o build/user-samples/memset_overrun_case samples/user-b
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/strcpy_overrun_case samples/user-binaries/strcpy_overrun_case.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/strncpy_overrun_case samples/user-binaries/strncpy_overrun_case.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/multi_overrun_case samples/user-binaries/multi_overrun_case.c
+cc "${COMMON_FLAGS[@]}" -o build/user-samples/posix_memalign_overrun_case samples/user-binaries/posix_memalign_overrun_case.c
+cc "${COMMON_FLAGS[@]}" -o build/user-samples/aligned_alloc_overrun_case samples/user-binaries/aligned_alloc_overrun_case.c
+cc "${COMMON_FLAGS[@]}" -o build/user-samples/strdup_overrun_case samples/user-binaries/strdup_overrun_case.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/cache_release_twice samples/user-binaries/cache_release_twice.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/free_stack_slot samples/user-binaries/free_stack_slot.c
+cc "${COMMON_FLAGS[@]}" -o build/user-samples/realloc_zero_double_free samples/user-binaries/realloc_zero_double_free.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/use_after_free_case samples/user-binaries/use_after_free_case.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/memory_leak_case samples/user-binaries/memory_leak_case.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/fd_leak_case samples/user-binaries/fd_leak_case.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_malloc_free samples/user-binaries/clean_malloc_free.c
+cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_realloc_grow samples/user-binaries/clean_realloc_grow.c
+cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_failed_realloc samples/user-binaries/clean_failed_realloc.c
+cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_realloc_null samples/user-binaries/clean_realloc_null.c
+cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_realloc_zero samples/user-binaries/clean_realloc_zero.c
+cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_posix_memalign samples/user-binaries/clean_posix_memalign.c
+cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_aligned_alloc samples/user-binaries/clean_aligned_alloc.c
+cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_strdup samples/user-binaries/clean_strdup.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_bounded_memcpy samples/user-binaries/clean_bounded_memcpy.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_bounded_memmove samples/user-binaries/clean_bounded_memmove.c
 cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_bounded_memset samples/user-binaries/clean_bounded_memset.c

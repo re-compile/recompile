@@ -29,6 +29,9 @@ COMMON_FLAGS=(
   -fno-builtin-malloc
   -fno-builtin-calloc
   -fno-builtin-realloc
+  -fno-builtin-posix_memalign
+  -fno-builtin-aligned_alloc
+  -fno-builtin-strdup
 )
 
 cc "${COMMON_FLAGS[@]}" \
