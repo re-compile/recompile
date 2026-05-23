@@ -250,6 +250,23 @@ Current native heap-write coverage:
 - scoped `strcpy`
 - scoped `strncpy`
 
+Current native allocator tracking:
+
+- `malloc`
+- `calloc`
+- `realloc`
+- `posix_memalign`
+- `aligned_alloc`
+- bounded `strdup` inputs
+
+`realloc` tracking preserves the old allocation on failed non-zero resize,
+marks the old allocation freed on successful moves, and treats
+`realloc(ptr, 0)` as freeing `ptr` when libc returns `NULL`. Bounded `strdup`
+inputs are tracked by the copied string length; oversized strings are recorded
+as unknown capacity to avoid false overflow findings from truncated BPF reads.
+`strdup` findings can still have unresolved source provenance when the observed
+allocation stack does not unwind back into user code.
+
 Deferred native string-copy coverage:
 
 - `strcat`

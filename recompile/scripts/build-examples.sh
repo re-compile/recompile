@@ -19,6 +19,9 @@ COMMON_FLAGS=(
   -fno-builtin-malloc
   -fno-builtin-calloc
   -fno-builtin-realloc
+  -fno-builtin-posix_memalign
+  -fno-builtin-aligned_alloc
+  -fno-builtin-strdup
 )
 
 cc "${COMMON_FLAGS[@]}" -o build/examples/memcpy_overflow examples/memcpy_overflow.c

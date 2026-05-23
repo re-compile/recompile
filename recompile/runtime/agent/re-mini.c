@@ -734,6 +734,33 @@ static const char *preferred_symbol_aliases(const char *symbol, int idx)
         return aliases[idx];
     }
 
+    if (strcmp(symbol, "posix_memalign") == 0) {
+        static const char *aliases[] = {
+            "posix_memalign",
+            "__posix_memalign",
+            NULL,
+        };
+        return aliases[idx];
+    }
+
+    if (strcmp(symbol, "aligned_alloc") == 0) {
+        static const char *aliases[] = {
+            "aligned_alloc",
+            "__libc_aligned_alloc",
+            NULL,
+        };
+        return aliases[idx];
+    }
+
+    if (strcmp(symbol, "strdup") == 0) {
+        static const char *aliases[] = {
+            "strdup",
+            "__strdup",
+            NULL,
+        };
+        return aliases[idx];
+    }
+
     if (strcmp(symbol, "free") == 0) {
         static const char *aliases[] = {
             "free",

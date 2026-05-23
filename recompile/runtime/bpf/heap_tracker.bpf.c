@@ -45,6 +45,14 @@ struct {
     __type(value, __u64);   // old pointer (as u64)
 } realloc_old SEC(".maps");
 
+// tid -> pending output pointer slot for APIs that return status separately.
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 8192);
+    __type(key,   __u32);   // TID
+    __type(value, __u64);   // user-space pointer slot address
+} pending_out_ptr SEC(".maps");
+
 // Sentinel ring buffer (shared with other programs)
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -171,6 +179,96 @@ static __always_inline bool take_pending_size(__u64 *out)
     return true;
 }
 
+static __always_inline void remember_out_ptr(void *slot)
+{
+    __u32 tid = get_tid();
+    __u64 addr = (__u64)slot;
+    bpf_map_update_elem(&pending_out_ptr, &tid, &addr, BPF_ANY);
+}
+
+static __always_inline bool take_pending_out_ptr(__u64 *out)
+{
+    __u32 tid = get_tid();
+    __u64 *p = bpf_map_lookup_elem(&pending_out_ptr, &tid);
+    if (!p)
+        return false;
+    *out = *p;
+    bpf_map_delete_elem(&pending_out_ptr, &tid);
+    return true;
+}
+
+static __always_inline void remember_string_size(const char *src)
+{
+    char buf[256];
+
+    if (!src) {
+        remember_size(0);
+        return;
+    }
+
+    long len = bpf_probe_read_user_str(buf, sizeof(buf), src);
+    if (len <= 0 || len >= (long)sizeof(buf))
+        remember_size(U64_MAX);
+    else
+        remember_size((__u64)len);
+}
+
+static __always_inline void mark_allocation_freed(__u32 pid, struct re_alloc_key *key)
+{
+    struct re_alloc_info *info = bpf_map_lookup_elem(&allocs, key);
+    if (!info)
+        return;
+
+    struct re_alloc_info snapshot = *info;
+    bpf_map_delete_elem(&allocs, key);
+    bpf_map_update_elem(&freed, key, &snapshot, BPF_ANY);
+}
+
+static __always_inline int record_allocation_return(struct pt_regs *ctx, void *ret,
+                                                    __u64 size, bool have_size)
+{
+    if (!ret)
+        return 0;
+
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+    int stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+
+    struct re_sentinel_state *st = sentinel_get_state(pid);
+    if (!st)
+        return 0;
+
+    struct re_alloc_key key = {
+        .pid = pid,
+        .addr = (__u64)ret,
+    };
+
+    if (have_size) {
+        st->flags |= RE_SENTINEL_STATE_ARMED;
+        bpf_map_delete_elem(&freed, &key);
+        struct re_alloc_info info = {
+            .size = size,
+            .alloc_stack_id = stack_id,
+        };
+        bpf_map_update_elem(&allocs, &key, &info, BPF_ANY);
+    }
+
+    struct re_sentinel_event *evt = sentinel_event_reserve(st, pid_tgid);
+    if (!evt)
+        return 0;
+
+    evt->type = RE_SENTINEL_TYPE_MALLOC;
+    evt->addr = (__u64)ret;
+    evt->stack_id = stack_id;
+    if (stack_id >= 0)
+        evt->stack_fp = (__u32)stack_id;
+    evt->len = have_size ? saturate_u32(size) : 0;
+    evt->alloc_size = evt->len;
+
+    sentinel_event_submit(evt);
+    return 0;
+}
+
 /* ---- 64-bit overflow helpers (no 128-bit builtins in eBPF) ---- */
 static __always_inline int mul_overflow_u64(__u64 a, __u64 b, __u64 *out)
 {
@@ -212,46 +310,7 @@ int BPF_KRETPROBE(u_malloc_exit)
     void *ret = (void *)PT_REGS_RC(ctx);
     __u64 size = 0;
     bool have_size = take_pending_size(&size);
-    if (!ret)
-        return 0;
-
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    __u32 pid = pid_tgid >> 32;
-    int stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
-
-    struct re_sentinel_state *st = sentinel_get_state(pid);
-    if (!st)
-        return 0;
-
-    struct re_alloc_key key = {
-        .pid = pid,
-        .addr = (__u64)ret,
-    };
-
-    if (have_size) {
-        st->flags |= RE_SENTINEL_STATE_ARMED;
-        bpf_map_delete_elem(&freed, &key);
-        struct re_alloc_info info = {
-            .size = size,
-            .alloc_stack_id = stack_id,
-        };
-        bpf_map_update_elem(&allocs, &key, &info, BPF_ANY);
-    }
-
-    struct re_sentinel_event *evt = sentinel_event_reserve(st, pid_tgid);
-    if (!evt)
-        return 0;
-
-    evt->type = RE_SENTINEL_TYPE_MALLOC;
-    evt->addr = (__u64)ret;
-    evt->stack_id = stack_id;
-    if (stack_id >= 0)
-        evt->stack_fp = (__u32)stack_id;
-    evt->len = have_size ? saturate_u32(size) : 0;
-    evt->alloc_size = evt->len;
-
-    sentinel_event_submit(evt);
-    return 0;
+    return record_allocation_return(ctx, ret, size, have_size);
 }
 
 SEC("uprobe/calloc")
@@ -272,46 +331,7 @@ int BPF_KRETPROBE(u_calloc_exit)
     void *ret = (void *)PT_REGS_RC(ctx);
     __u64 size = 0;
     bool have_size = take_pending_size(&size);
-    if (!ret)
-        return 0;
-
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    __u32 pid = pid_tgid >> 32;
-    int stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
-
-    struct re_sentinel_state *st = sentinel_get_state(pid);
-    if (!st)
-        return 0;
-
-    struct re_alloc_key key = {
-        .pid = pid,
-        .addr = (__u64)ret,
-    };
-
-    if (have_size) {
-        st->flags |= RE_SENTINEL_STATE_ARMED;
-        bpf_map_delete_elem(&freed, &key);
-        struct re_alloc_info info = {
-            .size = size,
-            .alloc_stack_id = stack_id,
-        };
-        bpf_map_update_elem(&allocs, &key, &info, BPF_ANY);
-    }
-
-    struct re_sentinel_event *evt = sentinel_event_reserve(st, pid_tgid);
-    if (!evt)
-        return 0;
-
-    evt->type = RE_SENTINEL_TYPE_MALLOC;
-    evt->addr = (__u64)ret;
-    evt->stack_id = stack_id;
-    if (stack_id >= 0)
-        evt->stack_fp = (__u32)stack_id;
-    evt->len = have_size ? saturate_u32(size) : 0;
-    evt->alloc_size = evt->len;
-
-    sentinel_event_submit(evt);
-    return 0;
+    return record_allocation_return(ctx, ret, size, have_size);
 }
 
 SEC("uprobe/realloc")
@@ -340,18 +360,8 @@ int BPF_KRETPROBE(u_realloc_exit)
     if (pold)
         bpf_map_delete_elem(&realloc_old, &tid);
 
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    __u32 pid = pid_tgid >> 32;
-    int stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
 
-    struct re_sentinel_state *st = sentinel_get_state(pid);
-    if (!st)
-        return 0;
-
-    struct re_alloc_key new_key = {
-        .pid = pid,
-        .addr = (__u64)ret,
-    };
     struct re_alloc_key old_key = {
         .pid = pid,
         .addr = old,
@@ -359,37 +369,76 @@ int BPF_KRETPROBE(u_realloc_exit)
 
     if (!ret) {
         if (have_size && size == 0 && old)
-            bpf_map_delete_elem(&allocs, &old_key);
+            mark_allocation_freed(pid, &old_key);
         return 0;
     }
 
     if (old && old != (__u64)ret)
-        bpf_map_delete_elem(&allocs, &old_key);
+        mark_allocation_freed(pid, &old_key);
 
-    if (have_size) {
-        st->flags |= RE_SENTINEL_STATE_ARMED;
-        bpf_map_delete_elem(&freed, &new_key);
-        struct re_alloc_info info = {
-            .size = size,
-            .alloc_stack_id = stack_id,
-        };
-        bpf_map_update_elem(&allocs, &new_key, &info, BPF_ANY);
-    }
+    return record_allocation_return(ctx, ret, size, have_size);
+}
 
-    struct re_sentinel_event *evt = sentinel_event_reserve(st, pid_tgid);
-    if (!evt)
+SEC("uprobe/posix_memalign")
+int BPF_KPROBE(u_posix_memalign_enter)
+{
+    void *memptr = (void *)PT_REGS_PARM1(ctx);
+    __u64 size = (__u64)PT_REGS_PARM3(ctx);
+    remember_out_ptr(memptr);
+    remember_size(size);
+    return 0;
+}
+
+SEC("uretprobe/posix_memalign")
+int BPF_KRETPROBE(u_posix_memalign_exit)
+{
+    long rc = PT_REGS_RC(ctx);
+    __u64 size = 0;
+    __u64 out_slot = 0;
+    bool have_size = take_pending_size(&size);
+    bool have_slot = take_pending_out_ptr(&out_slot);
+    __u64 ret_addr = 0;
+
+    if (rc != 0 || !have_slot || !out_slot)
+        return 0;
+    if (bpf_probe_read_user(&ret_addr, sizeof(ret_addr), (void *)out_slot) != 0)
         return 0;
 
-    evt->type = RE_SENTINEL_TYPE_MALLOC;
-    evt->addr = (__u64)ret;
-    evt->stack_id = stack_id;
-    if (stack_id >= 0)
-        evt->stack_fp = (__u32)stack_id;
-    evt->len = have_size ? saturate_u32(size) : 0;
-    evt->alloc_size = evt->len;
+    return record_allocation_return(ctx, (void *)ret_addr, size, have_size);
+}
 
-    sentinel_event_submit(evt);
+SEC("uprobe/aligned_alloc")
+int BPF_KPROBE(u_aligned_alloc_enter)
+{
+    __u64 size = (__u64)PT_REGS_PARM2(ctx);
+    remember_size(size);
     return 0;
+}
+
+SEC("uretprobe/aligned_alloc")
+int BPF_KRETPROBE(u_aligned_alloc_exit)
+{
+    void *ret = (void *)PT_REGS_RC(ctx);
+    __u64 size = 0;
+    bool have_size = take_pending_size(&size);
+    return record_allocation_return(ctx, ret, size, have_size);
+}
+
+SEC("uprobe/strdup")
+int BPF_KPROBE(u_strdup_enter)
+{
+    const char *src = (const char *)PT_REGS_PARM1(ctx);
+    remember_string_size(src);
+    return 0;
+}
+
+SEC("uretprobe/strdup")
+int BPF_KRETPROBE(u_strdup_exit)
+{
+    void *ret = (void *)PT_REGS_RC(ctx);
+    __u64 size = 0;
+    bool have_size = take_pending_size(&size);
+    return record_allocation_return(ctx, ret, size, have_size);
 }
 
 SEC("uprobe/free")

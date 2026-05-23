@@ -181,7 +181,9 @@ For early technical users, the supported workflow is runtime triage for a Linux 
 clang -g -O0 -fno-omit-frame-pointer \
   -fno-builtin -fno-builtin-memcpy -fno-builtin-memmove \
   -fno-builtin-memset -fno-builtin-strcpy -fno-builtin-strncpy \
-  -fno-builtin-free \
+  -fno-builtin-free -fno-builtin-malloc -fno-builtin-calloc \
+  -fno-builtin-realloc -fno-builtin-posix_memalign \
+  -fno-builtin-aligned_alloc -fno-builtin-strdup \
   -o my_test my_test.c
 
 ./target/release/rerun run --native ./my_test --output build/my-test
