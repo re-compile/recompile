@@ -258,6 +258,8 @@ Current native allocator tracking:
 - `posix_memalign`
 - `aligned_alloc`
 - bounded `strdup` inputs
+- C++ `operator new` / `operator new[]`
+- C++ `operator delete` / `operator delete[]`
 
 `realloc` tracking preserves the old allocation on failed non-zero resize,
 marks the old allocation freed on successful moves, and treats
@@ -266,6 +268,15 @@ inputs are tracked by the copied string length; oversized strings are recorded
 as unknown capacity to avoid false overflow findings from truncated BPF reads.
 `strdup` findings can still have unresolved source provenance when the observed
 allocation stack does not unwind back into user code.
+
+C++ allocator-family tracking attaches to libstdc++ operator symbols `_Znwm`,
+`_Znam`, `_ZdlPv`, `_ZdlPvm`, `_ZdaPv`, and `_ZdaPvm` when libstdc++ is
+available on the Linux host or Docker image. Native findings use
+`allocator_mismatch` for `new/free`, `malloc/delete`, `new[]/delete`, and
+`new/delete[]`, and include both `alloc_family` and `dealloc_family` in
+`evidence.memory`. The MVP intentionally does not claim coverage for custom
+overloaded C++ operators, placement new/delete, nothrow operators, or aligned
+C++17 allocation overloads.
 
 Deferred native string-copy coverage:
 

@@ -269,11 +269,14 @@ jq . build/hit-rate/summary.json
 The current corpus includes native-confirmed heap write overflows through
 `memcpy`, `memmove`, `memset`, scoped `strcpy`, and scoped `strncpy`; native
 allocator tracking for `malloc`, `calloc`, `realloc`, `posix_memalign`,
-`aligned_alloc`, and bounded `strdup` inputs; native double/invalid-free cases;
-clean negatives; and Valgrind-first `use_after_free`, `memory_leak`, and
-`fd_leak` cases. `strcat` and `strncat` remain deferred. `strdup` allocation
-size tracking is native-supported for bounded strings, but source provenance can
-remain unresolved when the captured allocation stack stays inside libc.
+`aligned_alloc`, bounded `strdup` inputs, and default libstdc++ C++ new/delete
+families; native double/invalid-free and allocator-mismatch cases; clean
+negatives; and Valgrind-first `use_after_free`, `memory_leak`, and `fd_leak`
+cases. `strcat`, `strncat`, custom C++ allocator overloads, placement
+new/delete, nothrow operators, and aligned C++17 allocation overloads remain
+deferred. `strdup` allocation size tracking is native-supported for bounded
+strings, but source provenance can remain unresolved when the captured
+allocation stack stays inside libc.
 
 For one external binary:
 

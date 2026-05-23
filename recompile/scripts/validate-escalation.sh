@@ -94,6 +94,10 @@ positive_samples=(
     "build/user-samples/cache_release_twice:double_free"
     "build/user-samples/free_stack_slot:invalid_free"
     "build/user-samples/realloc_zero_double_free:double_free"
+    "build/user-samples/cxx_new_free_mismatch:allocator_mismatch"
+    "build/user-samples/cxx_malloc_delete_mismatch:allocator_mismatch"
+    "build/user-samples/cxx_new_array_delete_mismatch:allocator_mismatch"
+    "build/user-samples/cxx_new_delete_array_mismatch:allocator_mismatch"
 )
 
 for entry in "${positive_samples[@]}"; do
@@ -151,6 +155,7 @@ clean_samples=(
     "build/user-samples/clean_posix_memalign"
     "build/user-samples/clean_aligned_alloc"
     "build/user-samples/clean_strdup"
+    "build/user-samples/clean_cxx_new_delete"
     "build/user-samples/clean_bounded_memcpy"
     "build/user-samples/clean_bounded_memmove"
     "build/user-samples/clean_bounded_memset"
