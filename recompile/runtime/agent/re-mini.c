@@ -41,6 +41,16 @@ static const char *libc_search_paths[] = {
     NULL
 };
 
+static const char *libstdcxx_search_paths[] = {
+    "/usr/lib/x86_64-linux-gnu/libstdc++.so.6",
+    "/lib/x86_64-linux-gnu/libstdc++.so.6",
+    "/usr/lib64/libstdc++.so.6",
+    "/lib64/libstdc++.so.6",
+    "/usr/lib/aarch64-linux-gnu/libstdc++.so.6",
+    "/lib/aarch64-linux-gnu/libstdc++.so.6",
+    NULL
+};
+
 // Recursive mkdir - creates all parent directories as needed
 static int mkdir_p(const char *path, mode_t mode) {
     char tmp[PATH_MAX];
@@ -101,10 +111,43 @@ static const char *detect_libc_path(void) {
     return NULL;
 }
 
+static const char *detect_libstdcxx_path(void) {
+    for (int i = 0; libstdcxx_search_paths[i] != NULL; i++) {
+        if (access(libstdcxx_search_paths[i], R_OK) == 0) {
+            return libstdcxx_search_paths[i];
+        }
+    }
+
+    FILE *fp = fopen("/proc/self/maps", "r");
+    if (fp) {
+        static char detected_path[PATH_MAX];
+        char line[512];
+        while (fgets(line, sizeof(line), fp)) {
+            if (strstr(line, "libstdc++") && strstr(line, ".so")) {
+                char *path_start = strchr(line, '/');
+                if (path_start) {
+                    char *path_end = strchr(path_start, '\n');
+                    if (path_end) *path_end = '\0';
+                    path_end = strchr(path_start, ' ');
+                    if (path_end) *path_end = '\0';
+                    strncpy(detected_path, path_start, sizeof(detected_path) - 1);
+                    detected_path[sizeof(detected_path) - 1] = '\0';
+                    fclose(fp);
+                    return detected_path;
+                }
+            }
+        }
+        fclose(fp);
+    }
+
+    return NULL;
+}
+
 static volatile sig_atomic_t stop = 0;
 static const char *obj_path = NULL;
 static const char *heap_path = NULL;
 static const char *libc_path = NULL;  // Detected at runtime or via --libc
+static const char *libstdcxx_path = NULL;
 static const char *binary_path = NULL;
 static const char *sentinel_path = NULL;
 static char binary_realpath_buf[PATH_MAX];
@@ -125,6 +168,7 @@ enum finding_dedupe_kind {
     FINDING_DEDUPE_HEAP_OVERFLOW = 1,
     FINDING_DEDUPE_DOUBLE_FREE = 2,
     FINDING_DEDUPE_INVALID_FREE = 3,
+    FINDING_DEDUPE_ALLOCATOR_MISMATCH = 4,
 };
 
 struct emitted_finding_key {
@@ -175,6 +219,7 @@ static struct emitted_finding_key finding_key_from_event(
 static bool finding_already_emitted(const struct emitted_finding_key *key);
 static void mark_finding_emitted(const struct emitted_finding_key *key);
 static bool heap_overflow_emitted_for_addr(__u32 pid, __u64 addr);
+static bool allocator_mismatch_emitted_for_addr(__u32 pid, __u64 addr);
 static int collect_call_frames(__u32 pid, __s32 stack_id, struct frame_info *frames, int max_frames);
 static struct module_cache *get_module_cache(__u32 pid);
 static void build_module_cache(struct module_cache *cache);
@@ -339,6 +384,36 @@ static const char *heap_write_api_name(const struct re_sentinel_event *ev)
     }
 }
 
+static const char *alloc_family_name(__u8 family)
+{
+    switch (family) {
+    case RE_SENTINEL_ALLOC_MALLOC:
+        return "malloc";
+    case RE_SENTINEL_ALLOC_NEW:
+        return "new";
+    case RE_SENTINEL_ALLOC_NEW_ARRAY:
+        return "new[]";
+    case RE_SENTINEL_ALLOC_UNKNOWN:
+    default:
+        return "unknown";
+    }
+}
+
+static const char *dealloc_family_name(__u8 family)
+{
+    switch (family) {
+    case RE_SENTINEL_DEALLOC_FREE:
+        return "free";
+    case RE_SENTINEL_DEALLOC_DELETE:
+        return "delete";
+    case RE_SENTINEL_DEALLOC_DELETE_ARRAY:
+        return "delete[]";
+    case RE_SENTINEL_DEALLOC_UNKNOWN:
+    default:
+        return "unknown";
+    }
+}
+
 static void emit_heap_write_finding(const struct re_sentinel_event *ev,
     struct frame_info *call_frames, int call_count,
     struct frame_info *alloc_frames, int alloc_count)
@@ -450,7 +525,13 @@ static void emit_free_finding(const struct re_sentinel_event *ev, __u8 status,
     const struct frame_info *primary_alloc = select_primary(alloc_frames, alloc_count);
     const struct frame_info *primary = choose_primary_frame(primary_call, primary_alloc);
 
-    const char *kind = (status == RE_SENTINEL_FREE_DOUBLE) ? "double_free" : "invalid_free";
+    const char *kind = "invalid_free";
+    if (status == RE_SENTINEL_FREE_DOUBLE)
+        kind = "double_free";
+    else if (status == RE_SENTINEL_FREE_MISMATCH)
+        kind = "allocator_mismatch";
+    const char *alloc_family = alloc_family_name((__u8)ev->len);
+    const char *dealloc_family = dealloc_family_name((__u8)ev->bytes_ret);
 
     char free_stack_json[1536];
     char alloc_stack_json[1536];
@@ -463,6 +544,13 @@ static void emit_free_finding(const struct re_sentinel_event *ev, __u8 status,
         snprintf(message, sizeof(message),
                  "double free: free(0x%llx) called again at %s",
                  (unsigned long long)ev->addr,
+                 location_summary);
+    } else if (status == RE_SENTINEL_FREE_MISMATCH) {
+        snprintf(message, sizeof(message),
+                 "allocator mismatch: pointer 0x%llx allocated by %s was released with %s at %s",
+                 (unsigned long long)ev->addr,
+                 alloc_family,
+                 dealloc_family,
                  location_summary);
     } else {
         snprintf(message, sizeof(message),
@@ -479,6 +567,11 @@ static void emit_free_finding(const struct re_sentinel_event *ev, __u8 status,
         snprintf(fix_hint, sizeof(fix_hint),
                  "Guard pointer 0x%llx so it is freed only once (set to NULL after free or remove duplicate free)",
                  (unsigned long long)ev->addr);
+    } else if (status == RE_SENTINEL_FREE_MISMATCH) {
+        snprintf(fix_hint, sizeof(fix_hint),
+                 "Release pointers with the matching allocator family: %s allocations must use the matching deallocator, not %s",
+                 alloc_family,
+                 dealloc_family);
     } else {
         snprintf(fix_hint, sizeof(fix_hint),
                  "Only pass pointers returned by malloc/calloc/realloc to free (0x%llx is not tracked)",
@@ -505,15 +598,19 @@ static void emit_free_finding(const struct re_sentinel_event *ev, __u8 status,
     snprintf(finding, sizeof(finding),
              "RE:FINDING: {\"id\":\"F-%s-%llu\",\"origin\":\"ebpf\",\"kind\":\"%s\","
              "\"severity\":\"error\",\"message\":\"%s\",\"primaryLocation\":%s,"
-             "\"evidence\":{\"api\":\"free\",\"memory\":{\"ptr\":\"0x%llx\",\"size\":%u},"
+             "\"evidence\":{\"api\":\"%s\",\"memory\":{\"ptr\":\"0x%llx\",\"size\":%u,"
+             "\"alloc_family\":\"%s\",\"dealloc_family\":\"%s\"},"
              "\"stacks\":{\"alloc\":%s,\"call\":%s}},\"fixHints\":[\"%s\"],\"dataQuality\":{\"eventsDropped\":0}}\n",
              kind,
              (unsigned long long)ev->ts_ns,
              kind,
              escaped_message,
              primary_json,
+             dealloc_family,
              (unsigned long long)ev->addr,
              ev->alloc_size,
+             alloc_family,
+             dealloc_family,
              alloc_stack_json,
              free_stack_json,
              escaped_fix);
@@ -522,20 +619,24 @@ static void emit_free_finding(const struct re_sentinel_event *ev, __u8 status,
 
     // Also emit v1 schema finding
     char v1_finding[4096];
-    const char *v1_class = (status == RE_SENTINEL_FREE_DOUBLE) ? "double_free" : "invalid_free";
+    const char *v1_class = kind;
     const char *v1_confidence = (status == RE_SENTINEL_FREE_DOUBLE) ? "certain" : "high";
     const char *v1_severity = (status == RE_SENTINEL_FREE_DOUBLE) ? "critical" : "high";
     
     snprintf(v1_finding, sizeof(v1_finding),
              "{\"schema_version\":\"1.0\",\"id\":\"F-%s-%llu\",\"class\":\"%s\","
              "\"confidence\":\"%s\",\"severity\":\"%s\",\"timestamp\":%llu,\"pid\":%u,"
-             "\"evidence\":{\"memory\":{\"ptr\":%llu,\"size\":%u,\"alloc_size\":%u,\"operation\":\"free\"},"
+             "\"evidence\":{\"memory\":{\"ptr\":%llu,\"size\":%u,\"alloc_size\":%u,\"operation\":\"%s\","
+             "\"alloc_family\":\"%s\",\"dealloc_family\":\"%s\"},"
              "\"stacks\":{\"alloc\":%s,\"call\":%s},\"alloc_site\":\"%s\"},"
              "\"escalation\":{\"tool\":\"asan\",\"reason\":\"%s_detected\",\"estimated_cost\":\"low\",\"cooldown_ms\":%d},"
              "\"related\":[]}",
              kind, (unsigned long long)ev->ts_ns, v1_class, v1_confidence, v1_severity,
              (unsigned long long)ev->ts_ns, ev->pid,
              (unsigned long long)ev->addr, ev->alloc_size, ev->alloc_size,
+             dealloc_family,
+             alloc_family,
+             dealloc_family,
              alloc_stack_json, free_stack_json, primary ? primary->file : "unknown",
              v1_class, (status == RE_SENTINEL_FREE_DOUBLE) ? 0 : 5000);
 
@@ -605,7 +706,7 @@ static int on_sentinel_event(void *ctx, void *data, size_t len)
         break;
     }
     case RE_SENTINEL_TYPE_FREE: {
-        __u8 status = (ev.errno_code >= 0 && ev.errno_code <= RE_SENTINEL_FREE_INVALID)
+        __u8 status = (ev.errno_code >= 0 && ev.errno_code <= RE_SENTINEL_FREE_MISMATCH)
                         ? (__u8)ev.errno_code : RE_SENTINEL_FREE_OK;
         if (status == RE_SENTINEL_FREE_OK)
             return 0;
@@ -615,10 +716,21 @@ static int on_sentinel_event(void *ctx, void *data, size_t len)
         // the same corruption rather than an independent root cause.
         if (status == RE_SENTINEL_FREE_INVALID && heap_overflow_emitted_for_addr(ev.pid, ev.addr))
             return 0;
+        if (status == RE_SENTINEL_FREE_DOUBLE && allocator_mismatch_emitted_for_addr(ev.pid, ev.addr))
+            return 0;
+        // libstdc++ delete operators release storage via libc free after the
+        // logical delete event. Treat that free as allocator internals, not a
+        // user-visible double-free.
+        if (status == RE_SENTINEL_FREE_DOUBLE
+            && ev.bytes_ret == RE_SENTINEL_DEALLOC_FREE
+            && (ev.len == RE_SENTINEL_ALLOC_NEW || ev.len == RE_SENTINEL_ALLOC_NEW_ARRAY))
+            return 0;
 
-        enum finding_dedupe_kind kind = (status == RE_SENTINEL_FREE_DOUBLE)
-            ? FINDING_DEDUPE_DOUBLE_FREE
-            : FINDING_DEDUPE_INVALID_FREE;
+        enum finding_dedupe_kind kind = FINDING_DEDUPE_INVALID_FREE;
+        if (status == RE_SENTINEL_FREE_DOUBLE)
+            kind = FINDING_DEDUPE_DOUBLE_FREE;
+        else if (status == RE_SENTINEL_FREE_MISMATCH)
+            kind = FINDING_DEDUPE_ALLOCATOR_MISMATCH;
         struct emitted_finding_key key = finding_key_from_event(&ev, kind, status);
         if (finding_already_emitted(&key))
             return 0;
@@ -775,8 +887,19 @@ static const char *preferred_symbol_aliases(const char *symbol, int idx)
     return NULL;
 }
 
+static bool is_cxx_operator_symbol(const char *symbol)
+{
+    return symbol
+        && (strcmp(symbol, "_Znwm") == 0
+            || strcmp(symbol, "_Znam") == 0
+            || strcmp(symbol, "_ZdlPv") == 0
+            || strcmp(symbol, "_ZdlPvm") == 0
+            || strcmp(symbol, "_ZdaPv") == 0
+            || strcmp(symbol, "_ZdaPvm") == 0);
+}
+
 static struct bpf_link *attach_uprobe_by_name(const struct bpf_program *prog, bool retprobe,
-    const char *binary_path, const char *symbol, char *impl_out, size_t impl_sz)
+    int attach_pid, const char *binary_path, const char *symbol, char *impl_out, size_t impl_sz)
 {
     for (int i = 0; ; ++i) {
         const char *candidate = preferred_symbol_aliases(symbol, i);
@@ -789,7 +912,7 @@ static struct bpf_link *attach_uprobe_by_name(const struct bpf_program *prog, bo
         opts.func_name = candidate;
 
         struct bpf_link *link =
-            bpf_program__attach_uprobe_opts(prog, target_pid, binary_path, 0, &opts);
+            bpf_program__attach_uprobe_opts(prog, attach_pid, binary_path, 0, &opts);
         if (!link || libbpf_get_error(link))
             continue;
 
@@ -832,7 +955,7 @@ static struct bpf_link *attach_uprobe_by_name(const struct bpf_program *prog, bo
     }
 
     size_t offset = (size_t)((const char *)addr - (const char *)info.dli_fbase);
-    struct bpf_link *link = bpf_program__attach_uprobe(prog, retprobe, target_pid, binary_path, offset);
+    struct bpf_link *link = bpf_program__attach_uprobe(prog, retprobe, attach_pid, binary_path, offset);
     if (link && !libbpf_get_error(link) && impl_out && impl_sz) {
         if (info.dli_sname && info.dli_sname[0]) {
             strncpy(impl_out, info.dli_sname, impl_sz - 1);
@@ -985,10 +1108,43 @@ static int attach_uprobes_for_object(struct bpf_object *obj, const char *libc_pa
 
         if (!sym || !*sym) continue;
         if (filter && strcmp(filter, sym) != 0) continue;
+        bool cxx_operator = is_cxx_operator_symbol(sym);
+        const char *attach_path = cxx_operator ? libstdcxx_path : libc_path;
+        if (!attach_path && !cxx_operator) {
+            log_line("attach path missing for %s", sym);
+            return -1;
+        }
+
+        if (cxx_operator) {
+            bool attached_any = false;
+
+            if (attach_path) {
+                char impl[128] = {0};
+                struct bpf_link *link =
+                    attach_uprobe_by_name(prog, retprobe, -1, attach_path, sym, impl, sizeof(impl));
+                if (link && !libbpf_get_error(link)) {
+                    if (out_links && out_links->count < (int)(sizeof(out_links->links)/sizeof(out_links->links[0])))
+                        out_links->links[out_links->count++] = link;
+                    attached_any = true;
+                    log_line("attached %s (impl %s)%s [global]", sym, impl[0] ? impl : sym,
+                        retprobe ? " [ret]" : "");
+                } else {
+                    long rc = libbpf_get_error(link);
+                    log_line("attach failed for %s in libstdc++: %ld", sym, rc);
+                }
+            } else {
+                log_line("skipping %s libstdc++ attach: libstdc++ not found", sym);
+            }
+
+            if (!attached_any) {
+                log_line("skipping %s: libstdc++ attachment unavailable", sym);
+            }
+            continue;
+        }
 
         char impl[128] = {0};
         struct bpf_link *link =
-            attach_uprobe_by_name(prog, retprobe, libc_path, sym, impl, sizeof(impl));
+            attach_uprobe_by_name(prog, retprobe, target_pid, attach_path, sym, impl, sizeof(impl));
         if (!link || libbpf_get_error(link)) {
             long rc = libbpf_get_error(link);
             log_line("attach failed for %s%s%s: %ld",
@@ -1242,6 +1398,17 @@ static bool heap_overflow_emitted_for_addr(__u32 pid, __u64 addr)
 {
     for (int i = 0; i < emitted_finding_count; ++i) {
         if (emitted_findings[i].kind == FINDING_DEDUPE_HEAP_OVERFLOW
+            && emitted_findings[i].pid == pid
+            && emitted_findings[i].addr == addr)
+            return true;
+    }
+    return false;
+}
+
+static bool allocator_mismatch_emitted_for_addr(__u32 pid, __u64 addr)
+{
+    for (int i = 0; i < emitted_finding_count; ++i) {
+        if (emitted_findings[i].kind == FINDING_DEDUPE_ALLOCATOR_MISMATCH
             && emitted_findings[i].pid == pid
             && emitted_findings[i].addr == addr)
             return true;
@@ -1590,6 +1757,12 @@ int main(int argc, char **argv){
             return 1;
         }
         log_line("Detected libc at: %s", libc_path);
+    }
+    libstdcxx_path = detect_libstdcxx_path();
+    if (libstdcxx_path) {
+        log_line("Detected libstdc++ at: %s", libstdcxx_path);
+    } else {
+        log_line("libstdc++ not found; C++ allocator probes disabled");
     }
 
     if (binary_path) {
