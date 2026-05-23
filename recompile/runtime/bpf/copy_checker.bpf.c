@@ -115,7 +115,11 @@ enum {
     RE_MEM_API_MEMCPY = 1,
     RE_MEM_API_MEMMOVE = 2,
     RE_MEM_API_MEMSET = 3,
+    RE_MEM_API_STRCPY = 4,
+    RE_MEM_API_STRNCPY = 5,
 };
+
+#define RE_STRING_COPY_MAX 256
 
 static __always_inline int record_heap_write(struct pt_regs *ctx, void *dst, __u64 len,
                                              __u16 event_type, __s32 api)
@@ -192,6 +196,32 @@ int BPF_KPROBE(on_memset)
     __u64 len = (__u64)PT_REGS_PARM3(ctx);
 
     return record_heap_write(ctx, dst, len, RE_SENTINEL_TYPE_MEMSET, RE_MEM_API_MEMSET);
+}
+
+SEC("uprobe/strcpy")
+int BPF_KPROBE(on_strcpy)
+{
+    void *dst = (void *)PT_REGS_PARM1(ctx);
+    const char *src = (const char *)PT_REGS_PARM2(ctx);
+    char src_buf[RE_STRING_COPY_MAX];
+
+    if (!src)
+        return 0;
+
+    long len = bpf_probe_read_user_str(src_buf, sizeof(src_buf), src);
+    if (len <= 0)
+        return 0;
+
+    return record_heap_write(ctx, dst, (__u64)len, RE_SENTINEL_TYPE_STRCPY, RE_MEM_API_STRCPY);
+}
+
+SEC("uprobe/strncpy")
+int BPF_KPROBE(on_strncpy)
+{
+    void *dst = (void *)PT_REGS_PARM1(ctx);
+    __u64 len = (__u64)PT_REGS_PARM3(ctx);
+
+    return record_heap_write(ctx, dst, len, RE_SENTINEL_TYPE_STRNCPY, RE_MEM_API_STRNCPY);
 }
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";

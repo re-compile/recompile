@@ -23,6 +23,8 @@ COMMON_FLAGS=(
   -fno-builtin-memcpy
   -fno-builtin-memmove
   -fno-builtin-memset
+  -fno-builtin-strcpy
+  -fno-builtin-strncpy
   -fno-builtin-free
   -fno-builtin-malloc
   -fno-builtin-calloc

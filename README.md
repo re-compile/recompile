@@ -15,15 +15,22 @@ Current supported path:
 Phase 0 is complete on the supported path.
 Phase 1 is complete for the Linux-native MVP scope.
 Phase 2 is complete for the current issue-backed escalation and evaluation scope.
+Phase 3 is complete for the agentic runtime evidence MVP scope.
+Phase 4 is complete for the local runtime observability foundation.
 
 Validated native findings in Docker:
 
 - `memcpy_overflow` -> `heap_overflow`
+- `memmove_overrun_case` -> `heap_overflow`
+- `memset_overrun_case` -> `heap_overflow`
+- `strcpy_overrun_case` -> `heap_overflow`
+- `strncpy_overrun_case` -> `heap_overflow`
 - `double_free` -> `double_free`
 - `invalid_free` -> `invalid_free`
 
-Current priority before Phase 3 is a full codebase review for dead files,
-deferred paths, stale Phase 0 remnants, and hotfix-ish logic.
+Valgrind-first coverage currently includes `use_after_free`, `memory_leak`, and
+`fd_leak`. Already-instrumented sanitizer adapters cover ASan, LSan, and UBSan
+when the user provides binaries built with the matching `-fsanitize=...` flag.
 
 ## Supported Environment
 
@@ -172,7 +179,9 @@ For early technical users, the supported workflow is runtime triage for a Linux 
 
 ```bash
 clang -g -O0 -fno-omit-frame-pointer \
-  -fno-builtin -fno-builtin-memcpy -fno-builtin-free \
+  -fno-builtin -fno-builtin-memcpy -fno-builtin-memmove \
+  -fno-builtin-memset -fno-builtin-strcpy -fno-builtin-strncpy \
+  -fno-builtin-free \
   -o my_test my_test.c
 
 ./target/release/rerun run --native ./my_test --output build/my-test
