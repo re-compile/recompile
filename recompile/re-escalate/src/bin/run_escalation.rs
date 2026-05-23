@@ -1,5 +1,5 @@
 //! Escalation runner binary
-//! 
+//!
 //! Runs escalation on findings from a crashpack
 
 use re_escalate::{EscalationConfig, EscalationRunner, Finding};
@@ -39,17 +39,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Run escalation on each finding
     for finding in findings {
         if let Some(escalation_plan) = &finding.escalation {
-            println!("Escalating finding {} with tool {}", finding.id, escalation_plan.tool);
-            
+            println!(
+                "Escalating finding {} with tool {}",
+                finding.id, escalation_plan.tool
+            );
+
             match runner.escalate(&finding).await {
                 Ok(result) => {
                     if result.success {
-                        println!("✅ Escalation successful: {} ({}ms)", result.tool, result.duration_ms);
+                        println!(
+                            "✅ Escalation successful: {} ({}ms)",
+                            result.tool, result.duration_ms
+                        );
                         if let Some(output_path) = result.output_path {
                             println!("   Output: {}", output_path);
                         }
                     } else {
-                        println!("❌ Escalation failed: {} ({}ms)", result.tool, result.duration_ms);
+                        println!(
+                            "❌ Escalation failed: {} ({}ms)",
+                            result.tool, result.duration_ms
+                        );
                         if let Some(error) = result.error {
                             println!("   Error: {}", error);
                         }
@@ -69,17 +78,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn load_findings(findings_file: &str) -> Result<Vec<Finding>, Box<dyn std::error::Error>> {
     let content = fs::read_to_string(findings_file)?;
-    
+
     // Try to parse as array of findings first
     if let Ok(findings) = serde_json::from_str::<Vec<Finding>>(&content) {
         return Ok(findings);
     }
-    
+
     // Try to parse as single finding
     if let Ok(finding) = serde_json::from_str::<Finding>(&content) {
         return Ok(vec![finding]);
     }
-    
+
     // Try to parse as line-delimited JSON
     let mut findings = Vec::new();
     for line in content.lines() {
@@ -89,10 +98,10 @@ fn load_findings(findings_file: &str) -> Result<Vec<Finding>, Box<dyn std::error
             }
         }
     }
-    
+
     if !findings.is_empty() {
         return Ok(findings);
     }
-    
+
     Err(format!("Could not parse findings from {}", findings_file).into())
 }

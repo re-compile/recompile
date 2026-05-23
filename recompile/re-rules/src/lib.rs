@@ -1,23 +1,25 @@
 //! RECC Rule Engine
-//! 
+//!
 //! Hardcoded rules for anomaly detection with debounce, confidence, and severity handling.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub mod config;
-pub mod rules;
-pub mod engine;
 pub mod clustering;
+pub mod config;
+pub mod engine;
+pub mod rules;
 pub mod symbolizer;
 
-pub use config::{Config, RulesConfig, EscalationConfig as ConfigEscalationConfig, ClusteringConfig, SymbolizeConfig, Mode};
-pub use rules::{Rule, RuleRegistry, DebounceConfig, EscalationConfig, RuleMatcher};
-pub use engine::{RuleEngine, RuleEngineStats};
 pub use clustering::{ClusterManager, ClusteringConfig as ClusterConfig, ClusteringStats};
+pub use config::{
+    ClusteringConfig, Config, EscalationConfig as ConfigEscalationConfig, Mode, RulesConfig,
+    SymbolizeConfig,
+};
+pub use engine::{RuleEngine, RuleEngineStats};
+pub use rules::{DebounceConfig, EscalationConfig, Rule, RuleMatcher, RuleRegistry};
 pub use symbolizer::{
-    Symbolizer, LlvmSymbolizer, Addr2lineSymbolizer, CompositeSymbolizer,
-    SymbolizerConfig, Frame
+    Addr2lineSymbolizer, CompositeSymbolizer, Frame, LlvmSymbolizer, Symbolizer, SymbolizerConfig,
 };
 
 /// Event types from the eBPF sentinel
@@ -66,9 +68,9 @@ pub enum AnomalyClass {
 /// Confidence levels for findings
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Confidence {
-    Low = 1,    // 0.3-0.5: Heuristic hint, needs escalation
-    Medium = 2, // 0.5-0.7: Strong evidence, auto-escalate
-    High = 3,   // 0.7-0.9: Very strong evidence
+    Low = 1,     // 0.3-0.5: Heuristic hint, needs escalation
+    Medium = 2,  // 0.5-0.7: Strong evidence, auto-escalate
+    High = 3,    // 0.7-0.9: Very strong evidence
     Certain = 4, // 0.9-1.0: Deterministic proof
 }
 

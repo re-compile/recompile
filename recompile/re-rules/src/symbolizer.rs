@@ -1,10 +1,10 @@
 //! Symbolizer abstraction for resolving addresses to source code locations
 
+use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::process::Command;
 use std::str::FromStr;
-use anyhow::{Result, anyhow};
-use serde::{Deserialize, Serialize};
 
 /// A stack frame with symbol information
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,15 +99,15 @@ impl LlvmSymbolizer {
 
     fn symbolize_with_llvm(&self, binary: &str, addresses: &[u64]) -> Result<Vec<Vec<Frame>>> {
         let mut cmd = Command::new("llvm-symbolizer");
-        
+
         if self.config.demangle {
             cmd.arg("-demangle");
         }
-        
+
         if self.config.inlining {
             cmd.arg("-inlining");
         }
-        
+
         cmd.arg("-obj").arg(binary);
 
         // Add all addresses as arguments
@@ -116,9 +116,12 @@ impl LlvmSymbolizer {
         }
 
         let output = cmd.output()?;
-        
+
         if !output.status.success() {
-            return Err(anyhow!("llvm-symbolizer failed: {}", String::from_utf8_lossy(&output.stderr)));
+            return Err(anyhow!(
+                "llvm-symbolizer failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -180,7 +183,8 @@ impl Symbolizer for LlvmSymbolizer {
                 let idx = missing_idx[pos];
                 let frames = fresh.get(pos).cloned().unwrap_or_default();
                 if self.cache.len() < self.config.cache_size {
-                    self.cache.insert((binary.to_string(), addr), frames.clone());
+                    self.cache
+                        .insert((binary.to_string(), addr), frames.clone());
                 }
                 results[idx] = frames;
             }
@@ -232,11 +236,11 @@ impl Addr2lineSymbolizer {
 
     fn symbolize_with_addr2line(&self, binary: &str, addresses: &[u64]) -> Result<Vec<Vec<Frame>>> {
         let mut cmd = Command::new("addr2line");
-        
+
         if self.config.demangle {
             cmd.arg("-C");
         }
-        
+
         cmd.arg("-f").arg("-e").arg(binary);
 
         // Add all addresses as arguments
@@ -245,16 +249,23 @@ impl Addr2lineSymbolizer {
         }
 
         let output = cmd.output()?;
-        
+
         if !output.status.success() {
-            return Err(anyhow!("addr2line failed: {}", String::from_utf8_lossy(&output.stderr)));
+            return Err(anyhow!(
+                "addr2line failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         self.parse_addr2line_output(&stdout, addresses.len())
     }
 
-    fn parse_addr2line_output(&self, output: &str, num_addresses: usize) -> Result<Vec<Vec<Frame>>> {
+    fn parse_addr2line_output(
+        &self,
+        output: &str,
+        num_addresses: usize,
+    ) -> Result<Vec<Vec<Frame>>> {
         let mut results = Vec::new();
         let mut lines = output.lines().map(str::trim).peekable();
 
@@ -309,7 +320,8 @@ impl Symbolizer for Addr2lineSymbolizer {
                 let idx = missing_idx[pos];
                 let frames = fresh.get(pos).cloned().unwrap_or_default();
                 if self.cache.len() < self.config.cache_size {
-                    self.cache.insert((binary.to_string(), addr), frames.clone());
+                    self.cache
+                        .insert((binary.to_string(), addr), frames.clone());
                 }
                 results[idx] = frames;
             }
@@ -362,14 +374,14 @@ impl Symbolizer for CompositeSymbolizer {
                 return Ok(results);
             }
         }
-        
+
         // Fall back to addr2line if enabled
         if self.config.use_addr2line {
             if let Ok(results) = self.addr2line.symbolize(binary, addresses) {
                 return Ok(results);
             }
         }
-        
+
         // If both fail, return empty results
         Ok(vec![Vec::new(); addresses.len()])
     }
@@ -408,13 +420,13 @@ mod tests {
     fn test_llvm_frame_parsing() {
         let config = SymbolizerConfig::default();
         let symbolizer = LlvmSymbolizer::new(config);
-        
+
         let output = "main\n/tmp/test.c:10:5\n";
         let results = symbolizer.parse_llvm_output(output, 1).unwrap();
-        
+
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].len(), 1);
-        
+
         let frame = &results[0][0];
         assert_eq!(frame.function, "main");
         assert_eq!(frame.source_file, Some("/tmp/test.c".to_string()));
@@ -426,13 +438,13 @@ mod tests {
     fn test_addr2line_frame_parsing() {
         let config = SymbolizerConfig::default();
         let symbolizer = Addr2lineSymbolizer::new(config);
-        
+
         let output = "main\n/tmp/test.c:10\n";
         let results = symbolizer.parse_addr2line_output(output, 1).unwrap();
-        
+
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].len(), 1);
-        
+
         let frame = &results[0][0];
         assert_eq!(frame.function, "main");
         assert_eq!(frame.source_file, Some("/tmp/test.c".to_string()));

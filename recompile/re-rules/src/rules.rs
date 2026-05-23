@@ -1,8 +1,7 @@
 //! Hardcoded rules for anomaly detection
 
 use crate::{
-    AnomalyClass, Confidence, Severity, SentinelEvent, EventType, 
-    Evidence, MemoryEvidence
+    AnomalyClass, Confidence, EventType, Evidence, MemoryEvidence, SentinelEvent, Severity,
 };
 use std::collections::HashMap;
 
@@ -54,84 +53,96 @@ impl RuleRegistry {
 
     fn register_default_rules(&mut self) {
         // Rule 1: memcpy/memmove length > alloc size
-        self.rules.insert("R-memcpy-oob".to_string(), Rule {
-            id: "R-memcpy-oob".to_string(),
-            name: "Heap Overflow via memcpy".to_string(),
-            class: AnomalyClass::HeapOverflow,
-            confidence: Confidence::High,
-            severity: Severity::High,
-            debounce: DebounceConfig {
-                min_hits: 2,
-                window_ms: 1500,
+        self.rules.insert(
+            "R-memcpy-oob".to_string(),
+            Rule {
+                id: "R-memcpy-oob".to_string(),
+                name: "Heap Overflow via memcpy".to_string(),
+                class: AnomalyClass::HeapOverflow,
+                confidence: Confidence::High,
+                severity: Severity::High,
+                debounce: DebounceConfig {
+                    min_hits: 2,
+                    window_ms: 1500,
+                },
+                escalation: EscalationConfig {
+                    tool: "asan".to_string(),
+                    reason: "len>alloc_size".to_string(),
+                    estimated_cost: "low".to_string(),
+                    cooldown_ms: 10000,
+                },
+                matcher: Box::new(MemcpyOobMatcher),
             },
-            escalation: EscalationConfig {
-                tool: "asan".to_string(),
-                reason: "len>alloc_size".to_string(),
-                estimated_cost: "low".to_string(),
-                cooldown_ms: 10000,
-            },
-            matcher: Box::new(MemcpyOobMatcher),
-        });
+        );
 
         // Rule 2: double free
-        self.rules.insert("R-double-free".to_string(), Rule {
-            id: "R-double-free".to_string(),
-            name: "Double Free".to_string(),
-            class: AnomalyClass::DoubleFree,
-            confidence: Confidence::Certain,
-            severity: Severity::Critical,
-            debounce: DebounceConfig {
-                min_hits: 1,
-                window_ms: 0,
+        self.rules.insert(
+            "R-double-free".to_string(),
+            Rule {
+                id: "R-double-free".to_string(),
+                name: "Double Free".to_string(),
+                class: AnomalyClass::DoubleFree,
+                confidence: Confidence::Certain,
+                severity: Severity::Critical,
+                debounce: DebounceConfig {
+                    min_hits: 1,
+                    window_ms: 0,
+                },
+                escalation: EscalationConfig {
+                    tool: "asan".to_string(),
+                    reason: "double_free_detected".to_string(),
+                    estimated_cost: "low".to_string(),
+                    cooldown_ms: 0,
+                },
+                matcher: Box::new(DoubleFreeMatcher),
             },
-            escalation: EscalationConfig {
-                tool: "asan".to_string(),
-                reason: "double_free_detected".to_string(),
-                estimated_cost: "low".to_string(),
-                cooldown_ms: 0,
-            },
-            matcher: Box::new(DoubleFreeMatcher),
-        });
+        );
 
         // Rule 3: invalid free (free of non-tracked pointer)
-        self.rules.insert("R-invalid-free".to_string(), Rule {
-            id: "R-invalid-free".to_string(),
-            name: "Invalid Free".to_string(),
-            class: AnomalyClass::InvalidFree,
-            confidence: Confidence::High,
-            severity: Severity::High,
-            debounce: DebounceConfig {
-                min_hits: 1,
-                window_ms: 0,
+        self.rules.insert(
+            "R-invalid-free".to_string(),
+            Rule {
+                id: "R-invalid-free".to_string(),
+                name: "Invalid Free".to_string(),
+                class: AnomalyClass::InvalidFree,
+                confidence: Confidence::High,
+                severity: Severity::High,
+                debounce: DebounceConfig {
+                    min_hits: 1,
+                    window_ms: 0,
+                },
+                escalation: EscalationConfig {
+                    tool: "asan".to_string(),
+                    reason: "invalid_free_detected".to_string(),
+                    estimated_cost: "low".to_string(),
+                    cooldown_ms: 5000,
+                },
+                matcher: Box::new(InvalidFreeMatcher),
             },
-            escalation: EscalationConfig {
-                tool: "asan".to_string(),
-                reason: "invalid_free_detected".to_string(),
-                estimated_cost: "low".to_string(),
-                cooldown_ms: 5000,
-            },
-            matcher: Box::new(InvalidFreeMatcher),
-        });
+        );
 
         // Rule 4: use after free hint (memcpy to freed pointer)
-        self.rules.insert("R-uaf-hint".to_string(), Rule {
-            id: "R-uaf-hint".to_string(),
-            name: "Use After Free Hint".to_string(),
-            class: AnomalyClass::UseAfterFree,
-            confidence: Confidence::Medium,
-            severity: Severity::High,
-            debounce: DebounceConfig {
-                min_hits: 2,
-                window_ms: 2000,
+        self.rules.insert(
+            "R-uaf-hint".to_string(),
+            Rule {
+                id: "R-uaf-hint".to_string(),
+                name: "Use After Free Hint".to_string(),
+                class: AnomalyClass::UseAfterFree,
+                confidence: Confidence::Medium,
+                severity: Severity::High,
+                debounce: DebounceConfig {
+                    min_hits: 2,
+                    window_ms: 2000,
+                },
+                escalation: EscalationConfig {
+                    tool: "asan".to_string(),
+                    reason: "memcpy_to_freed_ptr".to_string(),
+                    estimated_cost: "medium".to_string(),
+                    cooldown_ms: 5000,
+                },
+                matcher: Box::new(UafHintMatcher),
             },
-            escalation: EscalationConfig {
-                tool: "asan".to_string(),
-                reason: "memcpy_to_freed_ptr".to_string(),
-                estimated_cost: "medium".to_string(),
-                cooldown_ms: 5000,
-            },
-            matcher: Box::new(UafHintMatcher),
-        });
+        );
     }
 
     pub fn get_rule(&self, id: &str) -> Option<&Rule> {
@@ -143,7 +154,8 @@ impl RuleRegistry {
     }
 
     pub fn rules_for_class(&self, class: &AnomalyClass) -> Vec<&Rule> {
-        self.rules.values()
+        self.rules
+            .values()
             .filter(|rule| &rule.class == class)
             .collect()
     }
@@ -156,15 +168,19 @@ struct MemcpyOobMatcher;
 impl RuleMatcher for MemcpyOobMatcher {
     fn matches(&self, events: &[SentinelEvent]) -> bool {
         events.iter().any(|event| {
-            matches!(event.event_type, EventType::Memcpy | EventType::Memmove) &&
-            event.alloc_size > 0 &&
-            event.len > event.alloc_size
+            matches!(event.event_type, EventType::Memcpy | EventType::Memmove)
+                && event.alloc_size > 0
+                && event.len > event.alloc_size
         })
     }
 
     fn extract_evidence(&self, events: &[SentinelEvent]) -> Evidence {
-        let memcpy_event = events.iter()
-            .find(|e| matches!(e.event_type, EventType::Memcpy | EventType::Memmove) && e.len > e.alloc_size)
+        let memcpy_event = events
+            .iter()
+            .find(|e| {
+                matches!(e.event_type, EventType::Memcpy | EventType::Memmove)
+                    && e.len > e.alloc_size
+            })
             .expect("memcpy event should exist if rule matches");
 
         Evidence {
@@ -174,7 +190,7 @@ impl RuleMatcher for MemcpyOobMatcher {
                 alloc_size: memcpy_event.alloc_size,
                 operation: format!("{:?}", memcpy_event.event_type),
             }),
-            stacks: None, // Will be filled by symbolization
+            stacks: None,     // Will be filled by symbolization
             alloc_site: None, // Will be filled by symbolization
             event_sequence: vec![memcpy_event.clone()],
         }
@@ -186,7 +202,7 @@ struct DoubleFreeMatcher;
 impl RuleMatcher for DoubleFreeMatcher {
     fn matches(&self, events: &[SentinelEvent]) -> bool {
         let mut freed_ptrs = std::collections::HashSet::new();
-        
+
         for event in events {
             if event.event_type == EventType::Free {
                 if !freed_ptrs.insert(event.addr) {
@@ -200,7 +216,7 @@ impl RuleMatcher for DoubleFreeMatcher {
     fn extract_evidence(&self, events: &[SentinelEvent]) -> Evidence {
         let mut freed_ptrs = std::collections::HashSet::new();
         let mut double_free_event = None;
-        
+
         for event in events {
             if event.event_type == EventType::Free {
                 if !freed_ptrs.insert(event.addr) {
@@ -231,7 +247,7 @@ struct InvalidFreeMatcher;
 impl RuleMatcher for InvalidFreeMatcher {
     fn matches(&self, events: &[SentinelEvent]) -> bool {
         let mut allocated_ptrs = std::collections::HashSet::new();
-        
+
         // Track all allocated pointers
         for event in events {
             match event.event_type {
@@ -253,7 +269,7 @@ impl RuleMatcher for InvalidFreeMatcher {
     fn extract_evidence(&self, events: &[SentinelEvent]) -> Evidence {
         let mut allocated_ptrs = std::collections::HashSet::new();
         let mut invalid_free_event = None;
-        
+
         for event in events {
             match event.event_type {
                 EventType::Malloc | EventType::Mmap => {
@@ -291,36 +307,37 @@ struct UafHintMatcher;
 impl RuleMatcher for UafHintMatcher {
     fn matches(&self, events: &[SentinelEvent]) -> bool {
         let mut freed_ptrs = std::collections::HashSet::new();
-        
+
         // First pass: collect freed pointers
         for event in events {
             if event.event_type == EventType::Free {
                 freed_ptrs.insert(event.addr);
             }
         }
-        
+
         // Second pass: check for memcpy to freed pointers
         events.iter().any(|event| {
-            matches!(event.event_type, EventType::Memcpy | EventType::Memmove) &&
-            freed_ptrs.contains(&event.addr)
+            matches!(event.event_type, EventType::Memcpy | EventType::Memmove)
+                && freed_ptrs.contains(&event.addr)
         })
     }
 
     fn extract_evidence(&self, events: &[SentinelEvent]) -> Evidence {
         let mut freed_ptrs = std::collections::HashSet::new();
         let mut uaf_event = None;
-        
+
         // Collect freed pointers
         for event in events {
             if event.event_type == EventType::Free {
                 freed_ptrs.insert(event.addr);
             }
         }
-        
+
         // Find memcpy to freed pointer
         for event in events {
-            if matches!(event.event_type, EventType::Memcpy | EventType::Memmove) &&
-               freed_ptrs.contains(&event.addr) {
+            if matches!(event.event_type, EventType::Memcpy | EventType::Memmove)
+                && freed_ptrs.contains(&event.addr)
+            {
                 uaf_event = Some(event.clone());
                 break;
             }

@@ -1,9 +1,9 @@
 //! Crashpack writer for generating all artifacts
 
-use crate::{Result, Finding, Environment, BinaryInfo, Manifest};
+use crate::{BinaryInfo, Environment, Finding, Manifest, Result};
 use std::fs;
-use std::path::{Path, PathBuf};
 use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 
 /// Writer for crashpack artifacts
 pub struct CrashpackWriter {
@@ -14,7 +14,7 @@ impl CrashpackWriter {
     /// Create a new crashpack writer
     pub fn new(base_dir: &Path) -> Result<Self> {
         let base_dir = base_dir.to_path_buf();
-        
+
         // Create directory structure
         fs::create_dir_all(&base_dir)?;
         fs::create_dir_all(base_dir.join("env"))?;
@@ -56,7 +56,10 @@ impl CrashpackWriter {
             "recc: {}\nclang: {}\nllvm-symbolizer: {}\nasan: {}\nvalgrind: {}\ngdb: {}\n",
             env.tools.recc_version,
             env.tools.clang_version.as_deref().unwrap_or("unknown"),
-            env.tools.llvm_symbolizer_version.as_deref().unwrap_or("unknown"),
+            env.tools
+                .llvm_symbolizer_version
+                .as_deref()
+                .unwrap_or("unknown"),
             env.tools.asan_version.as_deref().unwrap_or("unknown"),
             env.tools.valgrind_version.as_deref().unwrap_or("unknown"),
             env.tools.gdb_version.as_deref().unwrap_or("unknown")
@@ -79,9 +82,9 @@ impl CrashpackWriter {
                     .file_name()
                     .unwrap_or_default()
                     .to_string_lossy()
-                    .to_string()
+                    .to_string(),
             );
-            
+
             // Copy binary if it exists
             if Path::new(&binary.path).exists() {
                 fs::copy(&binary.path, &binary_path)?;
@@ -106,7 +109,7 @@ impl CrashpackWriter {
     /// Write console.log (copy from build/.re/console.log if it exists)
     pub fn write_console_log(&self) -> Result<()> {
         let console_log_path = self.base_dir.join("console.log");
-        
+
         // Try to copy from build/.re/console.log
         let source_console = Path::new("build/.re/console.log");
         if source_console.exists() {
@@ -115,7 +118,7 @@ impl CrashpackWriter {
             // Create empty console log
             fs::write(&console_log_path, "# Console log not available\n")?;
         }
-        
+
         Ok(())
     }
 
@@ -123,7 +126,7 @@ impl CrashpackWriter {
     pub fn write_repro_script(&self, findings: &[Finding], binaries: &[BinaryInfo]) -> Result<()> {
         let repro_path = self.base_dir.join("repro.sh");
         let repro_binary = primary_repro_binary(binaries);
-        
+
         let mut script = String::new();
         script.push_str("#!/bin/bash\n");
         script.push_str("set -euo pipefail\n\n");
@@ -132,30 +135,37 @@ impl CrashpackWriter {
         if let Some(binary) = &repro_binary {
             script.push_str(&format!("RE_TARGET={}\n", shell_quote(binary)));
             script.push_str("if [[ ! -x \"$RE_TARGET\" ]]; then\n");
-            script.push_str("  echo \"captured binary is missing or not executable: $RE_TARGET\" >&2\n");
+            script.push_str(
+                "  echo \"captured binary is missing or not executable: $RE_TARGET\" >&2\n",
+            );
             script.push_str("  exit 2\n");
             script.push_str("fi\n\n");
         } else {
             script.push_str("echo \"no binary was captured in this crashpack\" >&2\n");
             script.push_str("exit 2\n");
         }
-        
+
         // Add environment setup
         script.push_str("export ASAN_OPTIONS=detect_leaks=1:abort_on_error=1\n");
         script.push_str("export UBSAN_OPTIONS=abort_on_error=1\n");
         script.push_str("export MSAN_OPTIONS=abort_on_error=1\n\n");
-        
+
         // Add repro commands for each finding
         for (i, finding) in findings.iter().enumerate() {
             script.push_str(&format!("# Finding {}: {}\n", i + 1, finding.class));
-            script.push_str(&format!("# Confidence: {}, Severity: {}\n", finding.confidence, finding.severity));
-            
+            script.push_str(&format!(
+                "# Confidence: {}, Severity: {}\n",
+                finding.confidence, finding.severity
+            ));
+
             if let Some(escalation) = &finding.escalation {
                 match escalation.tool.as_str() {
                     "asan" => {
                         script.push_str(&format!("# ASan escalation for {}\n", finding.class));
                         script.push_str("echo \"Running with AddressSanitizer...\"\n");
-                        script.push_str("RE_SANITIZE=address \"$RE_TARGET\" 2>&1 | tee sanitizer/asan.log\n");
+                        script.push_str(
+                            "RE_SANITIZE=address \"$RE_TARGET\" 2>&1 | tee sanitizer/asan.log\n",
+                        );
                     }
                     "valgrind" => {
                         script.push_str(&format!("# Valgrind escalation for {}\n", finding.class));
@@ -168,7 +178,8 @@ impl CrashpackWriter {
                         script.push_str("gdb -batch -ex run -ex bt -ex 'info reg' \"$RE_TARGET\" 2>&1 | tee gdb/backtrace.txt\n");
                     }
                     _ => {
-                        script.push_str(&format!("# Unknown escalation tool: {}\n", escalation.tool));
+                        script
+                            .push_str(&format!("# Unknown escalation tool: {}\n", escalation.tool));
                     }
                 }
             } else {
@@ -176,11 +187,11 @@ impl CrashpackWriter {
             }
             script.push_str("\n");
         }
-        
+
         // Make script executable
         fs::write(&repro_path, script)?;
         fs::set_permissions(&repro_path, fs::Permissions::from_mode(0o755))?;
-        
+
         Ok(())
     }
 
@@ -193,14 +204,17 @@ impl CrashpackWriter {
     }
 
     /// Write env.txt with environment variables
-    pub fn write_env_txt(&self, env_vars: &std::collections::HashMap<String, String>) -> Result<()> {
+    pub fn write_env_txt(
+        &self,
+        env_vars: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
         let env_path = self.base_dir.join("env.txt");
         let mut env_content = String::new();
-        
+
         for (key, value) in env_vars {
             env_content.push_str(&format!("{}={}\n", key, value));
         }
-        
+
         fs::write(env_path, env_content)?;
         Ok(())
     }

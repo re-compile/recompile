@@ -1,10 +1,10 @@
 //! Configuration system for RECC rules engine
 
+use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
-use crate::Result;
 
 /// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,21 +159,17 @@ impl Config {
 
     /// Get cooldown for a specific rule
     pub fn get_cooldown(&self, rule_id: &str) -> Duration {
-        Duration::from_millis(
-            self.rules.cooldowns
-                .get(rule_id)
-                .copied()
-                .unwrap_or(5000) as u64
-        )
+        Duration::from_millis(self.rules.cooldowns.get(rule_id).copied().unwrap_or(5000) as u64)
     }
 
     /// Get timeout for a specific escalation tool
     pub fn get_escalation_timeout(&self, tool: &str) -> Duration {
         Duration::from_secs(
-            self.escalation.timeouts
+            self.escalation
+                .timeouts
                 .get(tool)
                 .copied()
-                .unwrap_or(self.escalation.default_timeout) as u64
+                .unwrap_or(self.escalation.default_timeout) as u64,
         )
     }
 }
@@ -183,7 +179,7 @@ pub fn generate_default_config<P: AsRef<Path>>(path: P) -> Result<()> {
     let config = Config::default();
     let content = toml::to_string_pretty(&config)
         .map_err(|e| crate::RuleEngineError::Config(e.to_string()))?;
-    
+
     std::fs::write(path, content)?;
     Ok(())
 }
