@@ -220,12 +220,24 @@ static __always_inline void mark_allocation_freed(__u32 pid, struct re_alloc_key
         return;
 
     struct re_alloc_info snapshot = *info;
+    snapshot.dealloc_family = RE_SENTINEL_DEALLOC_FREE;
     bpf_map_delete_elem(&allocs, key);
     bpf_map_update_elem(&freed, key, &snapshot, BPF_ANY);
 }
 
+static __always_inline bool alloc_family_matches_dealloc(__u8 alloc_family, __u8 dealloc_family)
+{
+    if (alloc_family == RE_SENTINEL_ALLOC_MALLOC)
+        return dealloc_family == RE_SENTINEL_DEALLOC_FREE;
+    if (alloc_family == RE_SENTINEL_ALLOC_NEW)
+        return dealloc_family == RE_SENTINEL_DEALLOC_DELETE;
+    if (alloc_family == RE_SENTINEL_ALLOC_NEW_ARRAY)
+        return dealloc_family == RE_SENTINEL_DEALLOC_DELETE_ARRAY;
+    return true;
+}
+
 static __always_inline int record_allocation_return(struct pt_regs *ctx, void *ret,
-                                                    __u64 size, bool have_size)
+                                                    __u64 size, bool have_size, __u8 family)
 {
     if (!ret)
         return 0;
@@ -243,12 +255,14 @@ static __always_inline int record_allocation_return(struct pt_regs *ctx, void *r
         .addr = (__u64)ret,
     };
 
-    if (have_size) {
+    bool should_track = have_size || family != RE_SENTINEL_ALLOC_MALLOC;
+    if (should_track) {
         st->flags |= RE_SENTINEL_STATE_ARMED;
         bpf_map_delete_elem(&freed, &key);
         struct re_alloc_info info = {
-            .size = size,
+            .size = have_size ? size : 0,
             .alloc_stack_id = stack_id,
+            .family = family,
         };
         bpf_map_update_elem(&allocs, &key, &info, BPF_ANY);
     }
@@ -264,6 +278,92 @@ static __always_inline int record_allocation_return(struct pt_regs *ctx, void *r
         evt->stack_fp = (__u32)stack_id;
     evt->len = have_size ? saturate_u32(size) : 0;
     evt->alloc_size = evt->len;
+
+    sentinel_event_submit(evt);
+    return 0;
+}
+
+static __always_inline int record_deallocation(struct pt_regs *ctx, void *p, __u8 dealloc_family)
+{
+    if (!p)
+        return 0;
+
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+
+    struct re_alloc_key key = {
+        .pid = pid,
+        .addr = (__u64)p,
+    };
+
+    struct re_alloc_info *info = bpf_map_lookup_elem(&allocs, &key);
+    struct re_alloc_info *prev = bpf_map_lookup_elem(&freed, &key);
+
+    if (!info && prev
+        && (prev->dealloc_family == RE_SENTINEL_DEALLOC_DELETE
+            || prev->dealloc_family == RE_SENTINEL_DEALLOC_DELETE_ARRAY)) {
+        if (dealloc_family == RE_SENTINEL_DEALLOC_FREE)
+            bpf_map_delete_elem(&freed, &key);
+        return 0;
+    }
+
+    __u8 status = RE_SENTINEL_FREE_OK;
+    __u64 size = 0;
+    __s32 alloc_stack = -1;
+    __u8 alloc_family = RE_SENTINEL_ALLOC_UNKNOWN;
+
+    if (!info) {
+        if (prev) {
+            status = RE_SENTINEL_FREE_DOUBLE;
+            size = prev->size;
+            alloc_stack = prev->alloc_stack_id;
+            alloc_family = prev->family;
+        } else {
+            status = RE_SENTINEL_FREE_INVALID;
+        }
+    } else {
+        size = info->size;
+        alloc_stack = info->alloc_stack_id;
+        alloc_family = info->family;
+        if (!alloc_family_matches_dealloc(alloc_family, dealloc_family))
+            status = RE_SENTINEL_FREE_MISMATCH;
+    }
+
+    struct re_sentinel_state *st = sentinel_get_state(pid);
+    if (!st)
+        return 0;
+
+    // Invalid, double, and family-mismatch frees must still be reported even
+    // when this PID never performed a tracked allocation. Keep the arming gate
+    // only for benign frees.
+    if (!(st->flags & RE_SENTINEL_STATE_ARMED) && status == RE_SENTINEL_FREE_OK)
+        return 0;
+
+    int stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+
+    struct re_sentinel_event *evt = sentinel_event_reserve(st, pid_tgid);
+    if (!evt)
+        return 0;
+
+    evt->type = RE_SENTINEL_TYPE_FREE;
+    evt->addr = key.addr;
+    evt->stack_id = stack_id;
+    if (stack_id >= 0)
+        evt->stack_fp = (__u32)stack_id;
+    evt->alloc_size = saturate_u32(size);
+    evt->errno_code = status;
+    evt->len = alloc_family;
+    evt->bytes_ret = dealloc_family;
+
+    if (alloc_stack >= 0)
+        evt->site_id = (unsigned)(alloc_stack + 1);
+
+    if (info) {
+        struct re_alloc_info snapshot = *info;
+        snapshot.dealloc_family = dealloc_family;
+        bpf_map_delete_elem(&allocs, &key);
+        bpf_map_update_elem(&freed, &key, &snapshot, BPF_ANY);
+    }
 
     sentinel_event_submit(evt);
     return 0;
@@ -310,7 +410,7 @@ int BPF_KRETPROBE(u_malloc_exit)
     void *ret = (void *)PT_REGS_RC(ctx);
     __u64 size = 0;
     bool have_size = take_pending_size(&size);
-    return record_allocation_return(ctx, ret, size, have_size);
+    return record_allocation_return(ctx, ret, size, have_size, RE_SENTINEL_ALLOC_MALLOC);
 }
 
 SEC("uprobe/calloc")
@@ -331,7 +431,7 @@ int BPF_KRETPROBE(u_calloc_exit)
     void *ret = (void *)PT_REGS_RC(ctx);
     __u64 size = 0;
     bool have_size = take_pending_size(&size);
-    return record_allocation_return(ctx, ret, size, have_size);
+    return record_allocation_return(ctx, ret, size, have_size, RE_SENTINEL_ALLOC_MALLOC);
 }
 
 SEC("uprobe/realloc")
@@ -376,7 +476,41 @@ int BPF_KRETPROBE(u_realloc_exit)
     if (old && old != (__u64)ret)
         mark_allocation_freed(pid, &old_key);
 
-    return record_allocation_return(ctx, ret, size, have_size);
+    return record_allocation_return(ctx, ret, size, have_size, RE_SENTINEL_ALLOC_MALLOC);
+}
+
+SEC("uprobe/_Znwm")
+int BPF_KPROBE(u_cxx_new_enter)
+{
+    __u64 size = (__u64)PT_REGS_PARM1(ctx);
+    remember_size(size);
+    return 0;
+}
+
+SEC("uretprobe/_Znwm")
+int BPF_KRETPROBE(u_cxx_new_exit)
+{
+    void *ret = (void *)PT_REGS_RC(ctx);
+    __u64 size = 0;
+    bool have_size = take_pending_size(&size);
+    return record_allocation_return(ctx, ret, size, have_size, RE_SENTINEL_ALLOC_NEW);
+}
+
+SEC("uprobe/_Znam")
+int BPF_KPROBE(u_cxx_new_array_enter)
+{
+    __u64 size = (__u64)PT_REGS_PARM1(ctx);
+    remember_size(size);
+    return 0;
+}
+
+SEC("uretprobe/_Znam")
+int BPF_KRETPROBE(u_cxx_new_array_exit)
+{
+    void *ret = (void *)PT_REGS_RC(ctx);
+    __u64 size = 0;
+    bool have_size = take_pending_size(&size);
+    return record_allocation_return(ctx, ret, size, have_size, RE_SENTINEL_ALLOC_NEW_ARRAY);
 }
 
 SEC("uprobe/posix_memalign")
@@ -404,7 +538,7 @@ int BPF_KRETPROBE(u_posix_memalign_exit)
     if (bpf_probe_read_user(&ret_addr, sizeof(ret_addr), (void *)out_slot) != 0)
         return 0;
 
-    return record_allocation_return(ctx, (void *)ret_addr, size, have_size);
+    return record_allocation_return(ctx, (void *)ret_addr, size, have_size, RE_SENTINEL_ALLOC_MALLOC);
 }
 
 SEC("uprobe/aligned_alloc")
@@ -421,7 +555,7 @@ int BPF_KRETPROBE(u_aligned_alloc_exit)
     void *ret = (void *)PT_REGS_RC(ctx);
     __u64 size = 0;
     bool have_size = take_pending_size(&size);
-    return record_allocation_return(ctx, ret, size, have_size);
+    return record_allocation_return(ctx, ret, size, have_size, RE_SENTINEL_ALLOC_MALLOC);
 }
 
 SEC("uprobe/strdup")
@@ -438,76 +572,40 @@ int BPF_KRETPROBE(u_strdup_exit)
     void *ret = (void *)PT_REGS_RC(ctx);
     __u64 size = 0;
     bool have_size = take_pending_size(&size);
-    return record_allocation_return(ctx, ret, size, have_size);
+    return record_allocation_return(ctx, ret, size, have_size, RE_SENTINEL_ALLOC_MALLOC);
 }
 
 SEC("uprobe/free")
 int BPF_KPROBE(u_free_enter)
 {
     void *p = (void *)PT_REGS_PARM1(ctx);
-    if (!p)
-        return 0;
+    return record_deallocation(ctx, p, RE_SENTINEL_DEALLOC_FREE);
+}
 
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    __u32 pid = pid_tgid >> 32;
+SEC("uprobe/_ZdlPv")
+int BPF_KPROBE(u_cxx_delete_enter)
+{
+    void *p = (void *)PT_REGS_PARM1(ctx);
+    return record_deallocation(ctx, p, RE_SENTINEL_DEALLOC_DELETE);
+}
 
-    struct re_alloc_key key = {
-        .pid = pid,
-        .addr = (__u64)p,
-    };
+SEC("uprobe/_ZdlPvm")
+int BPF_KPROBE(u_cxx_delete_sized_enter)
+{
+    void *p = (void *)PT_REGS_PARM1(ctx);
+    return record_deallocation(ctx, p, RE_SENTINEL_DEALLOC_DELETE);
+}
 
-    struct re_alloc_info *info = bpf_map_lookup_elem(&allocs, &key);
-    struct re_alloc_info *prev = bpf_map_lookup_elem(&freed, &key);
+SEC("uprobe/_ZdaPv")
+int BPF_KPROBE(u_cxx_delete_array_enter)
+{
+    void *p = (void *)PT_REGS_PARM1(ctx);
+    return record_deallocation(ctx, p, RE_SENTINEL_DEALLOC_DELETE_ARRAY);
+}
 
-    __u8 status = RE_SENTINEL_FREE_OK;
-    __u64 size = 0;
-    __s32 alloc_stack = -1;
-
-    if (!info) {
-        if (prev) {
-            status = RE_SENTINEL_FREE_DOUBLE;
-            size = prev->size;
-            alloc_stack = prev->alloc_stack_id;
-        } else {
-            status = RE_SENTINEL_FREE_INVALID;
-        }
-    } else {
-        size = info->size;
-        alloc_stack = info->alloc_stack_id;
-    }
-
-    struct re_sentinel_state *st = sentinel_get_state(pid);
-    if (!st)
-        return 0;
-
-    // Invalid and double frees must still be reported even when this PID never
-    // performed a tracked allocation. Keep the arming gate only for benign frees.
-    if (!(st->flags & RE_SENTINEL_STATE_ARMED) && status == RE_SENTINEL_FREE_OK)
-        return 0;
-
-    int stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
-
-    struct re_sentinel_event *evt = sentinel_event_reserve(st, pid_tgid);
-    if (!evt)
-        return 0;
-
-    evt->type = RE_SENTINEL_TYPE_FREE;
-    evt->addr = key.addr;
-    evt->stack_id = stack_id;
-    if (stack_id >= 0)
-        evt->stack_fp = (__u32)stack_id;
-    evt->alloc_size = saturate_u32(size);
-    evt->errno_code = status;
-
-    if (alloc_stack >= 0)
-        evt->site_id = (unsigned)(alloc_stack + 1);
-
-    if (info) {
-        struct re_alloc_info snapshot = *info;
-        bpf_map_delete_elem(&allocs, &key);
-        bpf_map_update_elem(&freed, &key, &snapshot, BPF_ANY);
-    }
-
-    sentinel_event_submit(evt);
-    return 0;
+SEC("uprobe/_ZdaPvm")
+int BPF_KPROBE(u_cxx_delete_array_sized_enter)
+{
+    void *p = (void *)PT_REGS_PARM1(ctx);
+    return record_deallocation(ctx, p, RE_SENTINEL_DEALLOC_DELETE_ARRAY);
 }

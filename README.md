@@ -27,10 +27,18 @@ Validated native findings in Docker:
 - `strncpy_overrun_case` -> `heap_overflow`
 - `double_free` -> `double_free`
 - `invalid_free` -> `invalid_free`
+- `cxx_new_free_mismatch` -> `allocator_mismatch`
+- `cxx_malloc_delete_mismatch` -> `allocator_mismatch`
+- `cxx_new_array_delete_mismatch` -> `allocator_mismatch`
+- `cxx_new_delete_array_mismatch` -> `allocator_mismatch`
 
 Valgrind-first coverage currently includes `use_after_free`, `memory_leak`, and
 `fd_leak`. Already-instrumented sanitizer adapters cover ASan, LSan, and UBSan
 when the user provides binaries built with the matching `-fsanitize=...` flag.
+Native C++ allocator-family coverage currently targets the default libstdc++
+operator new/delete symbols on Linux. Custom overloaded operators, placement
+new/delete, nothrow operators, and aligned C++17 overloads remain outside the
+native MVP.
 
 ## Supported Environment
 

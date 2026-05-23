@@ -3,6 +3,9 @@ set -euo pipefail
 
 mkdir -p build/user-samples build/user-samples-asan build/user-samples-lsan build/user-samples-ubsan
 
+CC=${CC:-cc}
+CXX=${CXX:-c++}
+
 COMMON_FLAGS=(
   -g
   -O0
@@ -39,49 +42,55 @@ UBSAN_FLAGS=(
   -fno-sanitize-recover=undefined
 )
 
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/copy_overrun_case samples/user-binaries/copy_overrun_case.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/memmove_overrun_case samples/user-binaries/memmove_overrun_case.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/memset_overrun_case samples/user-binaries/memset_overrun_case.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/strcpy_overrun_case samples/user-binaries/strcpy_overrun_case.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/strncpy_overrun_case samples/user-binaries/strncpy_overrun_case.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/multi_overrun_case samples/user-binaries/multi_overrun_case.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/posix_memalign_overrun_case samples/user-binaries/posix_memalign_overrun_case.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/aligned_alloc_overrun_case samples/user-binaries/aligned_alloc_overrun_case.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/strdup_overrun_case samples/user-binaries/strdup_overrun_case.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/cache_release_twice samples/user-binaries/cache_release_twice.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/free_stack_slot samples/user-binaries/free_stack_slot.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/realloc_zero_double_free samples/user-binaries/realloc_zero_double_free.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/use_after_free_case samples/user-binaries/use_after_free_case.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/memory_leak_case samples/user-binaries/memory_leak_case.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/fd_leak_case samples/user-binaries/fd_leak_case.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_malloc_free samples/user-binaries/clean_malloc_free.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_realloc_grow samples/user-binaries/clean_realloc_grow.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_failed_realloc samples/user-binaries/clean_failed_realloc.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_realloc_null samples/user-binaries/clean_realloc_null.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_realloc_zero samples/user-binaries/clean_realloc_zero.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_posix_memalign samples/user-binaries/clean_posix_memalign.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_aligned_alloc samples/user-binaries/clean_aligned_alloc.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_strdup samples/user-binaries/clean_strdup.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_bounded_memcpy samples/user-binaries/clean_bounded_memcpy.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_bounded_memmove samples/user-binaries/clean_bounded_memmove.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_bounded_memset samples/user-binaries/clean_bounded_memset.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_bounded_strcpy samples/user-binaries/clean_bounded_strcpy.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_bounded_strncpy samples/user-binaries/clean_bounded_strncpy.c
-cc "${COMMON_FLAGS[@]}" -o build/user-samples/clean_fd_close samples/user-binaries/clean_fd_close.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/copy_overrun_case samples/user-binaries/copy_overrun_case.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/memmove_overrun_case samples/user-binaries/memmove_overrun_case.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/memset_overrun_case samples/user-binaries/memset_overrun_case.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/strcpy_overrun_case samples/user-binaries/strcpy_overrun_case.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/strncpy_overrun_case samples/user-binaries/strncpy_overrun_case.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/multi_overrun_case samples/user-binaries/multi_overrun_case.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/posix_memalign_overrun_case samples/user-binaries/posix_memalign_overrun_case.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/aligned_alloc_overrun_case samples/user-binaries/aligned_alloc_overrun_case.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/strdup_overrun_case samples/user-binaries/strdup_overrun_case.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/cache_release_twice samples/user-binaries/cache_release_twice.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/free_stack_slot samples/user-binaries/free_stack_slot.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/realloc_zero_double_free samples/user-binaries/realloc_zero_double_free.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/use_after_free_case samples/user-binaries/use_after_free_case.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/memory_leak_case samples/user-binaries/memory_leak_case.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/fd_leak_case samples/user-binaries/fd_leak_case.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_malloc_free samples/user-binaries/clean_malloc_free.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_realloc_grow samples/user-binaries/clean_realloc_grow.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_failed_realloc samples/user-binaries/clean_failed_realloc.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_realloc_null samples/user-binaries/clean_realloc_null.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_realloc_zero samples/user-binaries/clean_realloc_zero.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_posix_memalign samples/user-binaries/clean_posix_memalign.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_aligned_alloc samples/user-binaries/clean_aligned_alloc.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_strdup samples/user-binaries/clean_strdup.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_bounded_memcpy samples/user-binaries/clean_bounded_memcpy.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_bounded_memmove samples/user-binaries/clean_bounded_memmove.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_bounded_memset samples/user-binaries/clean_bounded_memset.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_bounded_strcpy samples/user-binaries/clean_bounded_strcpy.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_bounded_strncpy samples/user-binaries/clean_bounded_strncpy.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_fd_close samples/user-binaries/clean_fd_close.c
 
-cc "${ASAN_FLAGS[@]}" -o build/user-samples-asan/use_after_free_case samples/user-binaries/use_after_free_case.c
-cc "${ASAN_FLAGS[@]}" -o build/user-samples-asan/clean_malloc_free samples/user-binaries/clean_malloc_free.c
+"$CXX" -std=c++17 "${COMMON_FLAGS[@]}" -o build/user-samples/clean_cxx_new_delete samples/user-binaries/clean_cxx_new_delete.cpp
+"$CXX" -std=c++17 "${COMMON_FLAGS[@]}" -o build/user-samples/cxx_new_free_mismatch samples/user-binaries/cxx_new_free_mismatch.cpp
+"$CXX" -std=c++17 "${COMMON_FLAGS[@]}" -o build/user-samples/cxx_malloc_delete_mismatch samples/user-binaries/cxx_malloc_delete_mismatch.cpp
+"$CXX" -std=c++17 "${COMMON_FLAGS[@]}" -o build/user-samples/cxx_new_array_delete_mismatch samples/user-binaries/cxx_new_array_delete_mismatch.cpp
+"$CXX" -std=c++17 "${COMMON_FLAGS[@]}" -o build/user-samples/cxx_new_delete_array_mismatch samples/user-binaries/cxx_new_delete_array_mismatch.cpp
 
-cc "${LSAN_FLAGS[@]}" -o build/user-samples-lsan/direct_leak samples/user-binaries/memory_leak_case.c
-cc "${LSAN_FLAGS[@]}" -o build/user-samples-lsan/indirect_leak samples/user-binaries/lsan_indirect_leak.c
-cc "${LSAN_FLAGS[@]}" -o build/user-samples-lsan/clean_malloc_free samples/user-binaries/clean_malloc_free.c
+"$CC" "${ASAN_FLAGS[@]}" -o build/user-samples-asan/use_after_free_case samples/user-binaries/use_after_free_case.c
+"$CC" "${ASAN_FLAGS[@]}" -o build/user-samples-asan/clean_malloc_free samples/user-binaries/clean_malloc_free.c
 
-cc "${UBSAN_FLAGS[@]}" -o build/user-samples-ubsan/signed_overflow samples/user-binaries/ubsan_signed_overflow.c
-cc "${UBSAN_FLAGS[@]}" -o build/user-samples-ubsan/shift_out_of_bounds samples/user-binaries/ubsan_shift_out_of_bounds.c
-cc "${UBSAN_FLAGS[@]}" -o build/user-samples-ubsan/null_pointer samples/user-binaries/ubsan_null_pointer.c
-cc "${UBSAN_FLAGS[@]}" -o build/user-samples-ubsan/misaligned_pointer samples/user-binaries/ubsan_misaligned_pointer.c
-cc "${UBSAN_FLAGS[@]}" -o build/user-samples-ubsan/bounds samples/user-binaries/ubsan_bounds.c
-cc "${UBSAN_FLAGS[@]}" -o build/user-samples-ubsan/clean_malloc_free samples/user-binaries/clean_malloc_free.c
+"$CC" "${LSAN_FLAGS[@]}" -o build/user-samples-lsan/direct_leak samples/user-binaries/memory_leak_case.c
+"$CC" "${LSAN_FLAGS[@]}" -o build/user-samples-lsan/indirect_leak samples/user-binaries/lsan_indirect_leak.c
+"$CC" "${LSAN_FLAGS[@]}" -o build/user-samples-lsan/clean_malloc_free samples/user-binaries/clean_malloc_free.c
+
+"$CC" "${UBSAN_FLAGS[@]}" -o build/user-samples-ubsan/signed_overflow samples/user-binaries/ubsan_signed_overflow.c
+"$CC" "${UBSAN_FLAGS[@]}" -o build/user-samples-ubsan/shift_out_of_bounds samples/user-binaries/ubsan_shift_out_of_bounds.c
+"$CC" "${UBSAN_FLAGS[@]}" -o build/user-samples-ubsan/null_pointer samples/user-binaries/ubsan_null_pointer.c
+"$CC" "${UBSAN_FLAGS[@]}" -o build/user-samples-ubsan/misaligned_pointer samples/user-binaries/ubsan_misaligned_pointer.c
+"$CC" "${UBSAN_FLAGS[@]}" -o build/user-samples-ubsan/bounds samples/user-binaries/ubsan_bounds.c
+"$CC" "${UBSAN_FLAGS[@]}" -o build/user-samples-ubsan/clean_malloc_free samples/user-binaries/clean_malloc_free.c
 
 echo "Built user-style samples under build/user-samples/"
 echo "Built ASan-instrumented samples under build/user-samples-asan/"

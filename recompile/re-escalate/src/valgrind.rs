@@ -69,6 +69,11 @@ pub fn parse_valgrind_output(stdout: &str, stderr: &str) -> ValgrindReport {
             continue;
         }
 
+        if normalized.starts_with("Mismatched free()") {
+            push_detection(&mut detected, "allocator_mismatch", normalized, index + 1);
+            continue;
+        }
+
         if (normalized.contains("definitely lost:") || normalized.contains("are definitely lost"))
             && !normalized.contains("0 bytes")
         {
@@ -173,6 +178,18 @@ mod tests {
 
         let report = parse_valgrind_output("", stderr);
         assert_eq!(report.detected_classes(), vec!["invalid_free"]);
+    }
+
+    #[test]
+    fn parses_allocator_mismatch() {
+        let stderr = r#"==1== Mismatched free() / delete / delete []
+==1==    at 0x484417B: free (vg_replace_malloc.c:872)
+==1==  Address 0x4a45040 is 0 bytes inside a block of size 4 alloc'd
+==1==    at 0x4847A2F: operator new(unsigned long) (vg_replace_malloc.c:483)
+"#;
+
+        let report = parse_valgrind_output("", stderr);
+        assert_eq!(report.detected_classes(), vec!["allocator_mismatch"]);
     }
 
     #[test]

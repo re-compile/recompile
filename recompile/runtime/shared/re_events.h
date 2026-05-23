@@ -74,6 +74,21 @@ enum re_sentinel_free_status {
     RE_SENTINEL_FREE_OK      = 0,
     RE_SENTINEL_FREE_DOUBLE  = 1,
     RE_SENTINEL_FREE_INVALID = 2,
+    RE_SENTINEL_FREE_MISMATCH = 3,
+};
+
+enum re_sentinel_alloc_family {
+    RE_SENTINEL_ALLOC_UNKNOWN   = 0,
+    RE_SENTINEL_ALLOC_MALLOC    = 1,
+    RE_SENTINEL_ALLOC_NEW       = 2,
+    RE_SENTINEL_ALLOC_NEW_ARRAY = 3,
+};
+
+enum re_sentinel_dealloc_family {
+    RE_SENTINEL_DEALLOC_UNKNOWN      = 0,
+    RE_SENTINEL_DEALLOC_FREE         = 1,
+    RE_SENTINEL_DEALLOC_DELETE       = 2,
+    RE_SENTINEL_DEALLOC_DELETE_ARRAY = 3,
 };
 
 struct re_sentinel_extra {
@@ -128,5 +143,7 @@ struct re_alloc_key {
 struct re_alloc_info {
     __u64 size;
     __s32 alloc_stack_id;
-    __s32 _pad;
+    __u8 family;
+    __u8 dealloc_family;
+    __u8 _pad[2];
 };
