@@ -316,6 +316,10 @@ static const char *heap_write_api_name(const struct re_sentinel_event *ev)
         return "memmove";
     case 3:
         return "memset";
+    case 4:
+        return "strcpy";
+    case 5:
+        return "strncpy";
     default:
         break;
     }
@@ -325,6 +329,10 @@ static const char *heap_write_api_name(const struct re_sentinel_event *ev)
         return "memmove";
     case RE_SENTINEL_TYPE_MEMSET:
         return "memset";
+    case RE_SENTINEL_TYPE_STRCPY:
+        return "strcpy";
+    case RE_SENTINEL_TYPE_STRNCPY:
+        return "strncpy";
     case RE_SENTINEL_TYPE_MEMCPY:
     default:
         return "memcpy";
@@ -563,7 +571,9 @@ static int on_sentinel_event(void *ctx, void *data, size_t len)
     switch (ev.type) {
     case RE_SENTINEL_TYPE_MEMCPY:
     case RE_SENTINEL_TYPE_MEMMOVE:
-    case RE_SENTINEL_TYPE_MEMSET: {
+    case RE_SENTINEL_TYPE_MEMSET:
+    case RE_SENTINEL_TYPE_STRCPY:
+    case RE_SENTINEL_TYPE_STRNCPY: {
         // Treat heap overflow as a tracked-allocation signal only. Unknown
         // destination capacity produces too many libc-internal false positives
         // in the current native pipeline.
@@ -644,6 +654,7 @@ static const char *preferred_symbol_aliases(const char *symbol, int idx)
 {
     if (strcmp(symbol, "memcpy") == 0) {
         static const char *aliases[] = {
+            "memcpy@GLIBC_2.17",
             "memcpy@GLIBC_2.2.5",
             "memcpy",
             "__memcpy",
@@ -654,6 +665,7 @@ static const char *preferred_symbol_aliases(const char *symbol, int idx)
 
     if (strcmp(symbol, "memmove") == 0) {
         static const char *aliases[] = {
+            "memmove@GLIBC_2.17",
             "memmove@GLIBC_2.2.5",
             "memmove",
             "__memmove",
@@ -664,9 +676,32 @@ static const char *preferred_symbol_aliases(const char *symbol, int idx)
 
     if (strcmp(symbol, "memset") == 0) {
         static const char *aliases[] = {
+            "memset@GLIBC_2.17",
             "memset@GLIBC_2.2.5",
             "memset",
             "__memset",
+            NULL,
+        };
+        return aliases[idx];
+    }
+
+    if (strcmp(symbol, "strcpy") == 0) {
+        static const char *aliases[] = {
+            "strcpy@GLIBC_2.17",
+            "strcpy@GLIBC_2.2.5",
+            "strcpy",
+            "__strcpy",
+            NULL,
+        };
+        return aliases[idx];
+    }
+
+    if (strcmp(symbol, "strncpy") == 0) {
+        static const char *aliases[] = {
+            "strncpy@GLIBC_2.17",
+            "strncpy@GLIBC_2.2.5",
+            "strncpy",
+            "__strncpy",
             NULL,
         };
         return aliases[idx];
@@ -740,10 +775,12 @@ static struct bpf_link *attach_uprobe_by_name(const struct bpf_program *prog, bo
 
     if (strcmp(symbol, "memcpy") != 0
         && strcmp(symbol, "memmove") != 0
-        && strcmp(symbol, "memset") != 0)
+        && strcmp(symbol, "memset") != 0
+        && strcmp(symbol, "strcpy") != 0
+        && strcmp(symbol, "strncpy") != 0)
         return NULL;
 
-    // IFUNC-backed libc memory routines on aarch64 glibc can fail
+    // IFUNC-backed libc memory/string routines on aarch64 glibc can fail
     // name-based attachment. Resolve the actual implementation address from
     // the loaded libc and attach by offset as a narrow fallback.
     void *handle = dlopen(binary_path, RTLD_LAZY | RTLD_LOCAL);
@@ -1458,7 +1495,7 @@ static int run_dedupe_self_test(void)
 static void usage(const char *argv0){
     fprintf(stderr,
         "usage: %s [--heap <heap_tracker.o>] --obj <copy_checker.o> [--sentinel <sentinel.o>]\n"
-        "       [--binary <path>] [--pid <pid>] [--libc <libc.so>] [--func memcpy|memmove|memset]\n"
+        "       [--binary <path>] [--pid <pid>] [--libc <libc.so>] [--func memcpy|memmove|memset|strcpy|strncpy]\n"
         "       [--out <path>] [--crashpack <dir>] [--self-test-dedupe]\n"
         "\n"
         "Options:\n"
@@ -1468,7 +1505,7 @@ static void usage(const char *argv0){
         "  --binary <path>    Filter events to this binary only\n"
         "  --pid <pid>        Attach to one target PID only\n"
         "  --libc <path>      Path to libc.so.6 (auto-detected if not specified)\n"
-        "  --func <name>      Filter to specific function (e.g., memcpy, memmove, memset)\n"
+        "  --func <name>      Filter to specific function (e.g., memcpy, memmove, memset, strcpy, strncpy)\n"
         "  --out <path>       Output file for events (default: stdout)\n"
         "  --crashpack <dir>  Directory for findings (default: ./crashpack)\n"
         "  --self-test-dedupe Run runtime dedupe self-test and exit\n",

@@ -49,7 +49,8 @@ Current runtime source of truth.
 Responsibilities:
 
 - load BPF objects
-- attach uprobes to `malloc`, `calloc`, `realloc`, `free`, and `memcpy`
+- attach uprobes to `malloc`, `calloc`, `realloc`, `free`, `memcpy`, `memmove`,
+  `memset`, scoped `strcpy`, and scoped `strncpy`
 - filter to the target process
 - snapshot module mappings for short-lived processes
 - symbolize stack frames when possible
@@ -81,15 +82,17 @@ Current expectation:
 - write structured escalation results with command, exit status, raw output paths, parsed report path, and detected classes
 - support explicit binary scans for no-finding crashpacks without inventing a synthetic finding
 
-Current implemented adapter:
+Current implemented adapters:
 
 - `valgrind` for existing binaries in crashpacks and explicit binary scans
 - `asan` for binaries that were already compiled with `-fsanitize=address`
+- `lsan` for binaries that were already compiled with `-fsanitize=leak`
+- `ubsan` for binaries that were already compiled with `-fsanitize=undefined`
 
-ASan does not run against ordinary binaries and does not rebuild source files
-implicitly. If the crashpack binary does not contain ASan instrumentation,
-the adapter returns a structured failure explaining the `-fsanitize=address`
-requirement.
+Sanitizer adapters do not run against ordinary binaries and do not rebuild
+source files implicitly. If the crashpack binary does not contain the requested
+sanitizer instrumentation, the adapter returns a structured failure explaining
+the required compile flag.
 
 ### `re-rules/`
 
@@ -238,6 +241,19 @@ Current Valgrind-first classes:
 - `use_after_free`
 - `memory_leak`
 - `fd_leak`
+
+Current native heap-write coverage:
+
+- `memcpy`
+- `memmove`
+- `memset`
+- scoped `strcpy`
+- scoped `strncpy`
+
+Deferred native string-copy coverage:
+
+- `strcat`
+- `strncat`
 
 ## Source Quality
 

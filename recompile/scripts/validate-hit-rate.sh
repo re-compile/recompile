@@ -39,6 +39,8 @@ samples=(
     "copy_overrun_case:heap_overflow:heap_overflow:1"
     "memmove_overrun_case:heap_overflow:heap_overflow:1"
     "memset_overrun_case:heap_overflow:heap_overflow:1"
+    "strcpy_overrun_case:heap_overflow:heap_overflow:1"
+    "strncpy_overrun_case:heap_overflow:heap_overflow:1"
     "multi_overrun_case:heap_overflow:heap_overflow:2"
     "cache_release_twice:double_free:double_free:1"
     "free_stack_slot:invalid_free:invalid_free:1"
@@ -49,6 +51,8 @@ samples=(
     "clean_bounded_memcpy:__none__:__none__:0"
     "clean_bounded_memmove:__none__:__none__:0"
     "clean_bounded_memset:__none__:__none__:0"
+    "clean_bounded_strcpy:__none__:__none__:0"
+    "clean_bounded_strncpy:__none__:__none__:0"
     "clean_fd_close:__none__:__none__:0"
 )
 

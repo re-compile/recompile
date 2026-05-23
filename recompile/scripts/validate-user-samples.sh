@@ -22,6 +22,8 @@ samples=(
     "build/user-samples/copy_overrun_case:heap_overflow:memcpy"
     "build/user-samples/memmove_overrun_case:heap_overflow:memmove"
     "build/user-samples/memset_overrun_case:heap_overflow:memset"
+    "build/user-samples/strcpy_overrun_case:heap_overflow:strcpy"
+    "build/user-samples/strncpy_overrun_case:heap_overflow:strncpy"
     "build/user-samples/cache_release_twice:double_free:free"
     "build/user-samples/free_stack_slot:invalid_free:free"
 )
@@ -65,6 +67,8 @@ clean_samples=(
     "build/user-samples/clean_bounded_memcpy"
     "build/user-samples/clean_bounded_memmove"
     "build/user-samples/clean_bounded_memset"
+    "build/user-samples/clean_bounded_strcpy"
+    "build/user-samples/clean_bounded_strncpy"
     "build/user-samples/fd_leak_case"
     "build/user-samples/clean_fd_close"
 )
