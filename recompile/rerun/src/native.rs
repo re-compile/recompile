@@ -256,8 +256,7 @@ pub fn run_native_with_options(
 
     // Terminate the agent
     println!("Stopping agent...");
-    let _ = agent.kill();
-    let _ = agent.wait();
+    terminate_agent_gracefully(&mut agent);
 
     let (findings_path, issue_group_count) = finalize_findings(&config.crashpack_dir, &binary_abs)?;
     let findings = read_findings(&findings_path)?;
@@ -534,6 +533,31 @@ fn start_agent(config: &NativeConfig, binary_path: &Path, target_pid: u32) -> Re
         .with_context(|| format!("Failed to start agent: {}", config.re_mini_path.display()))?;
 
     Ok(child)
+}
+
+#[cfg(target_os = "linux")]
+fn terminate_agent_gracefully(agent: &mut Child) {
+    let pid = agent.id() as i32;
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+
+    for _ in 0..20 {
+        match agent.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(_) => return,
+        }
+    }
+
+    let _ = agent.kill();
+    let _ = agent.wait();
+}
+
+#[cfg(not(target_os = "linux"))]
+fn terminate_agent_gracefully(agent: &mut Child) {
+    let _ = agent.kill();
+    let _ = agent.wait();
 }
 
 #[cfg(target_os = "linux")]
@@ -998,10 +1022,15 @@ fn build_agent_evidence_pack(
                         .unwrap_or(Value::Null),
                 },
                 "operation": finding_string(finding, &["evidence", "memory", "operation"])
+                    .or_else(|| finding_string(finding, &["evidence", "resource", "operation"]))
                     .or_else(|| finding_string(finding, &["evidence", "api"]))
                     .unwrap_or_else(|| "unknown".to_string()),
                 "memory": finding.get("evidence")
                     .and_then(|value| value.get("memory"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "resource": finding.get("evidence")
+                    .and_then(|value| value.get("resource"))
                     .cloned()
                     .unwrap_or(Value::Null),
                 "stacks": finding.get("evidence")

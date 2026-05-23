@@ -57,9 +57,15 @@ pub struct FindingProvenance {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Evidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<MemoryEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stacks: Option<StackEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alloc_site: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_sequence: Option<Vec<serde_json::Value>>,
 }
 
@@ -73,8 +79,14 @@ pub struct MemoryEvidence {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StackEvidence {
+    #[serde(default)]
     pub alloc: Vec<String>,
+    #[serde(default)]
     pub call: Vec<String>,
+    #[serde(default)]
+    pub open: Vec<String>,
+    #[serde(default)]
+    pub action: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

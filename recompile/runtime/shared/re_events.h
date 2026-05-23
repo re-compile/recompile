@@ -47,6 +47,7 @@ enum re_sentinel_type {
     RE_SENTINEL_TYPE_SIGNAL_FAULT  = 31,
     RE_SENTINEL_TYPE_SEGFAULT      = 40,
     RE_SENTINEL_TYPE_MARK_FLUSH    = 50,
+    RE_SENTINEL_TYPE_FD_CLOSE      = 60,
 };
 
 /* Lock kinds (u8) for concurrency events */
@@ -89,6 +90,13 @@ enum re_sentinel_dealloc_family {
     RE_SENTINEL_DEALLOC_FREE         = 1,
     RE_SENTINEL_DEALLOC_DELETE       = 2,
     RE_SENTINEL_DEALLOC_DELETE_ARRAY = 3,
+};
+
+enum re_sentinel_fd_status {
+    RE_SENTINEL_FD_OK           = 0,
+    RE_SENTINEL_FD_DOUBLE_CLOSE = 1,
+    RE_SENTINEL_FD_INVALID_CLOSE = 2,
+    RE_SENTINEL_FD_LEAK         = 3,
 };
 
 struct re_sentinel_extra {
@@ -146,4 +154,16 @@ struct re_alloc_info {
     __u8 family;
     __u8 dealloc_family;
     __u8 _pad[2];
+};
+
+struct re_fd_key {
+    __u32 pid;
+    __s32 fd;
+};
+
+struct re_fd_info {
+    __s32 open_stack_id;
+    __s32 close_stack_id;
+    __u64 opened_ts_ns;
+    __u64 closed_ts_ns;
 };

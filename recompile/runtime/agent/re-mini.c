@@ -161,6 +161,7 @@ static const char *out_path = NULL;  // NULL = stdout, or set via --out
 static const char *crashpack_dir = NULL;  // NULL = cwd/crashpack, or set via --crashpack
 static int out_fd = -1;
 static int ustacks_fd = -1;
+static int open_fds_fd = -1;
 static __u32 self_pid = 0;
 static bool symbolize_debug = false;
 
@@ -169,6 +170,9 @@ enum finding_dedupe_kind {
     FINDING_DEDUPE_DOUBLE_FREE = 2,
     FINDING_DEDUPE_INVALID_FREE = 3,
     FINDING_DEDUPE_ALLOCATOR_MISMATCH = 4,
+    FINDING_DEDUPE_FD_DOUBLE_CLOSE = 5,
+    FINDING_DEDUPE_FD_INVALID_CLOSE = 6,
+    FINDING_DEDUPE_FD_LEAK = 7,
 };
 
 struct emitted_finding_key {
@@ -350,6 +354,148 @@ static void emit_v1_finding(const char *finding_json, const char *output_dir)
     } else {
         log_line("Failed to open %s for writing: %s", last_finding_path, strerror(errno));
     }
+}
+
+static const char *fd_status_kind(__u8 status)
+{
+    switch (status) {
+    case RE_SENTINEL_FD_DOUBLE_CLOSE:
+        return "double_close";
+    case RE_SENTINEL_FD_INVALID_CLOSE:
+        return "invalid_close";
+    case RE_SENTINEL_FD_LEAK:
+        return "fd_leak";
+    default:
+        return "fd_lifecycle";
+    }
+}
+
+static enum finding_dedupe_kind fd_dedupe_kind(__u8 status)
+{
+    switch (status) {
+    case RE_SENTINEL_FD_DOUBLE_CLOSE:
+        return FINDING_DEDUPE_FD_DOUBLE_CLOSE;
+    case RE_SENTINEL_FD_INVALID_CLOSE:
+        return FINDING_DEDUPE_FD_INVALID_CLOSE;
+    case RE_SENTINEL_FD_LEAK:
+        return FINDING_DEDUPE_FD_LEAK;
+    default:
+        return FINDING_DEDUPE_FD_INVALID_CLOSE;
+    }
+}
+
+static void emit_fd_finding(const struct re_sentinel_event *ev, __u8 status,
+    struct frame_info *action_frames, int action_count,
+    struct frame_info *open_frames, int open_count)
+{
+    const struct frame_info *primary_action = select_primary(action_frames, action_count);
+    const struct frame_info *primary_open = select_primary(open_frames, open_count);
+    const struct frame_info *primary = choose_primary_frame(primary_action, primary_open);
+    const char *kind = fd_status_kind(status);
+
+    char action_stack_json[1536];
+    char open_stack_json[1536];
+    build_stack_json(action_frames, action_count, action_stack_json, sizeof(action_stack_json));
+    build_stack_json(open_frames, open_count, open_stack_json, sizeof(open_stack_json));
+
+    const char *location_summary = (primary && primary->summary[0]) ? primary->summary : "unknown location";
+    char message[512];
+    if (status == RE_SENTINEL_FD_LEAK) {
+        snprintf(message, sizeof(message),
+                 "fd leak: descriptor %d was opened but not closed before process exit (opened at %s)",
+                 ev->fd,
+                 location_summary);
+    } else if (status == RE_SENTINEL_FD_DOUBLE_CLOSE) {
+        snprintf(message, sizeof(message),
+                 "double close: descriptor %d was closed again after it was already closed at %s",
+                 ev->fd,
+                 location_summary);
+    } else {
+        snprintf(message, sizeof(message),
+                 "invalid close: close(%d) failed for an untracked descriptor at %s",
+                 ev->fd,
+                 location_summary);
+    }
+
+    char escaped_message[512];
+    json_escape(message, escaped_message, sizeof(escaped_message));
+
+    char fix_hint[512];
+    if (status == RE_SENTINEL_FD_LEAK) {
+        snprintf(fix_hint, sizeof(fix_hint),
+                 "Close descriptor %d on every successful open/acquire path, including error paths",
+                 ev->fd);
+    } else if (status == RE_SENTINEL_FD_DOUBLE_CLOSE) {
+        snprintf(fix_hint, sizeof(fix_hint),
+                 "Ensure descriptor %d has a single owner, set it to -1 after close, or guard duplicate cleanup paths",
+                 ev->fd);
+    } else {
+        snprintf(fix_hint, sizeof(fix_hint),
+                 "Only close descriptors returned by open/openat/creat and still owned by this code path");
+    }
+    char escaped_fix[512];
+    json_escape(fix_hint, escaped_fix, sizeof(escaped_fix));
+
+    char primary_uri[PATH_MAX + 8] = "file://unknown";
+    int primary_line = 0;
+    int primary_col = 0;
+    if (primary && primary->has_symbol && primary->file[0]) {
+        snprintf(primary_uri, sizeof(primary_uri), "file://%s", primary->file);
+        primary_line = primary->line > 0 ? primary->line - 1 : 0;
+        primary_col = primary->column > 0 ? primary->column - 1 : 0;
+    }
+
+    char primary_json[256];
+    snprintf(primary_json, sizeof(primary_json),
+             "{\"uri\":\"%s\",\"range\":{\"start\":{\"line\":%d,\"character\":%d},\"end\":{\"line\":%d,\"character\":%d}}}",
+             primary_uri, primary_line, primary_col, primary_line, primary_col + 1);
+
+    char finding[4096];
+    snprintf(finding, sizeof(finding),
+             "RE:FINDING: {\"id\":\"F-%s-%llu\",\"origin\":\"ebpf\",\"kind\":\"%s\","
+             "\"severity\":\"error\",\"message\":\"%s\",\"primaryLocation\":%s,"
+             "\"evidence\":{\"api\":\"fd_lifecycle\",\"resource\":{\"type\":\"fd\",\"fd\":%d,"
+             "\"operation\":\"%s\",\"return_value\":%d},"
+             "\"stacks\":{\"open\":%s,\"action\":%s}},\"fixHints\":[\"%s\"],"
+             "\"dataQuality\":{\"eventsDropped\":0}}\n",
+             kind,
+             (unsigned long long)ev->ts_ns,
+             kind,
+             escaped_message,
+             primary_json,
+             ev->fd,
+             kind,
+             ev->bytes_ret,
+             open_stack_json,
+             action_stack_json,
+             escaped_fix);
+
+    dprintf(out_fd, "%s", finding);
+
+    char v1_finding[4096];
+    snprintf(v1_finding, sizeof(v1_finding),
+             "{\"schema_version\":\"1.0\",\"id\":\"F-%s-%llu\",\"class\":\"%s\","
+             "\"confidence\":\"high\",\"severity\":\"high\",\"timestamp\":%llu,\"pid\":%u,"
+             "\"evidence\":{\"resource\":{\"type\":\"fd\",\"fd\":%d,\"operation\":\"%s\","
+             "\"return_value\":%d},\"stacks\":{\"open\":%s,\"action\":%s},"
+             "\"alloc_site\":\"%s\"},"
+             "\"escalation\":{\"tool\":\"valgrind\",\"reason\":\"%s_detected\","
+             "\"estimated_cost\":\"medium\",\"cooldown_ms\":5000},\"related\":[]}",
+             kind,
+             (unsigned long long)ev->ts_ns,
+             kind,
+             (unsigned long long)ev->ts_ns,
+             ev->pid,
+             ev->fd,
+             kind,
+             ev->bytes_ret,
+             open_stack_json,
+             action_stack_json,
+             primary ? primary->file : "unknown",
+             kind);
+
+    emit_v1_finding(v1_finding, crashpack_dir ? crashpack_dir : "crashpack");
+    log_line("%s: pid=%u fd=%d at %s", kind, ev->pid, ev->fd, location_summary);
 }
 
 static const char *heap_write_api_name(const struct re_sentinel_event *ev)
@@ -748,6 +894,30 @@ static int on_sentinel_event(void *ctx, void *data, size_t len)
         emit_free_finding(&ev, status, free_frames, free_count, alloc_frames, alloc_count);
         break;
     }
+    case RE_SENTINEL_TYPE_FD_CLOSE: {
+        __u8 status = (ev.errno_code >= RE_SENTINEL_FD_DOUBLE_CLOSE
+            && ev.errno_code <= RE_SENTINEL_FD_LEAK)
+            ? (__u8)ev.errno_code : RE_SENTINEL_FD_OK;
+        if (status == RE_SENTINEL_FD_OK)
+            return 0;
+
+        struct emitted_finding_key key = finding_key_from_event(&ev, fd_dedupe_kind(status), status);
+        if (finding_already_emitted(&key))
+            return 0;
+
+        __s32 open_sid = -1;
+        if (ev.site_id)
+            open_sid = (__s32)ev.site_id - 1;
+
+        struct frame_info action_frames[MAX_CALL_FRAMES];
+        struct frame_info open_frames[MAX_CALL_FRAMES];
+        int action_count = collect_call_frames(ev.pid, ev.stack_id, action_frames, MAX_CALL_FRAMES);
+        int open_count = collect_call_frames(ev.pid, open_sid, open_frames, MAX_CALL_FRAMES);
+
+        mark_finding_emitted(&key);
+        emit_fd_finding(&ev, status, action_frames, action_count, open_frames, open_count);
+        break;
+    }
     default:
         break;
     }
@@ -877,6 +1047,66 @@ static const char *preferred_symbol_aliases(const char *symbol, int idx)
         static const char *aliases[] = {
             "free",
             "__libc_free",
+            NULL,
+        };
+        return aliases[idx];
+    }
+
+    if (strcmp(symbol, "open") == 0) {
+        static const char *aliases[] = {
+            "open",
+            "__open",
+            "__libc_open",
+            NULL,
+        };
+        return aliases[idx];
+    }
+
+    if (strcmp(symbol, "open64") == 0) {
+        static const char *aliases[] = {
+            "open64",
+            "__open64",
+            "__libc_open64",
+            NULL,
+        };
+        return aliases[idx];
+    }
+
+    if (strcmp(symbol, "openat") == 0) {
+        static const char *aliases[] = {
+            "openat",
+            "__openat",
+            "__libc_openat",
+            NULL,
+        };
+        return aliases[idx];
+    }
+
+    if (strcmp(symbol, "openat64") == 0) {
+        static const char *aliases[] = {
+            "openat64",
+            "__openat64",
+            "__libc_openat64",
+            NULL,
+        };
+        return aliases[idx];
+    }
+
+    if (strcmp(symbol, "creat") == 0) {
+        static const char *aliases[] = {
+            "creat",
+            "__creat",
+            "__libc_creat",
+            NULL,
+        };
+        return aliases[idx];
+    }
+
+    if (strcmp(symbol, "close") == 0) {
+        static const char *aliases[] = {
+            "close",
+            "__close",
+            "__libc_close",
             NULL,
         };
         return aliases[idx];
@@ -1416,6 +1646,61 @@ static bool allocator_mismatch_emitted_for_addr(__u32 pid, __u64 addr)
     return false;
 }
 
+static void drain_fd_leaks(void)
+{
+    if (open_fds_fd < 0)
+        return;
+
+    struct re_fd_key prev = {};
+    struct re_fd_key key = {};
+    void *prev_ptr = NULL;
+
+    while (bpf_map_get_next_key(open_fds_fd, prev_ptr, &key) == 0) {
+        prev = key;
+        prev_ptr = &prev;
+
+        if (target_pid > 0 && key.pid != (__u32)target_pid)
+            continue;
+        if (key.fd < 0)
+            continue;
+        if (!ensure_pid_allowed(key.pid))
+            continue;
+
+        struct re_fd_info info = {};
+        if (bpf_map_lookup_elem(open_fds_fd, &key, &info) != 0)
+            continue;
+
+        struct re_sentinel_event ev = {
+            .version = RE_SENTINEL_EVENT_VERSION,
+            .type = RE_SENTINEL_TYPE_FD_CLOSE,
+            .pid = key.pid,
+            .tid = key.pid,
+            .site_id = info.open_stack_id >= 0 ? (__u32)(info.open_stack_id + 1) : 0,
+            .stack_id = -1,
+            .fd = key.fd,
+            .bytes_ret = 0,
+            .errno_code = RE_SENTINEL_FD_LEAK,
+            .seq = 0,
+            .ts_ns = info.opened_ts_ns,
+            .addr = (__u64)(__u32)key.fd,
+        };
+
+        struct emitted_finding_key finding_key =
+            finding_key_from_event(&ev, FINDING_DEDUPE_FD_LEAK, RE_SENTINEL_FD_LEAK);
+        if (finding_already_emitted(&finding_key))
+            continue;
+
+        __s32 open_sid = info.open_stack_id;
+        struct frame_info action_frames[MAX_CALL_FRAMES];
+        struct frame_info open_frames[MAX_CALL_FRAMES];
+        int action_count = 0;
+        int open_count = collect_call_frames(key.pid, open_sid, open_frames, MAX_CALL_FRAMES);
+
+        mark_finding_emitted(&finding_key);
+        emit_fd_finding(&ev, RE_SENTINEL_FD_LEAK, action_frames, action_count, open_frames, open_count);
+    }
+}
+
 // Run symbolizer via fork/exec (avoids shell injection)
 static FILE *run_symbolizer(const char *module, __u64 offset) {
     int pipefd[2];
@@ -1832,6 +2117,13 @@ int main(int argc, char **argv){
         } else {
             log_line("heap tracker missing 'sentinel_state' map");
         }
+
+        struct bpf_map *open_fds_map = bpf_object__find_map_by_name(heap_obj, "open_fds");
+        if (open_fds_map) {
+            open_fds_fd = bpf_map__fd(open_fds_map);
+        } else {
+            log_line("heap tracker missing 'open_fds' map");
+        }
     }
 
     struct bpf_object *obj = bpf_object__open_file(obj_path, NULL);
@@ -1978,6 +2270,9 @@ int main(int argc, char **argv){
         if (rb) ring_buffer__poll(rb, 250);
         else    usleep(200*1000);
     }
+    if (rb)
+        ring_buffer__poll(rb, 0);
+    drain_fd_leaks();
     (void)heap_links;
     (void)copy_links;
     (void)sentinel_links;

@@ -29,6 +29,22 @@ struct {
     __type(value, struct re_alloc_info);
 } freed SEC(".maps");
 
+// pid/fd -> open lifecycle info. Drained by userland on target exit to detect leaks.
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
+    __type(key,   struct re_fd_key);
+    __type(value, struct re_fd_info);
+} open_fds SEC(".maps");
+
+// pid/fd -> recently closed lifecycle info. Used to distinguish double-close from invalid-close.
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
+    __type(key,   struct re_fd_key);
+    __type(value, struct re_fd_info);
+} closed_fds SEC(".maps");
+
 // tid -> pending size for malloc/calloc/realloc (entry -> return)
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -52,6 +68,19 @@ struct {
     __type(key,   __u32);   // TID
     __type(value, __u64);   // user-space pointer slot address
 } pending_out_ptr SEC(".maps");
+
+struct re_pending_close {
+    __s32 fd;
+    __s32 stack_id;
+};
+
+// tid -> close(fd) entry metadata, consumed by close return.
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 8192);
+    __type(key,   __u32);
+    __type(value, struct re_pending_close);
+} pending_close SEC(".maps");
 
 // Sentinel ring buffer (shared with other programs)
 struct {
@@ -194,6 +223,28 @@ static __always_inline bool take_pending_out_ptr(__u64 *out)
         return false;
     *out = *p;
     bpf_map_delete_elem(&pending_out_ptr, &tid);
+    return true;
+}
+
+static __always_inline void remember_close_fd(__s32 fd, __s32 stack_id)
+{
+    __u32 tid = get_tid();
+    struct re_pending_close info = {
+        .fd = fd,
+        .stack_id = stack_id,
+    };
+    bpf_map_update_elem(&pending_close, &tid, &info, BPF_ANY);
+}
+
+static __always_inline bool take_pending_close_fd(struct re_pending_close *out)
+{
+    __u32 tid = get_tid();
+    struct re_pending_close *p = bpf_map_lookup_elem(&pending_close, &tid);
+    if (!p)
+        return false;
+    if (out)
+        *out = *p;
+    bpf_map_delete_elem(&pending_close, &tid);
     return true;
 }
 
@@ -364,6 +415,106 @@ static __always_inline int record_deallocation(struct pt_regs *ctx, void *p, __u
         bpf_map_delete_elem(&allocs, &key);
         bpf_map_update_elem(&freed, &key, &snapshot, BPF_ANY);
     }
+
+    sentinel_event_submit(evt);
+    return 0;
+}
+
+static __always_inline int record_fd_open_return(struct pt_regs *ctx, long ret)
+{
+    __s64 rc = (__s64)ret;
+    if (rc < 0 || rc > 0x7fffffff)
+        return 0;
+
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+    __s32 fd = (__s32)rc;
+    int stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+
+    struct re_sentinel_state *st = sentinel_get_state(pid);
+    if (st)
+        st->flags |= RE_SENTINEL_STATE_ARMED;
+
+    struct re_fd_key key = {
+        .pid = pid,
+        .fd = fd,
+    };
+    struct re_fd_info info = {
+        .open_stack_id = stack_id,
+        .close_stack_id = -1,
+        .opened_ts_ns = bpf_ktime_get_ns(),
+        .closed_ts_ns = 0,
+    };
+
+    bpf_map_delete_elem(&closed_fds, &key);
+    bpf_map_update_elem(&open_fds, &key, &info, BPF_ANY);
+    return 0;
+}
+
+static __always_inline int record_fd_close_return(struct pt_regs *ctx, long ret)
+{
+    struct re_pending_close pending_info = {};
+    if (!take_pending_close_fd(&pending_info))
+        return 0;
+
+    __s32 fd = pending_info.fd;
+    if (fd < 0 && ret == 0)
+        return 0;
+
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+    struct re_fd_key key = {
+        .pid = pid,
+        .fd = fd,
+    };
+    struct re_fd_info *active = bpf_map_lookup_elem(&open_fds, &key);
+
+    if (ret == 0) {
+        if (active) {
+            struct re_fd_info snapshot = *active;
+            snapshot.close_stack_id = pending_info.stack_id;
+            snapshot.closed_ts_ns = bpf_ktime_get_ns();
+            bpf_map_delete_elem(&open_fds, &key);
+            bpf_map_update_elem(&closed_fds, &key, &snapshot, BPF_ANY);
+        }
+        return 0;
+    }
+
+    // If libc reports a close failure for a descriptor we still consider open,
+    // do not emit a lifecycle bug. The descriptor ownership is unresolved.
+    if (active)
+        return 0;
+
+    struct re_fd_info *closed = bpf_map_lookup_elem(&closed_fds, &key);
+    __u8 status = RE_SENTINEL_FD_INVALID_CLOSE;
+    __s32 open_stack = -1;
+    if (closed) {
+        status = RE_SENTINEL_FD_DOUBLE_CLOSE;
+        open_stack = closed->open_stack_id;
+    }
+
+    struct re_sentinel_state *st = sentinel_get_state(pid);
+    if (!st)
+        return 0;
+
+    int stack_id = pending_info.stack_id;
+    if (stack_id < 0)
+        stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+
+    struct re_sentinel_event *evt = sentinel_event_reserve(st, pid_tgid);
+    if (!evt)
+        return 0;
+
+    evt->type = RE_SENTINEL_TYPE_FD_CLOSE;
+    evt->fd = fd;
+    evt->addr = (__u64)(__u32)fd;
+    evt->stack_id = stack_id;
+    if (stack_id >= 0)
+        evt->stack_fp = (__u32)stack_id;
+    evt->errno_code = status;
+    evt->bytes_ret = (__s32)ret;
+    if (open_stack >= 0)
+        evt->site_id = (__u32)(open_stack + 1);
 
     sentinel_event_submit(evt);
     return 0;
@@ -608,4 +759,64 @@ int BPF_KPROBE(u_cxx_delete_array_sized_enter)
 {
     void *p = (void *)PT_REGS_PARM1(ctx);
     return record_deallocation(ctx, p, RE_SENTINEL_DEALLOC_DELETE_ARRAY);
+}
+
+SEC("uretprobe/open")
+int BPF_KRETPROBE(u_open_exit)
+{
+    return record_fd_open_return(ctx, PT_REGS_RC(ctx));
+}
+
+SEC("uretprobe/open64")
+int BPF_KRETPROBE(u_open64_exit)
+{
+    return record_fd_open_return(ctx, PT_REGS_RC(ctx));
+}
+
+SEC("uretprobe/openat")
+int BPF_KRETPROBE(u_openat_exit)
+{
+    return record_fd_open_return(ctx, PT_REGS_RC(ctx));
+}
+
+SEC("uretprobe/openat64")
+int BPF_KRETPROBE(u_openat64_exit)
+{
+    return record_fd_open_return(ctx, PT_REGS_RC(ctx));
+}
+
+SEC("uretprobe/creat")
+int BPF_KRETPROBE(u_creat_exit)
+{
+    return record_fd_open_return(ctx, PT_REGS_RC(ctx));
+}
+
+SEC("uprobe/close")
+int BPF_KPROBE(u_close_enter)
+{
+    __s32 fd = (__s32)PT_REGS_PARM1(ctx);
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_close_fd(fd, stack_id);
+    return 0;
+}
+
+SEC("uretprobe/close")
+int BPF_KRETPROBE(u_close_exit)
+{
+    return record_fd_close_return(ctx, PT_REGS_RC(ctx));
+}
+
+SEC("uprobe/__close_nocancel")
+int BPF_KPROBE(u_close_nocancel_enter)
+{
+    __s32 fd = (__s32)PT_REGS_PARM1(ctx);
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_close_fd(fd, stack_id);
+    return 0;
+}
+
+SEC("uretprobe/__close_nocancel")
+int BPF_KRETPROBE(u_close_nocancel_exit)
+{
+    return record_fd_close_return(ctx, PT_REGS_RC(ctx));
 }
