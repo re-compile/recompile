@@ -98,6 +98,7 @@ positive_samples=(
     "build/user-samples/cxx_malloc_delete_mismatch:allocator_mismatch"
     "build/user-samples/cxx_new_array_delete_mismatch:allocator_mismatch"
     "build/user-samples/cxx_new_delete_array_mismatch:allocator_mismatch"
+    "build/user-samples/fd_leak_case:fd_leak"
 )
 
 for entry in "${positive_samples[@]}"; do
@@ -123,7 +124,6 @@ done
 valgrind_only_samples=(
     "build/user-samples/use_after_free_case:use_after_free"
     "build/user-samples/memory_leak_case:memory_leak"
-    "build/user-samples/fd_leak_case:fd_leak"
 )
 
 for entry in "${valgrind_only_samples[@]}"; do

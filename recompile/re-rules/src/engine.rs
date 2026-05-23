@@ -1,8 +1,8 @@
 //! Rule engine that processes events and generates findings
 
 use crate::{
-    Config, RuleRegistry, SentinelEvent, Finding, AnomalyClass, 
-    EscalationPlan, Result, ClusterManager
+    AnomalyClass, ClusterManager, Config, EscalationPlan, Finding, Result, RuleRegistry,
+    SentinelEvent,
 };
 use std::collections::{HashMap, VecDeque};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -34,7 +34,7 @@ impl RuleEngine {
             confidence_merge_threshold: config.clustering.confidence_merge_threshold,
             similarity_threshold: config.clustering.similarity_threshold,
         };
-        
+
         Self {
             registry: RuleRegistry::new(),
             event_buffer: VecDeque::new(),
@@ -49,10 +49,10 @@ impl RuleEngine {
     /// Process a new event and potentially generate findings
     pub fn process_event(&mut self, event: SentinelEvent) -> Result<Vec<Finding>> {
         let mut new_findings = Vec::new();
-        
+
         // Add event to buffer
         self.event_buffer.push_back(event.clone());
-        
+
         // Maintain buffer size (keep last N seconds of events)
         let cutoff_time = event.ts_ns - (self.config.clustering.window_s * 1_000_000_000.0) as u64;
         while let Some(front) = self.event_buffer.front() {
@@ -69,7 +69,9 @@ impl RuleEngine {
             if let Some(finding) = self.check_rule_by_id(&rule_id, &event)? {
                 // Process through clustering
                 let events_slice = self.get_relevant_events(&finding, &event);
-                if let Some(merged_finding) = self.cluster_manager.add_finding(finding, &events_slice) {
+                if let Some(merged_finding) =
+                    self.cluster_manager.add_finding(finding, &events_slice)
+                {
                     new_findings.push(merged_finding);
                 }
             }
@@ -77,19 +79,23 @@ impl RuleEngine {
 
         // Get Top-K findings from cluster manager
         let _top_k_findings = self.cluster_manager.get_top_k_findings();
-        
+
         // Update our findings list with clustered results
         self.findings = self.cluster_manager.get_all_findings();
-        
+
         Ok(new_findings)
     }
-    
+
     /// Get relevant events for a finding
-    fn get_relevant_events(&self, _finding: &Finding, trigger_event: &SentinelEvent) -> Vec<SentinelEvent> {
+    fn get_relevant_events(
+        &self,
+        _finding: &Finding,
+        trigger_event: &SentinelEvent,
+    ) -> Vec<SentinelEvent> {
         // Get events in a time window around the trigger event
         let window_start = trigger_event.ts_ns.saturating_sub(1_000_000_000); // 1 second before
         let window_end = trigger_event.ts_ns.saturating_add(1_000_000_000); // 1 second after
-        
+
         self.event_buffer
             .iter()
             .filter(|e| e.ts_ns >= window_start && e.ts_ns <= window_end)
@@ -98,10 +104,15 @@ impl RuleEngine {
     }
 
     /// Check a specific rule by ID against the current event window
-    fn check_rule_by_id(&mut self, rule_id: &str, trigger_event: &SentinelEvent) -> Result<Option<Finding>> {
+    fn check_rule_by_id(
+        &mut self,
+        rule_id: &str,
+        trigger_event: &SentinelEvent,
+    ) -> Result<Option<Finding>> {
         // Get events in debounce window
         let window_start = trigger_event.ts_ns - 1500 * 1_000_000; // 1.5s default window
-        let relevant_events: Vec<SentinelEvent> = self.event_buffer
+        let relevant_events: Vec<SentinelEvent> = self
+            .event_buffer
             .iter()
             .filter(|e| e.ts_ns >= window_start)
             .cloned()
@@ -131,8 +142,11 @@ impl RuleEngine {
         // Simple rule matching logic
         let matches = match rule_type {
             "memcpy" => relevant_events.iter().any(|e| {
-                matches!(e.event_type, crate::EventType::Memcpy | crate::EventType::Memmove) &&
-                e.alloc_size > 0 && e.len > e.alloc_size
+                matches!(
+                    e.event_type,
+                    crate::EventType::Memcpy | crate::EventType::Memmove
+                ) && e.alloc_size > 0
+                    && e.len > e.alloc_size
             }),
             "double_free" => {
                 let mut freed_ptrs = std::collections::HashSet::new();
@@ -143,22 +157,20 @@ impl RuleEngine {
                         false
                     }
                 })
-            },
+            }
             "invalid_free" => {
                 let mut allocated_ptrs = std::collections::HashSet::new();
-                relevant_events.iter().any(|e| {
-                    match e.event_type {
-                        crate::EventType::Malloc | crate::EventType::Mmap => {
-                            allocated_ptrs.insert(e.addr);
-                            false
-                        }
-                        crate::EventType::Free | crate::EventType::Munmap => {
-                            !allocated_ptrs.contains(&e.addr)
-                        }
-                        _ => false
+                relevant_events.iter().any(|e| match e.event_type {
+                    crate::EventType::Malloc | crate::EventType::Mmap => {
+                        allocated_ptrs.insert(e.addr);
+                        false
                     }
+                    crate::EventType::Free | crate::EventType::Munmap => {
+                        !allocated_ptrs.contains(&e.addr)
+                    }
+                    _ => false,
                 })
-            },
+            }
             "uaf" => {
                 let mut freed_ptrs = std::collections::HashSet::new();
                 for e in &relevant_events {
@@ -167,10 +179,12 @@ impl RuleEngine {
                     }
                 }
                 relevant_events.iter().any(|e| {
-                    matches!(e.event_type, crate::EventType::Memcpy | crate::EventType::Memmove) &&
-                    freed_ptrs.contains(&e.addr)
+                    matches!(
+                        e.event_type,
+                        crate::EventType::Memcpy | crate::EventType::Memmove
+                    ) && freed_ptrs.contains(&e.addr)
                 })
-            },
+            }
             _ => false,
         };
 
@@ -179,15 +193,21 @@ impl RuleEngine {
         }
 
         // Check debounce requirements
-        let cluster_key = format!("{}-{:04x}-{:08x}", id, (trigger_event.addr >> 12) & 0xFFFF, trigger_event.stack_fp);
+        let cluster_key = format!(
+            "{}-{:04x}-{:08x}",
+            id,
+            (trigger_event.addr >> 12) & 0xFFFF,
+            trigger_event.stack_fp
+        );
         let should_generate = {
-            let cluster = self.active_clusters.entry(cluster_key.clone()).or_insert_with(|| {
-                ClusterState {
+            let cluster = self
+                .active_clusters
+                .entry(cluster_key.clone())
+                .or_insert_with(|| ClusterState {
                     events: Vec::new(),
                     hits: 0,
                     last_seen: Instant::now(),
-                }
-            });
+                });
 
             cluster.hits += 1;
             cluster.last_seen = Instant::now();
@@ -201,11 +221,12 @@ impl RuleEngine {
 
         // Generate finding
         let finding = self.create_simple_finding(id, rule_type, &relevant_events, trigger_event)?;
-        
+
         // Set cooldown
         let cooldown_duration = self.config.get_cooldown(id);
-        self.cooldowns.insert(id.to_string(), Instant::now() + cooldown_duration);
-        
+        self.cooldowns
+            .insert(id.to_string(), Instant::now() + cooldown_duration);
+
         // Clear cluster
         self.active_clusters.remove(&cluster_key);
 
@@ -214,7 +235,11 @@ impl RuleEngine {
 
     /// Legacy generic-rule path kept for future non-golden rule wiring.
     #[allow(dead_code)]
-    fn check_rule(&mut self, rule: &crate::Rule, trigger_event: &SentinelEvent) -> Result<Option<Finding>> {
+    fn check_rule(
+        &mut self,
+        rule: &crate::Rule,
+        trigger_event: &SentinelEvent,
+    ) -> Result<Option<Finding>> {
         // Check cooldown
         if let Some(cooldown_until) = self.cooldowns.get(&rule.id) {
             if cooldown_until > &Instant::now() {
@@ -224,7 +249,8 @@ impl RuleEngine {
 
         // Get events in debounce window
         let window_start = trigger_event.ts_ns - (rule.debounce.window_ms as u64 * 1_000_000);
-        let relevant_events: Vec<SentinelEvent> = self.event_buffer
+        let relevant_events: Vec<SentinelEvent> = self
+            .event_buffer
             .iter()
             .filter(|e| e.ts_ns >= window_start)
             .cloned()
@@ -238,13 +264,14 @@ impl RuleEngine {
         // Check debounce requirements
         let cluster_key = self.generate_cluster_key(rule, trigger_event);
         let should_generate_finding = {
-            let cluster = self.active_clusters.entry(cluster_key.clone()).or_insert_with(|| {
-                ClusterState {
+            let cluster = self
+                .active_clusters
+                .entry(cluster_key.clone())
+                .or_insert_with(|| ClusterState {
                     events: Vec::new(),
                     hits: 0,
                     last_seen: Instant::now(),
-                }
-            });
+                });
 
             cluster.hits += 1;
             cluster.last_seen = Instant::now();
@@ -259,16 +286,19 @@ impl RuleEngine {
         }
 
         // Generate finding using events from cluster
-        let cluster_events = self.active_clusters.get(&cluster_key)
+        let cluster_events = self
+            .active_clusters
+            .get(&cluster_key)
             .map(|c| c.events.clone())
             .unwrap_or_else(|| relevant_events);
-        
+
         let finding = self.create_finding(rule, &cluster_events)?;
-        
+
         // Set cooldown
         let cooldown_duration = self.config.get_cooldown(&rule.id);
-        self.cooldowns.insert(rule.id.clone(), Instant::now() + cooldown_duration);
-        
+        self.cooldowns
+            .insert(rule.id.clone(), Instant::now() + cooldown_duration);
+
         // Clear cluster (or mark as processed)
         self.active_clusters.remove(&cluster_key);
 
@@ -280,18 +310,45 @@ impl RuleEngine {
         // Simple fingerprint: rule_id + top stack frame + ptr bucket
         let ptr_bucket = (event.addr >> 12) & 0xFFFF; // 4KB page bucket
         let stack_fp = event.stack_fp;
-        
+
         format!("{}-{:04x}-{:08x}", rule.id, ptr_bucket, stack_fp)
     }
 
     /// Create a simple finding without using the rule registry
-    fn create_simple_finding(&self, _rule_id: &str, rule_type: &str, events: &[SentinelEvent], trigger_event: &SentinelEvent) -> Result<Finding> {
+    fn create_simple_finding(
+        &self,
+        _rule_id: &str,
+        rule_type: &str,
+        events: &[SentinelEvent],
+        trigger_event: &SentinelEvent,
+    ) -> Result<Finding> {
         let (class, confidence, severity) = match rule_type {
-            "memcpy" => (AnomalyClass::HeapOverflow, crate::Confidence::High, crate::Severity::High),
-            "double_free" => (AnomalyClass::DoubleFree, crate::Confidence::Certain, crate::Severity::Critical),
-            "invalid_free" => (AnomalyClass::InvalidFree, crate::Confidence::High, crate::Severity::High),
-            "uaf" => (AnomalyClass::UseAfterFree, crate::Confidence::Medium, crate::Severity::High),
-            _ => return Err(crate::RuleEngineError::RuleEvaluation(format!("Unknown rule type: {}", rule_type))),
+            "memcpy" => (
+                AnomalyClass::HeapOverflow,
+                crate::Confidence::High,
+                crate::Severity::High,
+            ),
+            "double_free" => (
+                AnomalyClass::DoubleFree,
+                crate::Confidence::Certain,
+                crate::Severity::Critical,
+            ),
+            "invalid_free" => (
+                AnomalyClass::InvalidFree,
+                crate::Confidence::High,
+                crate::Severity::High,
+            ),
+            "uaf" => (
+                AnomalyClass::UseAfterFree,
+                crate::Confidence::Medium,
+                crate::Severity::High,
+            ),
+            _ => {
+                return Err(crate::RuleEngineError::RuleEvaluation(format!(
+                    "Unknown rule type: {}",
+                    rule_type
+                )))
+            }
         };
 
         let evidence = crate::Evidence {
@@ -312,7 +369,7 @@ impl RuleEngine {
             .as_secs();
 
         let finding_id = self.generate_finding_id(&class, events);
-        
+
         let escalation = if confidence.as_f64() >= self.config.rules.confidence_lo {
             Some(EscalationPlan {
                 tool: "asan".to_string(),
@@ -347,7 +404,7 @@ impl RuleEngine {
             .as_secs();
 
         let finding_id = self.generate_finding_id(&rule.class, events);
-        
+
         let escalation = if self.should_escalate(rule) {
             Some(EscalationPlan {
                 tool: rule.escalation.tool.clone(),
@@ -398,8 +455,15 @@ impl RuleEngine {
             0
         };
 
-        format!("F-{}-{:08x}-{}", class_str, hash, 
-                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs())
+        format!(
+            "F-{}-{:08x}-{}",
+            class_str,
+            hash,
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        )
     }
 
     #[allow(dead_code)]
@@ -412,12 +476,12 @@ impl RuleEngine {
     pub fn get_findings(&self) -> &[Finding] {
         &self.findings
     }
-    
+
     /// Get Top-K findings (most important)
     pub fn get_top_k_findings(&self) -> Vec<Finding> {
         self.cluster_manager.get_top_k_findings()
     }
-    
+
     /// Get clustering statistics
     pub fn get_clustering_stats(&self) -> crate::ClusteringStats {
         self.cluster_manager.get_stats()

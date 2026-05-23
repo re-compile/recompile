@@ -72,6 +72,11 @@ print(json.dumps({
 PY
 
 printf '[recc] building optional LLVM pass\n'
+if [[ -f build/passes/CMakeCache.txt ]] \
+    && ! grep -q "CMAKE_HOME_DIRECTORY:INTERNAL=${project_dir}/llvm-passes" build/passes/CMakeCache.txt; then
+    printf '[recc] removing stale LLVM pass CMake cache\n'
+    rm -rf build/passes
+fi
 cmake -S llvm-passes -B build/passes
 cmake --build build/passes
 

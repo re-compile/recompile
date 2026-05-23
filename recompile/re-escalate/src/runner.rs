@@ -896,9 +896,12 @@ mod tests {
                     alloc_size: 1,
                     operation: "memcpy".to_string(),
                 }),
+                resource: None,
                 stacks: Some(StackEvidence {
                     alloc: Vec::new(),
                     call: Vec::new(),
+                    open: Vec::new(),
+                    action: Vec::new(),
                 }),
                 alloc_site: None,
                 event_sequence: None,

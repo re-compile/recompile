@@ -240,7 +240,6 @@ Current Valgrind-first classes:
 
 - `use_after_free`
 - `memory_leak`
-- `fd_leak`
 
 Current native heap-write coverage:
 
@@ -261,6 +260,14 @@ Current native allocator tracking:
 - C++ `operator new` / `operator new[]`
 - C++ `operator delete` / `operator delete[]`
 
+Current native resource lifecycle coverage:
+
+- libc `open`, `open64`, `openat`, `openat64`, and `creat`
+- libc `close`
+- `fd_leak` by draining still-open fd records when the target exits
+- `double_close` for descriptors tracked as opened and then closed already
+- `invalid_close` for failed close calls on descriptors that were never tracked
+
 `realloc` tracking preserves the old allocation on failed non-zero resize,
 marks the old allocation freed on successful moves, and treats
 `realloc(ptr, 0)` as freeing `ptr` when libc returns `NULL`. Bounded `strdup`
@@ -277,6 +284,15 @@ available on the Linux host or Docker image. Native findings use
 `evidence.memory`. The MVP intentionally does not claim coverage for custom
 overloaded C++ operators, placement new/delete, nothrow operators, or aligned
 C++17 allocation overloads.
+
+Fd lifecycle tracking is intentionally first-pass and descriptor-centric. It
+does not yet model `dup`, `dup2`, `dup3`, `fcntl(F_DUPFD*)`, socket creation,
+`accept`, pipe ownership, fork/exec inheritance, or intentional fd handoff to
+another owner. `fd_leak` is Valgrind-confirmable in escalation; `double_close`
+and `invalid_close` are currently native-only and appear as unsupported for
+tool-backed confirmation in hit-rate. `invalid_close` can retain only a
+binary-offset action stack when the target exits before full user-source
+symbolization completes.
 
 Deferred native string-copy coverage:
 

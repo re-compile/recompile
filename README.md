@@ -31,14 +31,19 @@ Validated native findings in Docker:
 - `cxx_malloc_delete_mismatch` -> `allocator_mismatch`
 - `cxx_new_array_delete_mismatch` -> `allocator_mismatch`
 - `cxx_new_delete_array_mismatch` -> `allocator_mismatch`
+- `fd_leak_case` -> `fd_leak`
+- `fd_double_close_case` -> `double_close`
+- `fd_invalid_close_case` -> `invalid_close`
 
-Valgrind-first coverage currently includes `use_after_free`, `memory_leak`, and
-`fd_leak`. Already-instrumented sanitizer adapters cover ASan, LSan, and UBSan
-when the user provides binaries built with the matching `-fsanitize=...` flag.
-Native C++ allocator-family coverage currently targets the default libstdc++
-operator new/delete symbols on Linux. Custom overloaded operators, placement
-new/delete, nothrow operators, and aligned C++17 overloads remain outside the
-native MVP.
+Valgrind-first coverage currently includes `use_after_free` and `memory_leak`.
+Native `fd_leak` can also be confirmed by Valgrind. Native `double_close` and
+`invalid_close` are eBPF/runtime findings; Valgrind escalation for those close
+misuse classes is currently marked unsupported in hit-rate. Already-instrumented
+sanitizer adapters cover ASan, LSan, and UBSan when the user provides binaries
+built with the matching `-fsanitize=...` flag. Native C++ allocator-family
+coverage currently targets the default libstdc++ operator new/delete symbols on
+Linux. Custom overloaded operators, placement new/delete, nothrow operators, and
+aligned C++17 overloads remain outside the native MVP.
 
 ## Supported Environment
 
@@ -169,7 +174,10 @@ cd recompile
 make hit-rate
 ```
 
-Some Phase 2 classes, such as `use_after_free`, `memory_leak`, and `fd_leak`, are currently Valgrind-first and marked as native-unsupported in that summary.
+Some classes, such as `use_after_free` and `memory_leak`, are currently
+Valgrind-first and marked as native-unsupported in that summary. Native
+`double_close` and `invalid_close` are tracked, but tool confirmation is marked
+unsupported until a reliable escalation path exists.
 
 Native findings include `provenance.source_status` so unresolved source
 locations are explicit instead of silently missing.

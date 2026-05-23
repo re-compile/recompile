@@ -1,9 +1,11 @@
 //! Environment and system information capture
 
-use crate::{Environment, SystemInfo, RuntimeInfo, ToolVersions, BinaryInfo, CrashpackError, Result};
+use crate::{
+    BinaryInfo, CrashpackError, Environment, Result, RuntimeInfo, SystemInfo, ToolVersions,
+};
 use std::collections::HashMap;
-use std::process::Command;
 use std::path::Path;
+use std::process::Command;
 
 impl Environment {
     /// Capture current environment information
@@ -23,28 +25,34 @@ impl SystemInfo {
             .args(&["-a"])
             .output()
             .map_err(|e| CrashpackError::Environment(format!("Failed to run uname: {}", e)))?;
-        
-        let uname = String::from_utf8_lossy(&uname_output.stdout).trim().to_string();
-        
-        let kernel_output = Command::new("uname")
-            .args(&["-r"])
-            .output()
-            .map_err(|e| CrashpackError::Environment(format!("Failed to get kernel version: {}", e)))?;
-        
-        let kernel = String::from_utf8_lossy(&kernel_output.stdout).trim().to_string();
-        
-        let arch_output = Command::new("uname")
-            .args(&["-m"])
-            .output()
-            .map_err(|e| CrashpackError::Environment(format!("Failed to get architecture: {}", e)))?;
-        
-        let architecture = String::from_utf8_lossy(&arch_output.stdout).trim().to_string();
-        
+
+        let uname = String::from_utf8_lossy(&uname_output.stdout)
+            .trim()
+            .to_string();
+
+        let kernel_output = Command::new("uname").args(&["-r"]).output().map_err(|e| {
+            CrashpackError::Environment(format!("Failed to get kernel version: {}", e))
+        })?;
+
+        let kernel = String::from_utf8_lossy(&kernel_output.stdout)
+            .trim()
+            .to_string();
+
+        let arch_output = Command::new("uname").args(&["-m"]).output().map_err(|e| {
+            CrashpackError::Environment(format!("Failed to get architecture: {}", e))
+        })?;
+
+        let architecture = String::from_utf8_lossy(&arch_output.stdout)
+            .trim()
+            .to_string();
+
         let hostname_output = Command::new("hostname")
             .output()
             .map_err(|e| CrashpackError::Environment(format!("Failed to get hostname: {}", e)))?;
-        
-        let hostname = String::from_utf8_lossy(&hostname_output.stdout).trim().to_string();
+
+        let hostname = String::from_utf8_lossy(&hostname_output.stdout)
+            .trim()
+            .to_string();
 
         Ok(Self {
             uname,
@@ -61,7 +69,9 @@ impl RuntimeInfo {
         let argv = std::env::args().collect();
         let env: HashMap<String, String> = std::env::vars().collect();
         let cwd = std::env::current_dir()
-            .map_err(|e| CrashpackError::Environment(format!("Failed to get current directory: {}", e)))?
+            .map_err(|e| {
+                CrashpackError::Environment(format!("Failed to get current directory: {}", e))
+            })?
             .to_string_lossy()
             .to_string();
         let pid = std::process::id();
@@ -99,7 +109,7 @@ impl BinaryInfo {
     pub fn analyze<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
         let path_str = path.to_string_lossy().to_string();
-        
+
         if !path.exists() {
             return Ok(Self {
                 path: path_str,
@@ -110,17 +120,18 @@ impl BinaryInfo {
             });
         }
 
-        let metadata = std::fs::metadata(path)
-            .map_err(|e| CrashpackError::Binary(format!("Failed to get metadata for {}: {}", path_str, e)))?;
-        
+        let metadata = std::fs::metadata(path).map_err(|e| {
+            CrashpackError::Binary(format!("Failed to get metadata for {}: {}", path_str, e))
+        })?;
+
         let size = metadata.len();
-        
+
         // Try to get build ID using readelf
         let build_id = get_build_id(path);
-        
+
         // Check for debug info
         let debug_info = has_debug_info(path);
-        
+
         // Calculate SHA256
         let sha256 = calculate_sha256(path);
 
@@ -191,12 +202,12 @@ fn has_debug_info(path: &Path) -> bool {
 fn calculate_sha256(path: &Path) -> Option<String> {
     use std::fs::File;
     use std::io::Read;
-    
+
     let mut file = File::open(path).ok()?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer).ok()?;
-    
-    use sha2::{Sha256, Digest};
+
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(&buffer);
     let result = hasher.finalize();

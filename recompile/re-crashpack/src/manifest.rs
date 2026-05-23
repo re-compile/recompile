@@ -57,12 +57,12 @@ fn get_toolchain_info() -> Option<String> {
     if let Some(clang_version) = get_clang_version() {
         return Some(format!("clang {}", clang_version));
     }
-    
+
     // Try to get gcc version
     if let Some(gcc_version) = get_gcc_version() {
         return Some(format!("gcc {}", gcc_version));
     }
-    
+
     None
 }
 
