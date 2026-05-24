@@ -154,6 +154,49 @@ printf '[observe] clean binary\n'
 "$runner_path" observe build/user-samples/clean_malloc_free --output "$output_root/clean_malloc_free"
 assert_observation "$output_root/clean_malloc_free/run-summary.json" clean __none__ 0
 
+printf '[observe] signal-only crash evidence\n'
+"$runner_path" observe --native-only build/user-samples/crash_segv_case --output "$output_root/crash_segv_case"
+assert_observation "$output_root/crash_segv_case/run-summary.json" findings unclassified_crash 1
+python3 - "$output_root/crash_segv_case/run-summary.json" "$runner_path" <<'PY'
+import json
+import pathlib
+import subprocess
+import sys
+
+summary_path = pathlib.Path(sys.argv[1])
+runner_path = pathlib.Path(sys.argv[2])
+summary = json.loads(summary_path.read_text())
+target = summary["targets"][0]
+if target["exit"].get("signal") != 11 or not target["exit"].get("crashed"):
+    raise SystemExit(f"{summary_path}: expected SIGSEGV crashed exit, got {target['exit']}")
+crashpack = pathlib.Path(target["artifacts"]["crashpack"])
+findings = json.loads(pathlib.Path(target["artifacts"]["findings"]).read_text())
+finding = findings[0]
+crash = ((finding.get("evidence") or {}).get("crash") or {})
+if crash.get("signal_name") != "SIGSEGV":
+    raise SystemExit(f"{summary_path}: missing SIGSEGV crash evidence: {crash}")
+for key in ["stdout_path", "stderr_path", "console_log_path"]:
+    path = pathlib.Path(crash.get(key, ""))
+    if not path.exists():
+        raise SystemExit(f"{summary_path}: crash evidence {key} missing at {path}")
+if "about to segfault" not in pathlib.Path(crash["stdout_path"]).read_text():
+    raise SystemExit(f"{summary_path}: target stdout was not captured")
+agent_summary = json.loads(subprocess.check_output(
+    [str(runner_path), "summarize", str(crashpack), "--format", "json"],
+    text=True,
+))
+agent_finding = (agent_summary.get("findings") or [])[0]
+if agent_finding.get("operation") != "crash_observed":
+    raise SystemExit(f"{summary_path}: summarize missing crash_observed operation: {agent_finding}")
+if (agent_finding.get("crash") or {}).get("signal_name") != "SIGSEGV":
+    raise SystemExit(f"{summary_path}: summarize missing crash evidence: {agent_finding}")
+print(json.dumps({
+    "crash_class": finding.get("class"),
+    "signal": crash.get("signal_name"),
+    "stdout": crash.get("stdout_path"),
+}, sort_keys=True))
+PY
+
 printf '[observe] finding binary with default confirmation\n'
 "$runner_path" observe build/user-samples/copy_overrun_case --output "$output_root/copy_overrun_case"
 assert_observation "$output_root/copy_overrun_case/run-summary.json" findings heap_overflow 1 valgrind findings heap_overflow

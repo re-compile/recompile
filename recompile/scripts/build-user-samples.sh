@@ -59,6 +59,7 @@ UBSAN_FLAGS=(
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/fd_leak_case samples/user-binaries/fd_leak_case.c
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/fd_double_close_case samples/user-binaries/fd_double_close_case.c
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/fd_invalid_close_case samples/user-binaries/fd_invalid_close_case.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/crash_segv_case samples/user-binaries/crash_segv_case.c
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_malloc_free samples/user-binaries/clean_malloc_free.c
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_realloc_grow samples/user-binaries/clean_realloc_grow.c
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_failed_realloc samples/user-binaries/clean_failed_realloc.c
