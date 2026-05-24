@@ -144,11 +144,17 @@ The report includes:
 - expected vs actual native findings
 - issue group counts and fingerprints
 - observe-level escalation outcomes
+- support-matrix path and per-class coverage summary
 - target `next_commands`
 - a generated `agent-summary.json` for each target crashpack
 
 This is separate from `make hit-rate`, which remains the lower-level
 native/escalation corpus report for single-binary user samples.
+
+The support matrix lives at `docs/support-matrix.json` and is validated with
+`make support-matrix-smoke`. It is intentionally explicit about native-supported
+classes, sanitizer/tool-backed classes, unsupported classes, and classes that
+are not part of the current product claim.
 
 ## Manual Linux Validation Checklist
 
