@@ -25,7 +25,9 @@ pub fn summarize_finding(finding: &Value) -> FindingSummary {
         class: string_field(finding, &["class"]).unwrap_or_else(|| "unknown".to_string()),
         severity: string_field(finding, &["severity"]).unwrap_or_else(|| "unknown".to_string()),
         confidence: string_field(finding, &["confidence"]).unwrap_or_else(|| "unknown".to_string()),
-        operation: string_field(finding, &["evidence", "memory", "operation"]),
+        operation: string_field(finding, &["evidence", "memory", "operation"])
+            .or_else(|| string_field(finding, &["evidence", "resource", "operation"]))
+            .or_else(|| string_field(finding, &["evidence", "api"])),
         location: source_location(finding),
         fallback: binary_offset(finding),
     }
@@ -83,7 +85,7 @@ fn primary_location(finding: &Value) -> Option<String> {
 }
 
 fn binary_offset(finding: &Value) -> Option<String> {
-    ["call", "alloc"].iter().find_map(|stack_name| {
+    ["call", "alloc", "crash"].iter().find_map(|stack_name| {
         finding
             .get("evidence")
             .and_then(|value| value.get("stacks"))

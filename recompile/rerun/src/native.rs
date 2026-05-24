@@ -17,7 +17,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const GENERATED_OUTPUT_FILES: &[&str] = &[
     "analysis.json",
@@ -30,7 +30,7 @@ const GENERATED_OUTPUT_FILES: &[&str] = &[
     "re-findings.jsonl",
 ];
 
-const GENERATED_OUTPUT_DIRS: &[&str] = &[".re", "bins", "escalations", "replay"];
+const GENERATED_OUTPUT_DIRS: &[&str] = &[".re", "bins", "escalations", "logs", "replay"];
 
 #[cfg(target_os = "linux")]
 use libc;
@@ -51,6 +51,9 @@ struct NativeConfig {
     debug_findings_path: PathBuf,
     crashpack_dir: PathBuf,
     console_log_path: PathBuf,
+    logs_dir: PathBuf,
+    target_stdout_path: PathBuf,
+    target_stderr_path: PathBuf,
 }
 
 #[derive(Serialize)]
@@ -91,6 +94,19 @@ enum TargetWaitResult {
 
 struct TargetProcess {
     pid: u32,
+}
+
+#[derive(Debug, Clone)]
+struct CrashObservation {
+    exit_code: Option<i32>,
+    signal: Option<i32>,
+    crashed: bool,
+    duration_ms: u128,
+    args: Vec<String>,
+    cwd: Option<PathBuf>,
+    console_log_path: PathBuf,
+    stdout_path: PathBuf,
+    stderr_path: PathBuf,
 }
 
 impl TargetProcess {
@@ -189,11 +205,18 @@ pub fn run_native_with_options(
     }
     println!("  Debug log:    {}", config.debug_findings_path.display());
     println!("  Crashpack:    {}", config.crashpack_dir.display());
+    println!("  Target logs:  {}", config.logs_dir.display());
     println!();
 
     // Start the target in a stopped state so probes are attached before main executes.
     println!("Starting target in paused state...");
-    let target = start_target_paused(&binary_abs, args, cwd_abs.as_deref())?;
+    let target = start_target_paused(
+        &binary_abs,
+        args,
+        cwd_abs.as_deref(),
+        &config.target_stdout_path,
+        &config.target_stderr_path,
+    )?;
     println!("✓ Target paused (PID: {})", target.id());
 
     // Start the re-mini agent
@@ -258,7 +281,23 @@ pub fn run_native_with_options(
     println!("Stopping agent...");
     terminate_agent_gracefully(&mut agent);
 
-    let (findings_path, issue_group_count) = finalize_findings(&config.crashpack_dir, &binary_abs)?;
+    let crash_observation = CrashObservation {
+        exit_code: target_status.as_ref().and_then(ExitStatus::code),
+        signal: exit_signal(target_status.as_ref()),
+        crashed: target_status
+            .as_ref()
+            .map(|status| !status.success())
+            .unwrap_or(timed_out),
+        duration_ms,
+        args: args.to_vec(),
+        cwd: cwd_abs.clone(),
+        console_log_path: config.console_log_path.clone(),
+        stdout_path: config.target_stdout_path.clone(),
+        stderr_path: config.target_stderr_path.clone(),
+    };
+
+    let (findings_path, issue_group_count) =
+        finalize_findings_with_crash(&config.crashpack_dir, &binary_abs, Some(&crash_observation))?;
     let findings = read_findings(&findings_path)?;
     let findings_by_class = class_counts(&findings);
 
@@ -271,12 +310,9 @@ pub fn run_native_with_options(
         output_dir: output_dir.clone(),
         args: args.to_vec(),
         cwd: cwd_abs,
-        exit_code: target_status.as_ref().and_then(ExitStatus::code),
-        signal: exit_signal(target_status.as_ref()),
-        crashed: target_status
-            .as_ref()
-            .map(|status| !status.success())
-            .unwrap_or(timed_out),
+        exit_code: crash_observation.exit_code,
+        signal: crash_observation.signal,
+        crashed: crash_observation.crashed,
         timed_out,
         duration_ms,
         findings_count: findings.len(),
@@ -373,6 +409,11 @@ fn locate_components(output_dir: &Path) -> Result<NativeConfig> {
     // Findings output path
     let debug_findings_path = output_dir.join("re-findings.jsonl");
     let console_log_path = output_dir.join("console.log");
+    let logs_dir = output_dir.join("logs");
+    let target_stdout_path = logs_dir.join("target.stdout.log");
+    let target_stderr_path = logs_dir.join("target.stderr.log");
+    std::fs::create_dir_all(&logs_dir)
+        .with_context(|| format!("Failed to create {}", logs_dir.display()))?;
 
     Ok(NativeConfig {
         re_mini_path,
@@ -383,6 +424,9 @@ fn locate_components(output_dir: &Path) -> Result<NativeConfig> {
         debug_findings_path,
         crashpack_dir: output_dir.to_path_buf(),
         console_log_path,
+        logs_dir,
+        target_stdout_path,
+        target_stderr_path,
     })
 }
 
@@ -565,6 +609,8 @@ fn start_target_paused(
     binary_path: &Path,
     args: &[String],
     cwd: Option<&Path>,
+    stdout_path: &Path,
+    stderr_path: &Path,
 ) -> Result<TargetProcess> {
     let binary_cstr = CString::new(binary_path.as_os_str().as_bytes()).with_context(|| {
         format!(
@@ -582,6 +628,18 @@ fn start_target_paused(
         .iter()
         .map(|arg| CString::new(arg.as_bytes()).context("Argument contains interior NUL"))
         .collect::<Result<Vec<_>>>()?;
+    let stdout_cstr = CString::new(stdout_path.as_os_str().as_bytes()).with_context(|| {
+        format!(
+            "stdout log path contains interior NUL: {}",
+            stdout_path.display()
+        )
+    })?;
+    let stderr_cstr = CString::new(stderr_path.as_os_str().as_bytes()).with_context(|| {
+        format!(
+            "stderr log path contains interior NUL: {}",
+            stderr_path.display()
+        )
+    })?;
 
     let mut argv = Vec::with_capacity(arg_cstrs.len() + 2);
     argv.push(binary_cstr.as_ptr());
@@ -608,6 +666,8 @@ fn start_target_paused(
             {
                 libc::_exit(126);
             }
+            redirect_child_fd(stdout_cstr.as_ptr(), libc::STDOUT_FILENO);
+            redirect_child_fd(stderr_cstr.as_ptr(), libc::STDERR_FILENO);
             if let Some(cwd_cstr) = cwd_cstr.as_ref() {
                 if libc::chdir(cwd_cstr.as_ptr()) != 0 {
                     libc::_exit(125);
@@ -675,11 +735,29 @@ fn resume_target(pid: u32) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+unsafe fn redirect_child_fd(path: *const libc::c_char, fd: libc::c_int) {
+    let out_fd = libc::open(
+        path,
+        libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC | libc::O_CLOEXEC,
+        0o644,
+    );
+    if out_fd < 0 {
+        libc::_exit(124);
+    }
+    if libc::dup2(out_fd, fd) < 0 {
+        libc::_exit(124);
+    }
+    libc::close(out_fd);
+}
+
 #[cfg(not(target_os = "linux"))]
 fn start_target_paused(
     _binary_path: &Path,
     _args: &[String],
     _cwd: Option<&Path>,
+    _stdout_path: &Path,
+    _stderr_path: &Path,
 ) -> Result<TargetProcess> {
     Err(anyhow::anyhow!("Native mode is only supported on Linux"))
 }
@@ -752,6 +830,14 @@ pub(crate) fn finalize_findings(
     crashpack_dir: &Path,
     binary_path: &Path,
 ) -> Result<(PathBuf, usize)> {
+    finalize_findings_with_crash(crashpack_dir, binary_path, None)
+}
+
+fn finalize_findings_with_crash(
+    crashpack_dir: &Path,
+    binary_path: &Path,
+    crash: Option<&CrashObservation>,
+) -> Result<(PathBuf, usize)> {
     let findings_path = crashpack_dir.join("findings.json");
     let copied_binary_path = write_binary_artifacts(crashpack_dir, binary_path)?;
     let mut findings = if findings_path.exists() {
@@ -764,6 +850,13 @@ pub(crate) fn finalize_findings(
     } else {
         Vec::new()
     };
+    if findings.is_empty() {
+        if let Some(crash_finding) = crash
+            .and_then(|crash| crash_observation_finding(crash, binary_path, &copied_binary_path))
+        {
+            findings.push(crash_finding);
+        }
+    }
     let issue_groups = annotate_findings_with_issue_groups(&mut findings);
 
     std::fs::write(&findings_path, serde_json::to_vec_pretty(&findings)?)
@@ -810,6 +903,133 @@ fn class_counts(findings: &[Value]) -> BTreeMap<String, u64> {
         *counts.entry(class).or_default() += 1;
     }
     counts
+}
+
+fn crash_observation_finding(
+    crash: &CrashObservation,
+    original_binary_path: &Path,
+    copied_binary_path: &Path,
+) -> Option<Value> {
+    if !crash.crashed {
+        return None;
+    }
+    let signal = crash.signal?;
+    let signal_name = observed_signal_name(signal)?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0);
+    let binary_name = original_binary_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("target");
+    let cwd = crash
+        .cwd
+        .as_ref()
+        .map(|cwd| cwd.display().to_string())
+        .unwrap_or_else(|| ".".to_string());
+    let stdout_path = crash.stdout_path.display().to_string();
+    let stderr_path = crash.stderr_path.display().to_string();
+    let console_log_path = crash.console_log_path.display().to_string();
+    let crashpack_dir = crash
+        .console_log_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .display()
+        .to_string();
+
+    Some(json!({
+        "schema_version": "1.0",
+        "id": format!("F-unclassified-crash-{}", timestamp),
+        "origin": "runtime",
+        "kind": "unclassified_crash",
+        "class": "unclassified_crash",
+        "severity": "error",
+        "confidence": "observed",
+        "timestamp": timestamp,
+        "pid": 0,
+        "message": format!(
+            "{} terminated with {}. Treat this as crash evidence, not a precise memory-bug diagnosis.",
+            binary_name,
+            signal_name
+        ),
+        "primaryLocation": {
+            "uri": "file://unknown",
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 1}
+            }
+        },
+        "evidence": {
+            "api": "crash_observed",
+            "crash": {
+                "signal": signal,
+                "signal_name": signal_name,
+                "exit_code": crash.exit_code,
+                "duration_ms": crash.duration_ms,
+                "binary_path": original_binary_path.display().to_string(),
+                "captured_binary_path": copied_binary_path.display().to_string(),
+                "args": crash.args.clone(),
+                "cwd": cwd,
+                "stdout_path": stdout_path,
+                "stderr_path": stderr_path,
+                "console_log_path": console_log_path
+            },
+            "stacks": {
+                "crash": []
+            },
+            "event_sequence": [{
+                "source": "runtime",
+                "event": "target_exit_signal",
+                "signal": signal,
+                "signal_name": signal_name,
+                "exit_code": crash.exit_code,
+                "duration_ms": crash.duration_ms
+            }]
+        },
+        "provenance": {
+            "binary_path": copied_binary_path.display().to_string(),
+            "original_binary_path": original_binary_path.display().to_string(),
+            "source_status": "unresolved"
+        },
+        "fixHints": [
+            "Replay the crashpack and inspect target stdout/stderr before assigning a precise memory class.",
+            "Run under gdb or a sanitizer build if the signal alone is not enough to locate the fault."
+        ],
+        "next_commands": [
+            format!("rerun summarize {} --format json", crashpack_dir),
+            format!("rerun replay {} --format json", crashpack_dir)
+        ],
+        "escalation": {
+            "tool": "gdb",
+            "reason": "signal_only_crash_needs_stack_confirmation",
+            "estimated_cost": "medium",
+            "cooldown_ms": 0
+        },
+        "related": []
+    }))
+}
+
+fn observed_signal_name(signal: i32) -> Option<&'static str> {
+    match signal {
+        #[cfg(target_os = "linux")]
+        libc::SIGSEGV => Some("SIGSEGV"),
+        #[cfg(target_os = "linux")]
+        libc::SIGABRT => Some("SIGABRT"),
+        #[cfg(target_os = "linux")]
+        libc::SIGBUS => Some("SIGBUS"),
+        #[cfg(target_os = "linux")]
+        libc::SIGFPE => Some("SIGFPE"),
+        #[cfg(not(target_os = "linux"))]
+        11 => Some("SIGSEGV"),
+        #[cfg(not(target_os = "linux"))]
+        6 => Some("SIGABRT"),
+        #[cfg(not(target_os = "linux"))]
+        7 => Some("SIGBUS"),
+        #[cfg(not(target_os = "linux"))]
+        8 => Some("SIGFPE"),
+        _ => None,
+    }
 }
 
 fn exit_signal(status: Option<&ExitStatus>) -> Option<i32> {
@@ -1031,6 +1251,10 @@ fn build_agent_evidence_pack(
                     .unwrap_or(Value::Null),
                 "resource": finding.get("evidence")
                     .and_then(|value| value.get("resource"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "crash": finding.get("evidence")
+                    .and_then(|value| value.get("crash"))
                     .cloned()
                     .unwrap_or(Value::Null),
                 "stacks": finding.get("evidence")
@@ -1430,11 +1654,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join(".re")).unwrap();
         std::fs::create_dir_all(base.join("bins")).unwrap();
+        std::fs::create_dir_all(base.join("logs")).unwrap();
         std::fs::create_dir_all(base.join("replay")).unwrap();
         std::fs::write(base.join("evidence-pack.json"), "{}").unwrap();
         std::fs::write(base.join("findings.json"), "[{}]").unwrap();
         std::fs::write(base.join("re-findings.jsonl"), "stale\n").unwrap();
         std::fs::write(base.join(".re").join("last_finding.json"), "{}").unwrap();
+        std::fs::write(base.join("logs").join("target.stdout.log"), "stale\n").unwrap();
         std::fs::write(base.join("replay").join("results.json"), "{}").unwrap();
         std::fs::write(base.join("notes.txt"), "keep").unwrap();
 
@@ -1445,6 +1671,7 @@ mod tests {
         assert!(!base.join("re-findings.jsonl").exists());
         assert!(!base.join(".re").exists());
         assert!(!base.join("bins").exists());
+        assert!(!base.join("logs").exists());
         assert!(!base.join("replay").exists());
         assert_eq!(
             std::fs::read_to_string(base.join("notes.txt")).unwrap(),

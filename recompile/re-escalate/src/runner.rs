@@ -897,11 +897,13 @@ mod tests {
                     operation: "memcpy".to_string(),
                 }),
                 resource: None,
+                crash: None,
                 stacks: Some(StackEvidence {
                     alloc: Vec::new(),
                     call: Vec::new(),
                     open: Vec::new(),
                     action: Vec::new(),
+                    crash: Vec::new(),
                 }),
                 alloc_site: None,
                 event_sequence: None,

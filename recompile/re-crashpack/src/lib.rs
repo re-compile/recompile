@@ -62,6 +62,8 @@ pub struct Evidence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crash: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stacks: Option<StackEvidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alloc_site: Option<String>,
@@ -87,6 +89,8 @@ pub struct StackEvidence {
     pub open: Vec<String>,
     #[serde(default)]
     pub action: Vec<String>,
+    #[serde(default)]
+    pub crash: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

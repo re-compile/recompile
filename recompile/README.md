@@ -114,6 +114,13 @@ Default observe behavior runs Valgrind confirmation when native findings exist.
 `--deep` runs a Valgrind binary scan even when native is clean and records ASan
 as `not_applicable` unless the binary is already ASan-instrumented.
 
+If a target terminates with `SIGSEGV`, `SIGABRT`, `SIGBUS`, or `SIGFPE` and no
+more precise detector has emitted a finding, `observe` records an
+`unclassified_crash` finding with `evidence.crash`. This is intentionally
+signal evidence, not a guessed memory-bug class. Target stdout/stderr are
+captured under the target `logs/` directory and referenced from the crash
+evidence for agent inspection.
+
 Primary outputs:
 
 - `build/observe-demo/run-summary.json` - run-level observation summary
@@ -122,6 +129,7 @@ Primary outputs:
 - `build/observe-demo/targets/copy_overrun_case/dependencies.json` - target binary/dependency metadata
 - `build/observe-demo/targets/copy_overrun_case/issue-groups.json` - stable issue groups
 - `build/observe-demo/targets/copy_overrun_case/analysis.json` - target run metadata
+- `build/observe-demo/targets/copy_overrun_case/logs/` - captured target stdout/stderr
 
 ### Escalate an existing crashpack
 
@@ -186,10 +194,11 @@ make recc-smoke
 
 `make phase2` runs the RC gate, Valgrind escalation smoke, ASan binary smoke,
 agent summary smoke, and replay smoke. `make observe-smoke` validates the Phase
-4 observation-run path against clean, finding, deep-escalation, and fingerprint
-stability cases. `make project-smoke` validates project-shaped observation
-fixtures including multi-file, args/cwd, multi-binary, shared-library,
-Valgrind-first, and timeout cases. `make observe-hit-rate` writes
+4 observation-run path against clean, native finding, signal-only crash,
+deep-escalation, and fingerprint stability cases. `make project-smoke`
+validates project-shaped observation fixtures including multi-file, args/cwd,
+multi-binary, shared-library, Valgrind-first, and timeout cases. `make
+observe-hit-rate` writes
 `build/observe-hit-rate/summary.json` with observation-run target statuses,
 native findings, issue groups, escalation outcomes, next commands, and generated
 agent summaries for the project corpus. `make hit-rate` records native and
@@ -272,7 +281,8 @@ allocator tracking for `malloc`, `calloc`, `realloc`, `posix_memalign`,
 `aligned_alloc`, bounded `strdup` inputs, and default libstdc++ C++ new/delete
 families; native double/invalid-free and allocator-mismatch cases; native fd
 lifecycle coverage for `fd_leak`, `double_close`, and `invalid_close`; clean
-negatives; and Valgrind-first `use_after_free` and `memory_leak` cases.
+negatives; native signal-only `unclassified_crash` observation smoke for
+supported fatal signals; and Valgrind-first `use_after_free` and `memory_leak` cases.
 Valgrind confirms native `fd_leak`; `double_close` and `invalid_close`
 escalation are marked unsupported until there is a reliable tool-backed
 confirmation path. `strcat`, `strncat`, custom C++ allocator overloads,

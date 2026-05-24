@@ -1300,6 +1300,7 @@ fn compact_agent_finding(finding: &Value, escalation_results: &[Value]) -> Value
         "source": finding.get("source").cloned().unwrap_or(Value::Null),
         "operation": finding.get("operation").cloned().unwrap_or(Value::Null),
         "memory": finding.get("memory").cloned().unwrap_or(Value::Null),
+        "crash": finding.get("crash").cloned().unwrap_or(Value::Null),
         "stacks": finding.get("stacks").cloned().unwrap_or(Value::Null),
         "alloc_site": finding.get("alloc_site").cloned().unwrap_or(Value::Null),
         "tool": finding.get("tool").cloned().unwrap_or(Value::Null),
@@ -1669,6 +1670,49 @@ mod tests {
                 .and_then(Value::as_array)
                 .map(Vec::len),
             Some(0)
+        );
+    }
+
+    #[test]
+    fn agent_summary_preserves_crash_evidence() {
+        let pack = json!({
+            "summary": {
+                "total_findings": 1,
+                "class_counts": {"unclassified_crash": 1},
+                "source_resolved": 0,
+                "source_unresolved": 1
+            },
+            "findings": [{
+                "id": "F-crash-1",
+                "origin": "runtime",
+                "class": "unclassified_crash",
+                "severity": "error",
+                "confidence": "observed",
+                "source": {"status": "unresolved", "path": null},
+                "operation": "crash_observed",
+                "crash": {
+                    "signal": 11,
+                    "signal_name": "SIGSEGV",
+                    "stdout_path": "/tmp/crash/logs/target.stdout.log",
+                    "stderr_path": "/tmp/crash/logs/target.stderr.log"
+                },
+                "stacks": {"crash": []}
+            }]
+        });
+
+        let summary = build_agent_summary(&PathBuf::from("/tmp/crash"), &pack, &[]);
+
+        assert_eq!(
+            summary
+                .pointer("/findings/0/crash/signal_name")
+                .and_then(Value::as_str),
+            Some("SIGSEGV")
+        );
+        assert_eq!(
+            summary
+                .pointer("/findings/0/operation")
+                .and_then(Value::as_str),
+            Some("crash_observed")
         );
     }
 

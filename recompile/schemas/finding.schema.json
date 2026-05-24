@@ -5,11 +5,11 @@
   "required": ["id", "origin", "kind", "severity", "primaryLocation", "evidence"],
   "properties": {
     "id": {"type": "string"},
-    "origin": {"type": "string", "enum": ["ebpf", "asan", "ubsan", "lsan", "tsan", "msan", "rr"]},
+    "origin": {"type": "string", "enum": ["ebpf", "runtime", "asan", "ubsan", "lsan", "tsan", "msan", "rr"]},
     "kind": {"type": "string", "enum": [
       "heap_overflow", "stack_overflow", "use_after_free", "double_free", "invalid_free",
       "leak", "race", "uninitialized_read", "segfault", "ub", "fd_leak",
-      "double_close", "invalid_close", "thread_leak"
+      "double_close", "invalid_close", "unclassified_crash", "thread_leak"
     ]},
     "severity": {"type": "string", "enum": ["note", "warning", "error"]},
     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
@@ -40,6 +40,19 @@
           "operation": {"type": "string"},
           "return_value": {"type": "integer"}
         }},
+        "crash": {"type": "object", "properties": {
+          "signal": {"type": "integer"},
+          "signal_name": {"type": "string"},
+          "exit_code": {"type": ["integer", "null"]},
+          "duration_ms": {"type": "integer", "minimum": 0},
+          "binary_path": {"type": "string"},
+          "captured_binary_path": {"type": "string"},
+          "args": {"type": "array", "items": {"type": "string"}},
+          "cwd": {"type": "string"},
+          "stdout_path": {"type": "string"},
+          "stderr_path": {"type": "string"},
+          "console_log_path": {"type": "string"}
+        }},
         "dest_alloc": {"type": "object", "properties": {"ptr": {"type": "string"}, "size": {"type": "integer"}}},
         "stacks": {"type": "object", "properties": {
           "alloc": {"type": "array", "items": {"type": "string"}},
@@ -57,4 +70,3 @@
     "dataQuality": {"type": "object", "properties": {"eventsDropped": {"type": "integer", "minimum": 0}}}
   }
 }
-
