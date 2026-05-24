@@ -265,6 +265,7 @@
         ]
       },
       "tools": {
+        "gdb": "supported",
         "valgrind": "planned",
         "asan": "not_applicable",
         "lsan": "not_applicable",
@@ -272,7 +273,8 @@
       },
       "limitations": [
         "Signal-only evidence is not a precise memory class.",
-        "Stack/root-cause enrichment needs gdb, sanitizer, or rr integration later."
+        "GDB stack enrichment improves crash context when GDB is available, but it still does not prove the precise memory-safety class.",
+        "Precise root-cause classification still needs sanitizer, Valgrind, rr, or replay confirmation later."
       ]
     },
     {

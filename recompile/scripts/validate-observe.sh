@@ -155,8 +155,8 @@ printf '[observe] clean binary\n'
 assert_observation "$output_root/clean_malloc_free/run-summary.json" clean __none__ 0
 
 printf '[observe] signal-only crash evidence\n'
-"$runner_path" observe --native-only build/user-samples/crash_segv_case --output "$output_root/crash_segv_case"
-assert_observation "$output_root/crash_segv_case/run-summary.json" findings unclassified_crash 1
+"$runner_path" observe build/user-samples/crash_segv_case --output "$output_root/crash_segv_case"
+assert_observation "$output_root/crash_segv_case/run-summary.json" findings unclassified_crash 1 gdb findings unclassified_crash
 python3 - "$output_root/crash_segv_case/run-summary.json" "$runner_path" <<'PY'
 import json
 import pathlib
@@ -175,6 +175,12 @@ finding = findings[0]
 crash = ((finding.get("evidence") or {}).get("crash") or {})
 if crash.get("signal_name") != "SIGSEGV":
     raise SystemExit(f"{summary_path}: missing SIGSEGV crash evidence: {crash}")
+crash_stack = (((finding.get("evidence") or {}).get("stacks") or {}).get("crash") or [])
+if not crash_stack:
+    raise SystemExit(f"{summary_path}: missing GDB crash stack: {finding}")
+gdb_tool = (((finding.get("evidence") or {}).get("tool") or {}).get("gdb") or {})
+if gdb_tool.get("signal_name") != "SIGSEGV":
+    raise SystemExit(f"{summary_path}: missing GDB signal evidence: {gdb_tool}")
 for key in ["stdout_path", "stderr_path", "console_log_path"]:
     path = pathlib.Path(crash.get(key, ""))
     if not path.exists():
@@ -190,9 +196,12 @@ if agent_finding.get("operation") != "crash_observed":
     raise SystemExit(f"{summary_path}: summarize missing crash_observed operation: {agent_finding}")
 if (agent_finding.get("crash") or {}).get("signal_name") != "SIGSEGV":
     raise SystemExit(f"{summary_path}: summarize missing crash evidence: {agent_finding}")
+if not (((agent_finding.get("stacks") or {}).get("crash") or [])):
+    raise SystemExit(f"{summary_path}: summarize missing GDB crash stack: {agent_finding}")
 print(json.dumps({
     "crash_class": finding.get("class"),
     "signal": crash.get("signal_name"),
+    "gdb_frame": crash_stack[0],
     "stdout": crash.get("stdout_path"),
 }, sort_keys=True))
 PY

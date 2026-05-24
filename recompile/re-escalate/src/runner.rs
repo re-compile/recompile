@@ -1,8 +1,8 @@
 //! Escalation runner - orchestrates tool execution
 
 use crate::{
-    parse_asan_output, parse_lsan_output, parse_ubsan_output, parse_valgrind_output,
-    EscalationConfig, EscalationError, EscalationResult, Finding, Result,
+    parse_asan_output, parse_gdb_output, parse_lsan_output, parse_ubsan_output,
+    parse_valgrind_output, EscalationConfig, EscalationError, EscalationResult, Finding, Result,
 };
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -168,37 +168,20 @@ impl EscalationRunner {
         escalation_id: &str,
     ) -> Result<EscalationResult> {
         let start_time = Instant::now();
-        let result = self.run_gdb_escalation(finding, escalation_id).await;
-        let duration_ms = start_time.elapsed().as_millis() as u64;
-
-        match result {
-            Ok(path) => Ok(EscalationResult {
-                id: escalation_id.to_string(),
-                finding_id: finding.id.clone(),
-                tool: "gdb".to_string(),
-                success: true,
-                tool_available: true,
-                duration_ms,
-                output_path: Some(path),
-                stdout_path: None,
-                stderr_path: None,
-                report_path: None,
-                command: Vec::new(),
-                exit_code: None,
-                confirmed: false,
-                error: None,
-                findings_detected: Vec::new(),
-                timestamp: unix_timestamp(),
-            }),
-            Err(error) => Ok(self.failure_result(
+        if !self.config.tools.gdb.enabled {
+            return Ok(self.failure_result(
                 finding,
                 escalation_id,
                 "gdb",
-                true,
-                duration_ms,
-                error.to_string(),
-            )),
+                false,
+                start_time.elapsed().as_millis() as u64,
+                "GDB escalation is disabled".to_string(),
+            ));
         }
+
+        let binary_path = self.find_binary(finding)?;
+        self.run_gdb_binary(&finding.id, &binary_path, escalation_id, start_time)
+            .await
     }
 
     async fn run_ubsan_result(
@@ -748,50 +731,100 @@ impl EscalationRunner {
         })
     }
 
-    /// Run GDB escalation
-    async fn run_gdb_escalation(&self, finding: &Finding, escalation_id: &str) -> Result<String> {
-        if !self.config.tools.gdb.enabled {
-            return Err(EscalationError::Config(
-                "GDB escalation is disabled".to_string(),
-            ));
-        }
-
+    async fn run_gdb_binary(
+        &self,
+        finding_id: &str,
+        binary_path: &Path,
+        escalation_id: &str,
+        start_time: Instant,
+    ) -> Result<EscalationResult> {
         let output_dir = Path::new(&self.config.output_dir).join("gdb");
         tokio::fs::create_dir_all(&output_dir).await?;
 
-        // Find the binary for the finding
-        let binary_path = self.find_binary(finding)?;
-        let output_file = output_dir.join(format!("gdb_{}.log", escalation_id));
-
-        // Create GDB script
-        let gdb_script = self.config.tools.gdb.commands.join("\n");
+        let stdout_file = output_dir.join(format!("gdb_{}.stdout.log", escalation_id));
+        let stderr_file = output_dir.join(format!("gdb_{}.stderr.log", escalation_id));
+        let report_file = output_dir.join(format!("gdb_{}.json", escalation_id));
         let script_file = output_dir.join(format!("gdb_script_{}.gdb", escalation_id));
+        let executable_path = canonical_binary_path(binary_path);
+
+        let gdb_script = if self.config.tools.gdb.commands.is_empty() {
+            default_gdb_commands().join("\n")
+        } else {
+            self.config.tools.gdb.commands.join("\n")
+        };
         tokio::fs::write(&script_file, &gdb_script).await?;
 
-        // Run GDB
         let mut cmd = TokioCommand::new("gdb");
-        cmd.args(&[
-            "-batch",
-            "-x",
-            script_file.to_str().unwrap(),
-            binary_path.to_str().unwrap(),
-        ]);
+        let mut command = vec![
+            "gdb".to_string(),
+            "-q".to_string(),
+            "-batch".to_string(),
+            "-x".to_string(),
+            script_file.display().to_string(),
+            "--args".to_string(),
+            executable_path.display().to_string(),
+        ];
+        cmd.arg("-q")
+            .arg("-batch")
+            .arg("-x")
+            .arg(&script_file)
+            .arg("--args")
+            .arg(&executable_path);
+        for arg in &self.config.args {
+            cmd.arg(arg);
+            command.push(arg.clone());
+        }
+        self.apply_cwd(&mut cmd, &mut command);
 
         let timeout_duration = TokioDuration::from_millis(self.config.tools.gdb.timeout_ms);
         let output = timeout(timeout_duration, cmd.output())
             .await
-            .map_err(|_| EscalationError::Timeout("GDB execution timed out".to_string()))?
-            .map_err(|e| EscalationError::ToolExecution(e.to_string()))?;
+            .map_err(|_| EscalationError::Timeout("GDB execution timed out".to_string()))?;
+
+        let output = match output {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(self.result_failure(
+                    finding_id,
+                    escalation_id,
+                    "gdb",
+                    false,
+                    start_time.elapsed().as_millis() as u64,
+                    "gdb not found in PATH".to_string(),
+                ));
+            }
+            Err(error) => return Err(EscalationError::ToolExecution(error.to_string())),
+        };
 
         let output_str = String::from_utf8_lossy(&output.stdout);
         let error_str = String::from_utf8_lossy(&output.stderr);
-        let full_output = format!("STDOUT:\n{}\nSTDERR:\n{}", output_str, error_str);
+        let report = parse_gdb_output(&output_str, &error_str);
 
-        // Save output
-        tokio::fs::write(&output_file, &full_output).await?;
+        tokio::fs::write(&stdout_file, output_str.as_bytes()).await?;
+        tokio::fs::write(&stderr_file, error_str.as_bytes()).await?;
+        tokio::fs::write(&report_file, serde_json::to_vec_pretty(&report)?).await?;
 
-        log::info!("GDB escalation completed: {}", output_file.display());
-        Ok(output_file.to_string_lossy().to_string())
+        let findings_detected = report.detected_classes();
+
+        log::info!("GDB escalation completed: {}", report_file.display());
+        Ok(EscalationResult {
+            id: escalation_id.to_string(),
+            finding_id: finding_id.to_string(),
+            tool: "gdb".to_string(),
+            success: true,
+            tool_available: true,
+            duration_ms: start_time.elapsed().as_millis() as u64,
+            output_path: Some(report_file.display().to_string()),
+            stdout_path: Some(stdout_file.display().to_string()),
+            stderr_path: Some(stderr_file.display().to_string()),
+            report_path: Some(report_file.display().to_string()),
+            command,
+            exit_code: output.status.code(),
+            confirmed: report.confirmed,
+            error: None,
+            findings_detected,
+            timestamp: unix_timestamp(),
+        })
     }
 
     /// Find binary for a finding
@@ -870,6 +903,18 @@ fn unix_timestamp() -> u64 {
 
 fn canonical_binary_path(binary_path: &Path) -> PathBuf {
     std::fs::canonicalize(binary_path).unwrap_or_else(|_| binary_path.to_path_buf())
+}
+
+fn default_gdb_commands() -> Vec<String> {
+    vec![
+        "set pagination off".to_string(),
+        "set confirm off".to_string(),
+        "run".to_string(),
+        "bt full".to_string(),
+        "info registers".to_string(),
+        "thread apply all bt".to_string(),
+        "quit".to_string(),
+    ]
 }
 
 #[cfg(test)]
