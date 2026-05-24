@@ -434,10 +434,7 @@ fn promote_tool_findings_to_crashpack(
         .as_array()
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("{} must contain a JSON array", findings_path.display()))?;
-    let mut known_classes = findings
-        .iter()
-        .filter_map(finding_class)
-        .collect::<BTreeSet<_>>();
+    let mut known_tool_keys = existing_tool_detection_keys(&findings);
 
     let mut changed = enrich_gdb_crash_findings(&mut findings, results);
     for result in results.iter().filter(|result| {
@@ -447,10 +444,13 @@ fn promote_tool_findings_to_crashpack(
             && !result.findings_detected.is_empty()
     }) {
         for (index, detection) in tool_detections(result).into_iter().enumerate() {
-            if known_classes.contains(&detection.class) {
+            if confirms_existing_finding(&findings, result, &detection) {
                 continue;
             }
-            known_classes.insert(detection.class.clone());
+            let detection_key = tool_detection_key(&result.tool, &detection);
+            if !known_tool_keys.insert(detection_key) {
+                continue;
+            }
             findings.push(tool_backed_finding(result, &detection, index, &analysis));
             changed = true;
         }
@@ -850,6 +850,79 @@ fn tool_backed_finding(
         },
         "related": []
     })
+}
+
+fn existing_tool_detection_keys(findings: &[Value]) -> BTreeSet<String> {
+    findings
+        .iter()
+        .filter_map(|finding| {
+            let tool = finding
+                .get("evidence")
+                .and_then(|value| value.get("tool"))
+                .and_then(|value| value.get("name"))
+                .and_then(Value::as_str)?;
+            let detection = ToolDetection {
+                class: finding_class(finding)?,
+                summary: finding
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool-backed finding")
+                    .to_string(),
+                line: finding
+                    .get("evidence")
+                    .and_then(|value| value.get("tool"))
+                    .and_then(|value| value.get("line"))
+                    .and_then(Value::as_u64),
+                call_frame: finding
+                    .get("evidence")
+                    .and_then(|value| value.get("tool"))
+                    .and_then(|value| value.get("call_frame"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                alloc_frame: finding
+                    .get("evidence")
+                    .and_then(|value| value.get("tool"))
+                    .and_then(|value| value.get("alloc_frame"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                free_frame: finding
+                    .get("evidence")
+                    .and_then(|value| value.get("tool"))
+                    .and_then(|value| value.get("free_frame"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            };
+            Some(tool_detection_key(tool, &detection))
+        })
+        .collect()
+}
+
+fn confirms_existing_finding(
+    findings: &[Value],
+    result: &EscalationResult,
+    detection: &ToolDetection,
+) -> bool {
+    if result.finding_id == "clean-run" || result.finding_id == "tool-only-fallback" {
+        return false;
+    }
+
+    findings.iter().any(|finding| {
+        finding.get("id").and_then(Value::as_str) == Some(result.finding_id.as_str())
+            && finding_class(finding).as_deref() == Some(detection.class.as_str())
+    })
+}
+
+fn tool_detection_key(tool: &str, detection: &ToolDetection) -> String {
+    format!(
+        "{}\x1f{}\x1f{}\x1f{:?}\x1f{:?}\x1f{:?}\x1f{:?}",
+        tool,
+        detection.class,
+        detection.summary,
+        detection.line,
+        detection.call_frame,
+        detection.alloc_frame,
+        detection.free_frame
+    )
 }
 
 fn severity_for_tool_class(class: &str) -> &'static str {
@@ -1796,7 +1869,7 @@ fn validate_crashpack(path: &str) -> Result<()> {
     } else {
         if !errors.is_empty() {
             println!("❌ Validation errors:");
-            for error in errors {
+            for error in &errors {
                 println!("  {}", error);
             }
         }
@@ -1809,6 +1882,13 @@ fn validate_crashpack(path: &str) -> Result<()> {
         }
     }
 
+    if !errors.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Crashpack validation failed with {} error(s)",
+            errors.len()
+        ));
+    }
+
     Ok(())
 }
 
@@ -1816,6 +1896,23 @@ fn validate_crashpack(path: &str) -> Result<()> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn crashpack_validate_returns_error_for_missing_required_files() {
+        let base = std::env::temp_dir().join(format!(
+            "rerun-validate-missing-files-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("findings.json"), "[]").unwrap();
+
+        let err = validate_crashpack(&base.display().to_string())
+            .expect_err("missing required files should fail validation");
+
+        assert!(err.to_string().contains("Crashpack validation failed with"));
+        fs::remove_dir_all(base).unwrap();
+    }
 
     #[test]
     fn agent_summary_handles_finding_crashpack() {
@@ -2159,6 +2256,199 @@ mod tests {
                 .and_then(Value::as_u64),
             Some(1)
         );
+
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn tool_escalation_promotion_preserves_same_class_independent_findings() {
+        let base = std::env::temp_dir().join(format!(
+            "rerun-tool-multi-finding-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("escalations").join("valgrind")).unwrap();
+
+        let binary = base.join("app");
+        fs::write(&binary, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut perms = fs::metadata(&binary).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&binary, perms).unwrap();
+
+        fs::write(base.join("findings.json"), "[]").unwrap();
+        fs::write(
+            base.join("analysis.json"),
+            serde_json::to_vec_pretty(&json!({
+                "binary_path": binary.display().to_string(),
+                "args": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let report_path = base
+            .join("escalations")
+            .join("valgrind")
+            .join("report.json");
+        fs::write(
+            &report_path,
+            serde_json::to_vec_pretty(&json!({
+                "tool": "valgrind",
+                "detected": [
+                    {
+                        "class": "use_after_free",
+                        "summary": "Invalid read of size 1 at cache.c:17",
+                        "line": 1
+                    },
+                    {
+                        "class": "use_after_free",
+                        "summary": "Invalid read of size 1 at cache.c:42",
+                        "line": 5
+                    }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let result = EscalationResult {
+            id: "E-tool-multi".to_string(),
+            finding_id: "clean-run".to_string(),
+            tool: "valgrind".to_string(),
+            success: true,
+            tool_available: true,
+            duration_ms: 10,
+            output_path: Some(report_path.display().to_string()),
+            stdout_path: None,
+            stderr_path: None,
+            report_path: Some(report_path.display().to_string()),
+            command: vec!["valgrind".to_string(), binary.display().to_string()],
+            exit_code: Some(99),
+            confirmed: true,
+            error: None,
+            findings_detected: vec!["use_after_free".to_string()],
+            timestamp: 123,
+        };
+
+        let snapshot = promote_tool_findings_to_crashpack(&base, &[result])
+            .unwrap()
+            .expect("expected promoted findings");
+        assert_eq!(snapshot.count, 2);
+        assert_eq!(snapshot.class_counts.get("use_after_free"), Some(&2));
+
+        let findings = read_json_file(&base.join("findings.json")).unwrap();
+        assert_eq!(findings.as_array().map(Vec::len), Some(2));
+        assert_eq!(
+            findings.pointer("/0/class").and_then(Value::as_str),
+            Some("use_after_free")
+        );
+        assert_eq!(
+            findings.pointer("/1/class").and_then(Value::as_str),
+            Some("use_after_free")
+        );
+        assert_ne!(
+            findings.pointer("/0/fingerprint").and_then(Value::as_str),
+            findings.pointer("/1/fingerprint").and_then(Value::as_str)
+        );
+
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn tool_escalation_confirmation_does_not_duplicate_existing_native_finding() {
+        let base = std::env::temp_dir().join(format!(
+            "rerun-tool-confirm-native-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("escalations").join("valgrind")).unwrap();
+
+        let binary = base.join("app");
+        fs::write(&binary, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut perms = fs::metadata(&binary).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&binary, perms).unwrap();
+
+        fs::write(
+            base.join("analysis.json"),
+            serde_json::to_vec_pretty(&json!({
+                "binary_path": binary.display().to_string(),
+                "args": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            base.join("findings.json"),
+            serde_json::to_vec_pretty(&json!([{
+                "schema_version": "1.0",
+                "id": "F-native-heap",
+                "origin": "ebpf",
+                "class": "heap_overflow",
+                "severity": "error",
+                "confidence": "high",
+                "timestamp": 1,
+                "pid": 1,
+                "evidence": {
+                    "memory": {
+                        "ptr": 1,
+                        "size": 8,
+                        "alloc_size": 4,
+                        "operation": "memcpy"
+                    }
+                },
+                "provenance": {
+                    "binary_path": binary.display().to_string(),
+                    "source_status": "unresolved"
+                },
+                "related": []
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let report_path = base
+            .join("escalations")
+            .join("valgrind")
+            .join("report.json");
+        fs::write(
+            &report_path,
+            serde_json::to_vec_pretty(&json!({
+                "tool": "valgrind",
+                "detected": [{
+                    "class": "heap_overflow",
+                    "summary": "Invalid write of size 8",
+                    "line": 1
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let result = EscalationResult {
+            id: "E-confirm".to_string(),
+            finding_id: "F-native-heap".to_string(),
+            tool: "valgrind".to_string(),
+            success: true,
+            tool_available: true,
+            duration_ms: 10,
+            output_path: Some(report_path.display().to_string()),
+            stdout_path: None,
+            stderr_path: None,
+            report_path: Some(report_path.display().to_string()),
+            command: vec!["valgrind".to_string(), binary.display().to_string()],
+            exit_code: Some(99),
+            confirmed: true,
+            error: None,
+            findings_detected: vec!["heap_overflow".to_string()],
+            timestamp: 123,
+        };
+
+        let snapshot = promote_tool_findings_to_crashpack(&base, &[result]).unwrap();
+        assert!(snapshot.is_none());
+
+        let findings = read_json_file(&base.join("findings.json")).unwrap();
+        assert_eq!(findings.as_array().map(Vec::len), Some(1));
 
         fs::remove_dir_all(base).unwrap();
     }
