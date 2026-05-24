@@ -1,8 +1,8 @@
 //! Phase 4 observation-run contract.
 //!
 //! This module defines the stable JSON shape that `rerun observe` will write.
-//! It intentionally contains no runner behavior; execution wiring lands in a
-//! later Phase 4 slice.
+//! It intentionally contains the data contract only; execution wiring lives in
+//! the CLI/native orchestration modules.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

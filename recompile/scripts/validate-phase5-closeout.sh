@@ -38,7 +38,11 @@ forbidden_patterns = [
     re.compile(r'hotfix', re.IGNORECASE),
     re.compile(r'golden', re.IGNORECASE),
     re.compile(r'RECC Sentinel'),
+    re.compile(r'\bRECC\b'),
     re.compile(r'Week-1'),
+    re.compile(r'later Phase [0-9]'),
+    re.compile(r'Use VM mode'),
+    re.compile(r'manifest-driven VM'),
 ]
 allowed_comments = [
     'Native mode is only supported on Linux',

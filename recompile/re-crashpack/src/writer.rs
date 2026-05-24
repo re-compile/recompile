@@ -147,7 +147,7 @@ impl CrashpackWriter {
         // Add environment setup
         script.push_str("export ASAN_OPTIONS=detect_leaks=1:abort_on_error=1\n");
         script.push_str("export UBSAN_OPTIONS=abort_on_error=1\n");
-        script.push_str("export MSAN_OPTIONS=abort_on_error=1\n\n");
+        script.push('\n');
 
         // Add repro commands for each finding
         for (i, finding) in findings.iter().enumerate() {

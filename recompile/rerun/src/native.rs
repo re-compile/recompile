@@ -175,7 +175,7 @@ pub fn run_native_with_options(
     // Check if we're on Linux
     if !cfg!(target_os = "linux") {
         return Err(anyhow::anyhow!(
-            "Native mode is only supported on Linux. Use VM mode instead."
+            "Native mode is only supported on Linux. Use the documented Linux Docker-native environment or a Linux host."
         ));
     }
 
@@ -1819,7 +1819,7 @@ fn check_capabilities() -> Result<()> {
                 Options:\n\
                 1. Run as root: sudo re run --native <binary>\n\
                 2. Set capabilities: sudo setcap 'cap_bpf,cap_perfmon+ep' $(which re)\n\
-                3. Use VM mode instead: re run <binary> (default)\n\
+                3. Use the documented Linux Docker-native command with --privileged --pid=host\n\
                 \n\
                 Note: Native mode provides better performance but requires elevated privileges."
             ));
