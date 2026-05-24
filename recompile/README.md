@@ -115,6 +115,15 @@ Default observe behavior runs Valgrind confirmation when native findings exist.
 `--deep` runs a Valgrind binary scan even when native is clean and records ASan
 as `not_applicable` unless the binary is already ASan-instrumented.
 
+`observe` also reports native tracing capabilities in
+`run-summary.json.targets[].diagnostics`. In restricted agent sandboxes where
+Linux eBPF tracing cannot start because BPF, BTF, ptrace, PID namespace,
+privilege, or native agent artifacts are unavailable, default observe creates a
+minimal crashpack and attempts a tool-only fallback. The default fallback runs a
+whole-binary Valgrind scan; `--deep` also attempts ASan, LSan, and UBSan scans
+when applicable. `--native-only` disables this fallback and preserves strict
+native-tracing failure behavior.
+
 If a target terminates with `SIGSEGV`, `SIGABRT`, `SIGBUS`, or `SIGFPE` and no
 more precise detector has emitted a finding, `observe` records an
 `unclassified_crash` finding with `evidence.crash`. This is intentionally
@@ -131,6 +140,7 @@ Primary outputs:
 - `build/observe-demo/targets/copy_overrun_case/issue-groups.json` - stable issue groups
 - `build/observe-demo/targets/copy_overrun_case/analysis.json` - target run metadata
 - `build/observe-demo/targets/copy_overrun_case/logs/` - captured target stdout/stderr
+- `build/observe-demo/run-summary.json` target diagnostics - sandbox/native capability status and remediation
 
 ### Escalate an existing crashpack
 

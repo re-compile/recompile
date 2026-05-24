@@ -13,11 +13,12 @@ use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::native::{
-    finalize_findings, run_native, run_native_with_options, NativeRunOptions, NativeRunResult,
+    finalize_findings, native_capability_diagnostics, prepare_tool_only_crashpack, run_native,
+    run_native_with_options, NativeCapabilityDiagnostic, NativeRunOptions, NativeRunResult,
 };
 use crate::observation::{
-    ObservationArtifacts, ObservationRunSummary, ObservationTargetSummary, TargetExitSummary,
-    TargetStatus,
+    ObservationArtifacts, ObservationDiagnostic, ObservationRunSummary, ObservationTargetSummary,
+    TargetExitSummary, TargetStatus,
 };
 use crate::summary::{print_findings_summary, read_findings};
 
@@ -134,6 +135,7 @@ pub fn handle_observe_command(matches: &ArgMatches) -> Result<()> {
     let target_name = observation_target_name(&binary_path);
     let target_dir = output_root.join("targets").join(&target_name);
     fs::create_dir_all(&target_dir)?;
+    let native_diagnostics = observation_diagnostics_from_native(native_capability_diagnostics());
 
     println!("RECC Sentinel v0.1.0");
     println!("Observing binary: {}", binary_path.display());
@@ -154,33 +156,57 @@ pub fn handle_observe_command(matches: &ArgMatches) -> Result<()> {
     }
 
     let started = Instant::now();
+    let run_options = NativeRunOptions {
+        cwd: cwd.clone(),
+        timeout: timeout_ms.map(Duration::from_millis),
+    };
     let native_result = run_native_with_options(
         &binary_path,
         &target_dir,
         "never",
         "llvm",
         &args,
-        NativeRunOptions {
-            cwd: cwd.clone(),
-            timeout: timeout_ms.map(Duration::from_millis),
-        },
+        run_options.clone(),
     );
 
+    let mut used_tool_only_fallback = false;
     let mut target = match native_result {
-        Ok(result) => observation_target_from_native_result(&target_name, timeout_ms, result),
-        Err(error) => observation_target_from_error(
-            &target_name,
-            &binary_path,
-            &args,
-            cwd.as_deref(),
-            &output_root,
-            timeout_ms,
-            error.to_string(),
-            started.elapsed().as_millis(),
-        ),
+        Ok(result) => {
+            let mut target =
+                observation_target_from_native_result(&target_name, timeout_ms, result);
+            target.diagnostics = native_diagnostics.clone();
+            target
+        }
+        Err(error) => {
+            let native_error = error.to_string();
+            let mut target = observation_target_from_error(
+                &target_name,
+                &binary_path,
+                &args,
+                cwd.as_deref(),
+                &output_root,
+                timeout_ms,
+                native_error.clone(),
+                started.elapsed().as_millis(),
+            );
+            target.diagnostics = native_diagnostics.clone();
+            if !native_only && native_error_allows_tool_only_fallback(&native_error) {
+                used_tool_only_fallback = true;
+                run_observe_tool_only_fallback(
+                    &mut target,
+                    &binary_path,
+                    &target_dir,
+                    &args,
+                    &run_options,
+                    deep,
+                    timeout_ms,
+                )?;
+            }
+            target
+        }
     };
 
-    if !native_only && !had_observation_error(target.status) {
+    if !native_only && !used_tool_only_fallback && !had_observation_error(target.status) {
         let escalation_results = run_observe_escalation(&target, deep)?;
         if !escalation_results.is_empty() {
             write_escalation_results(
@@ -871,6 +897,155 @@ fn had_observation_error(status: TargetStatus) -> bool {
         status,
         TargetStatus::Failed | TargetStatus::Timeout | TargetStatus::Skipped
     )
+}
+
+fn observation_diagnostics_from_native(
+    diagnostics: Vec<NativeCapabilityDiagnostic>,
+) -> Vec<ObservationDiagnostic> {
+    diagnostics
+        .into_iter()
+        .map(|diagnostic| ObservationDiagnostic {
+            component: diagnostic.component,
+            status: diagnostic.status,
+            detail: diagnostic.detail,
+            remediation: diagnostic.remediation,
+        })
+        .collect()
+}
+
+fn native_error_allows_tool_only_fallback(error: &str) -> bool {
+    let known_setup_failures = [
+        "Native mode is only supported on Linux",
+        "Native mode requires CAP_BPF",
+        "without a shared host PID namespace",
+        "Could not find re-mini agent",
+        "Could not find heap_tracker.bpf.o",
+        "Could not find copy_checker.bpf.o",
+        "Could not detect libc path",
+        "Failed to start agent",
+        "Agent exited prematurely",
+        "Failed to resume target",
+        "Target exited before post-exec stop",
+    ];
+    known_setup_failures
+        .iter()
+        .any(|needle| error.contains(needle))
+}
+
+fn run_observe_tool_only_fallback(
+    target: &mut ObservationTargetSummary,
+    binary_path: &Path,
+    target_dir: &Path,
+    args: &[String],
+    options: &NativeRunOptions,
+    deep: bool,
+    timeout_ms: Option<u64>,
+) -> Result<()> {
+    println!("Native tracing unavailable; attempting tool-only fallback...");
+    prepare_tool_only_crashpack(binary_path, target_dir, args, options)?;
+    target.error = Some(format!(
+        "native tracing unavailable; used tool-only fallback: {}",
+        target
+            .error
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string())
+    ));
+    target.timeout_ms = timeout_ms;
+    target.replay_command = Some(format!(
+        "rerun replay {} --format json",
+        target_dir.display()
+    ));
+    target.summarize_command = Some(format!(
+        "rerun summarize {} --format json",
+        target_dir.display()
+    ));
+    target.next_commands = vec![
+        format!("rerun summarize {} --format json", target_dir.display()),
+        format!("rerun replay {} --format json", target_dir.display()),
+        format!(
+            "rerun escalate {} --tool valgrind --scan-binary",
+            target_dir.display()
+        ),
+    ];
+
+    let tools = if deep {
+        vec!["valgrind", "asan", "lsan", "ubsan"]
+    } else {
+        vec!["valgrind"]
+    };
+    let results = run_observe_binary_scans(target_dir, &tools)?;
+    if !results.is_empty() {
+        write_escalation_results(&target_dir.to_path_buf(), &results)?;
+        target.escalation = results.iter().map(observation_escalation_summary).collect();
+        if let Some(snapshot) =
+            promote_tool_findings_to_crashpack(&target_dir.to_path_buf(), &results)?
+        {
+            target.findings_count = snapshot.count;
+            target.findings_by_class = snapshot.class_counts;
+            target.issue_group_count = snapshot.issue_group_count;
+        }
+    }
+
+    target.status = fallback_target_status(target, &results);
+    Ok(())
+}
+
+fn run_observe_binary_scans(crashpack_dir: &Path, tools: &[&str]) -> Result<Vec<EscalationResult>> {
+    let analysis = load_analysis_metadata(&crashpack_dir.to_path_buf())?;
+    let mut config = EscalationConfig::default();
+    config.output_dir = crashpack_dir.join("escalations").display().to_string();
+    config.binary_path = Some(analysis.binary_path.clone());
+    config.source_file = analysis.source_path.clone();
+    config.cwd = analysis.cwd.clone();
+    config.args = analysis.args.clone();
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    let mut results = Vec::new();
+    for tool in tools {
+        let result = runtime.block_on(async {
+            let mut runner = EscalationRunner::new(config.clone());
+            runner
+                .check_clean_binary(tool)
+                .await
+                .unwrap_or_else(|error| {
+                    observe_escalation_failure("tool-only-fallback", tool, error.to_string())
+                })
+        });
+        results.push(result);
+    }
+    Ok(results)
+}
+
+fn fallback_target_status(
+    target: &ObservationTargetSummary,
+    results: &[EscalationResult],
+) -> TargetStatus {
+    if target.findings_count > 0
+        || results
+            .iter()
+            .any(|result| result.confirmed || !result.findings_detected.is_empty())
+    {
+        return TargetStatus::Findings;
+    }
+    if results
+        .iter()
+        .any(|result| escalation_status(result) == TargetStatus::Clean)
+    {
+        return TargetStatus::Clean;
+    }
+    if results
+        .iter()
+        .any(|result| escalation_status(result) == TargetStatus::ToolUnavailable)
+    {
+        return TargetStatus::ToolUnavailable;
+    }
+    if results
+        .iter()
+        .all(|result| escalation_status(result) == TargetStatus::NotApplicable)
+    {
+        return TargetStatus::NotApplicable;
+    }
+    TargetStatus::Failed
 }
 
 fn run_observe_escalation(
@@ -2264,6 +2439,80 @@ mod tests {
         assert_eq!(target.timeout_ms, Some(100));
         assert_eq!(target.duration_ms, Some(25));
         assert_eq!(target.artifacts.crashpack, ".re/targets/app");
+    }
+
+    #[test]
+    fn native_setup_errors_allow_tool_only_fallback() {
+        assert!(native_error_allows_tool_only_fallback(
+            "Native mode requires CAP_BPF and CAP_PERFMON capabilities."
+        ));
+        assert!(native_error_allows_tool_only_fallback(
+            "Native mode is running in Docker without a shared host PID namespace."
+        ));
+        assert!(native_error_allows_tool_only_fallback(
+            "Could not find heap_tracker.bpf.o. Build BPF objects with:"
+        ));
+        assert!(!native_error_allows_tool_only_fallback(
+            "Binary not found: build/missing"
+        ));
+        assert!(!native_error_allows_tool_only_fallback(
+            "Working directory not found: /tmp/missing"
+        ));
+    }
+
+    #[test]
+    fn fallback_status_prefers_findings_then_clean_then_unavailable() {
+        let mut target = ObservationTargetSummary::new(
+            "app",
+            "build/app",
+            Vec::new(),
+            ".",
+            TargetStatus::Failed,
+            TargetExitSummary::not_run(),
+            ObservationArtifacts::target_defaults(".re/targets/app"),
+        );
+
+        let mut result = EscalationResult {
+            id: "E-1".to_string(),
+            finding_id: "tool-only-fallback".to_string(),
+            tool: "valgrind".to_string(),
+            success: false,
+            tool_available: false,
+            duration_ms: 0,
+            output_path: None,
+            stdout_path: None,
+            stderr_path: None,
+            report_path: None,
+            command: Vec::new(),
+            exit_code: None,
+            confirmed: false,
+            error: Some("valgrind not found".to_string()),
+            findings_detected: Vec::new(),
+            timestamp: 1,
+        };
+
+        assert_eq!(
+            fallback_target_status(&target, &[result.clone()]),
+            TargetStatus::ToolUnavailable
+        );
+
+        result.success = true;
+        result.tool_available = true;
+        result.error = None;
+        assert_eq!(
+            fallback_target_status(&target, &[result.clone()]),
+            TargetStatus::Clean
+        );
+
+        result.confirmed = true;
+        result.findings_detected = vec!["use_after_free".to_string()];
+        assert_eq!(
+            fallback_target_status(&target, &[result]),
+            TargetStatus::Findings
+        );
+
+        target.findings_count = 1;
+        assert_eq!(fallback_target_status(&target, &[]), TargetStatus::Findings);
     }
 
     #[test]

@@ -85,6 +85,7 @@ pub struct ObservationTargetSummary {
     pub findings_by_class: BTreeMap<String, u64>,
     pub issue_group_count: u64,
     pub escalation: Vec<ObservationEscalationSummary>,
+    pub diagnostics: Vec<ObservationDiagnostic>,
     pub artifacts: ObservationArtifacts,
     pub replay_command: Option<String>,
     pub summarize_command: Option<String>,
@@ -117,6 +118,7 @@ impl ObservationTargetSummary {
             findings_by_class: BTreeMap::new(),
             issue_group_count: 0,
             escalation: Vec::new(),
+            diagnostics: Vec::new(),
             artifacts,
             replay_command: None,
             summarize_command: None,
@@ -159,6 +161,14 @@ pub struct ObservationEscalationSummary {
     pub findings_detected: Vec<String>,
     pub artifact_path: Option<String>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservationDiagnostic {
+    pub component: String,
+    pub status: String,
+    pub detail: String,
+    pub remediation: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -339,6 +349,7 @@ mod tests {
             "findings_by_class",
             "issue_group_count",
             "escalation",
+            "diagnostics",
             "artifacts",
             "replay_command",
             "summarize_command",
