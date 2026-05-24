@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+project_dir="$(cd "${script_dir}/.." && pwd)"
+cd "$project_dir"
+
+python3 - <<'PY'
+import json
+import pathlib
+import re
+
+root = pathlib.Path('.')
+scan_paths = [
+    root / 'rerun' / 'src',
+    root / 're-escalate' / 'src',
+    root / 're-crashpack' / 'src',
+    root / 'runtime' / 'agent',
+    root / 'runtime' / 'bpf',
+    root / 'recc' / 'src',
+]
+allowed_suffixes = {'.rs', '.c', '.h'}
+forbidden_patterns = [
+    re.compile(r'copy_overrun_case'),
+    re.compile(r'memmove_overrun_case'),
+    re.compile(r'memset_overrun_case'),
+    re.compile(r'strcpy_overrun_case'),
+    re.compile(r'strncpy_overrun_case'),
+    re.compile(r'cache_release_twice'),
+    re.compile(r'free_stack_slot'),
+    re.compile(r'fd_leak_case'),
+    re.compile(r'crash_segv_case'),
+    re.compile(r'memcpy_overflow'),
+    re.compile(r'double_free\.c'),
+    re.compile(r'invalid_free\.c'),
+    re.compile(r'build/examples'),
+    re.compile(r'user-samples'),
+    re.compile(r'project-fixtures'),
+    re.compile(r'hotfix', re.IGNORECASE),
+    re.compile(r'golden', re.IGNORECASE),
+]
+allowed_comments = [
+    'Native mode is only supported on Linux',
+]
+
+def strip_rust_test_modules(text: str) -> str:
+    marker = '#[cfg(test)]'
+    idx = text.find(marker)
+    if idx == -1:
+        return text
+    return text[:idx]
+
+def relevant_text(path: pathlib.Path) -> str:
+    text = path.read_text(errors='replace')
+    if path.suffix == '.rs':
+        text = strip_rust_test_modules(text)
+    return text
+
+violations = []
+for base in scan_paths:
+    if not base.exists():
+        continue
+    for path in base.rglob('*'):
+        if not path.is_file() or path.suffix not in allowed_suffixes:
+            continue
+        if path.name.endswith('.bpf.o'):
+            continue
+        text = relevant_text(path)
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            if any(allowed in line for allowed in allowed_comments):
+                continue
+            for pattern in forbidden_patterns:
+                if pattern.search(line):
+                    violations.append({
+                        'path': str(path),
+                        'line': line_no,
+                        'pattern': pattern.pattern,
+                        'text': line.strip(),
+                    })
+
+if violations:
+    print(json.dumps({'violations': violations}, indent=2))
+    raise SystemExit('phase5 closeout scan found sample-specific or hotfix-like active code')
+
+print(json.dumps({
+    'schema_version': '1.0',
+    'purpose': 'phase5_closeout_scan',
+    'scanned_paths': [str(path) for path in scan_paths],
+    'forbidden_pattern_count': len(forbidden_patterns),
+    'violations': [],
+}, indent=2))
+PY
+
+printf '\n[phase5-closeout] active-path stale/hotfix scan passed\n'

@@ -48,6 +48,16 @@
 - Added project-shaped fixtures covering multi-file, args/cwd, multi-binary, shared-library, Valgrind-first, and timeout observation paths.
 - Added `make observe-smoke`, `make project-smoke`, `make observe-hit-rate`, and the aggregate `make phase4` closeout gate.
 - Marked Phase 4 complete for the local runtime observability foundation.
+- Added tool-backed finding promotion for escalation outputs and stable grouping for promoted findings.
+- Added UBSan escalation for already-instrumented `-fsanitize=undefined` binaries.
+- Added standalone LSan escalation for already-instrumented `-fsanitize=leak` binaries.
+- Added native C++ allocator-family coverage for default libstdc++ new/delete mismatch cases.
+- Added native fd lifecycle coverage for `fd_leak`, `double_close`, and `invalid_close`.
+- Added signal-only `unclassified_crash` evidence for supported fatal signals when no precise detector fires.
+- Added `docs/support-matrix.json`, `make support-matrix-smoke`, and per-class hit-rate coverage summaries.
+- Added `make phase5-closeout-smoke` to scan active production paths for sample-specific and hotfix-like logic.
+- Added `make phase5` as the aggregate Phase 5 validation gate.
+- Marked Phase 5 complete for the current memory/resource coverage expansion scope.
 
 ### Fixed
 - PID-scoped native runs no longer depend on the old shell-wrapper launch path.
@@ -59,6 +69,7 @@
 - Crashpack repro scripts now target the captured binary name instead of a hardcoded `./bins/target`.
 - `rerun replay` now applies the recorded cwd and canonicalizes the captured binary before execution.
 - Observe-level Valgrind escalation now respects recorded cwd and canonicalized captured binaries.
+- Signal-only crashes now capture target stdout/stderr paths and preserve crash evidence in agent summaries.
 - The three Linux-native goldens currently verify as distinct findings in the supported Docker path:
   - `invalid_free`
   - `double_free`

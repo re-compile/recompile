@@ -176,12 +176,14 @@ docker run --rm -it --privileged --pid=host \
 Inside the container:
 
 ```bash
-make phase4
+make phase5
 ```
 
 The equivalent expanded gate is:
 
 ```bash
+make support-matrix-smoke
+make phase5-closeout-smoke
 make phase2
 make observe-smoke
 make project-smoke
@@ -189,6 +191,9 @@ make observe-hit-rate
 make hit-rate
 make recc-smoke
 ```
+
+`make phase4` remains available as the Phase 4 substrate gate. `make phase5`
+adds the support-matrix and closeout scans before running that substrate.
 
 ### Manual Dry Run
 
