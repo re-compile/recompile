@@ -1,0 +1,448 @@
+{
+  "schema_version": "1.0",
+  "purpose": "phase5_support_matrix",
+  "scope": "Linux-native C/C++ runtime observability for user-built ELF binaries",
+  "status_values": [
+    "supported",
+    "instrumented_binary_supported",
+    "observed_only",
+    "unsupported",
+    "not_applicable",
+    "planned",
+    "not_covered"
+  ],
+  "classes": [
+    {
+      "class": "heap_overflow",
+      "category": "memory_safety",
+      "native": {
+        "status": "supported",
+        "evidence": "allocator metadata plus bounded libc copy/string operation probes",
+        "positive_cases": [
+          "copy_overrun_case",
+          "memmove_overrun_case",
+          "memset_overrun_case",
+          "strcpy_overrun_case",
+          "strncpy_overrun_case",
+          "multi_overrun_case",
+          "posix_memalign_overrun_case",
+          "aligned_alloc_overrun_case",
+          "strdup_overrun_case",
+          "multifile-heap",
+          "args-cwd",
+          "multi-binary-worker",
+          "shared-lib"
+        ],
+        "clean_negative_cases": [
+          "clean_bounded_memcpy",
+          "clean_bounded_memmove",
+          "clean_bounded_memset",
+          "clean_bounded_strcpy",
+          "clean_bounded_strncpy",
+          "clean_malloc_free",
+          "clean-multifile",
+          "multi-binary-healthcheck"
+        ]
+      },
+      "tools": {
+        "valgrind": "supported",
+        "asan": "instrumented_binary_supported",
+        "lsan": "not_applicable",
+        "ubsan": "not_applicable"
+      },
+      "limitations": [
+        "Native support currently depends on observed libc allocation and copy/string APIs.",
+        "Arbitrary handwritten pointer arithmetic is not classified unless it reaches a probed operation or a tool confirms it."
+      ]
+    },
+    {
+      "class": "double_free",
+      "category": "memory_safety",
+      "native": {
+        "status": "supported",
+        "evidence": "free-family lifecycle tracking",
+        "positive_cases": [
+          "cache_release_twice",
+          "realloc_zero_double_free"
+        ],
+        "clean_negative_cases": [
+          "clean_malloc_free",
+          "clean_realloc_zero"
+        ]
+      },
+      "tools": {
+        "valgrind": "supported",
+        "asan": "instrumented_binary_supported",
+        "lsan": "not_applicable",
+        "ubsan": "not_applicable"
+      },
+      "limitations": [
+        "Native support is process-local lifecycle tracking and does not prove ownership semantics beyond observed allocator calls."
+      ]
+    },
+    {
+      "class": "invalid_free",
+      "category": "memory_safety",
+      "native": {
+        "status": "supported",
+        "evidence": "free-family call on pointer not tracked as heap allocation",
+        "positive_cases": [
+          "free_stack_slot"
+        ],
+        "clean_negative_cases": [
+          "clean_malloc_free",
+          "clean_cxx_new_delete"
+        ]
+      },
+      "tools": {
+        "valgrind": "supported",
+        "asan": "instrumented_binary_supported",
+        "lsan": "not_applicable",
+        "ubsan": "not_applicable"
+      },
+      "limitations": [
+        "Native support is strongest for allocator/free-family misuse visible through libc/libstdc++ symbols."
+      ]
+    },
+    {
+      "class": "allocator_mismatch",
+      "category": "memory_safety",
+      "native": {
+        "status": "supported",
+        "evidence": "default libstdc++ new/delete family tracking against free/delete calls",
+        "positive_cases": [
+          "cxx_new_free_mismatch",
+          "cxx_malloc_delete_mismatch",
+          "cxx_new_array_delete_mismatch",
+          "cxx_new_delete_array_mismatch"
+        ],
+        "clean_negative_cases": [
+          "clean_cxx_new_delete",
+          "clean_malloc_free"
+        ]
+      },
+      "tools": {
+        "valgrind": "supported",
+        "asan": "planned",
+        "lsan": "not_applicable",
+        "ubsan": "not_applicable"
+      },
+      "limitations": [
+        "Custom allocator overloads and non-default C++ runtime symbol variants are not broadly claimed."
+      ]
+    },
+    {
+      "class": "fd_leak",
+      "category": "resource_lifecycle",
+      "native": {
+        "status": "supported",
+        "evidence": "open/openat/open64/openat64/creat and close lifecycle tracking at target exit",
+        "positive_cases": [
+          "fd_leak_case"
+        ],
+        "clean_negative_cases": [
+          "clean_fd_close"
+        ]
+      },
+      "tools": {
+        "valgrind": "supported",
+        "asan": "not_applicable",
+        "lsan": "not_applicable",
+        "ubsan": "not_applicable"
+      },
+      "limitations": [
+        "Socket, pipe, dup, fork/exec ownership transfer, and descriptor inheritance semantics are not fully modeled yet."
+      ]
+    },
+    {
+      "class": "double_close",
+      "category": "resource_lifecycle",
+      "native": {
+        "status": "supported",
+        "evidence": "close on descriptor already observed closed in the tracked target process",
+        "positive_cases": [
+          "fd_double_close_case"
+        ],
+        "clean_negative_cases": [
+          "clean_fd_close"
+        ]
+      },
+      "tools": {
+        "valgrind": "unsupported",
+        "asan": "not_applicable",
+        "lsan": "not_applicable",
+        "ubsan": "not_applicable"
+      },
+      "limitations": [
+        "No reliable tool-backed confirmation path is wired for this class yet.",
+        "Descriptor reuse and cross-process ownership need more production hardening."
+      ]
+    },
+    {
+      "class": "invalid_close",
+      "category": "resource_lifecycle",
+      "native": {
+        "status": "supported",
+        "evidence": "failed close on descriptor never tracked as open by the target process",
+        "positive_cases": [
+          "fd_invalid_close_case"
+        ],
+        "clean_negative_cases": [
+          "clean_fd_close"
+        ]
+      },
+      "tools": {
+        "valgrind": "unsupported",
+        "asan": "not_applicable",
+        "lsan": "not_applicable",
+        "ubsan": "not_applicable"
+      },
+      "limitations": [
+        "No reliable tool-backed confirmation path is wired for this class yet.",
+        "Descriptor reuse and cross-process ownership need more production hardening."
+      ]
+    },
+    {
+      "class": "use_after_free",
+      "category": "memory_safety",
+      "native": {
+        "status": "unsupported",
+        "evidence": "native agent does not currently track arbitrary dereference/load/store after free",
+        "positive_cases": [],
+        "clean_negative_cases": []
+      },
+      "tools": {
+        "valgrind": "supported",
+        "asan": "instrumented_binary_supported",
+        "lsan": "not_applicable",
+        "ubsan": "not_applicable"
+      },
+      "tool_positive_cases": [
+        "use_after_free_case",
+        "valgrind-first"
+      ],
+      "limitations": [
+        "Requires Valgrind scan or an already-ASan-built binary today.",
+        "Native eBPF support would need safe memory-access observation beyond current libc call probes."
+      ]
+    },
+    {
+      "class": "memory_leak",
+      "category": "memory_safety",
+      "native": {
+        "status": "unsupported",
+        "evidence": "native heap lifetime tracking is not currently promoted as leak detection",
+        "positive_cases": [],
+        "clean_negative_cases": []
+      },
+      "tools": {
+        "valgrind": "supported",
+        "asan": "not_applicable",
+        "lsan": "instrumented_binary_supported",
+        "ubsan": "not_applicable"
+      },
+      "tool_positive_cases": [
+        "memory_leak_case",
+        "direct_leak",
+        "indirect_leak"
+      ],
+      "limitations": [
+        "Normal binaries require Valgrind scan today.",
+        "LSan support requires an already-LSan-built binary."
+      ]
+    },
+    {
+      "class": "unclassified_crash",
+      "category": "crash_signal",
+      "native": {
+        "status": "observed_only",
+        "evidence": "target terminated via supported fatal signal and no precise detector emitted a finding",
+        "positive_cases": [
+          "crash_segv_case"
+        ],
+        "clean_negative_cases": [
+          "clean_malloc_free"
+        ]
+      },
+      "tools": {
+        "valgrind": "planned",
+        "asan": "not_applicable",
+        "lsan": "not_applicable",
+        "ubsan": "not_applicable"
+      },
+      "limitations": [
+        "Signal-only evidence is not a precise memory class.",
+        "Stack/root-cause enrichment needs gdb, sanitizer, or rr integration later."
+      ]
+    },
+    {
+      "class": "signed_integer_overflow",
+      "category": "undefined_behavior",
+      "native": {
+        "status": "unsupported",
+        "evidence": "native agent does not inspect language-level UB expressions",
+        "positive_cases": [],
+        "clean_negative_cases": []
+      },
+      "tools": {
+        "valgrind": "not_applicable",
+        "asan": "not_applicable",
+        "lsan": "not_applicable",
+        "ubsan": "instrumented_binary_supported"
+      },
+      "tool_positive_cases": [
+        "signed_overflow"
+      ],
+      "limitations": [
+        "Requires an already-UBSan-built binary today."
+      ]
+    },
+    {
+      "class": "shift_out_of_bounds",
+      "category": "undefined_behavior",
+      "native": {
+        "status": "unsupported",
+        "evidence": "native agent does not inspect language-level UB expressions",
+        "positive_cases": [],
+        "clean_negative_cases": []
+      },
+      "tools": {
+        "valgrind": "not_applicable",
+        "asan": "not_applicable",
+        "lsan": "not_applicable",
+        "ubsan": "instrumented_binary_supported"
+      },
+      "tool_positive_cases": [
+        "shift_out_of_bounds"
+      ],
+      "limitations": [
+        "Requires an already-UBSan-built binary today."
+      ]
+    },
+    {
+      "class": "null_pointer_use",
+      "category": "undefined_behavior",
+      "native": {
+        "status": "unsupported",
+        "evidence": "native agent does not inspect language-level UB expressions",
+        "positive_cases": [],
+        "clean_negative_cases": []
+      },
+      "tools": {
+        "valgrind": "not_applicable",
+        "asan": "planned",
+        "lsan": "not_applicable",
+        "ubsan": "instrumented_binary_supported"
+      },
+      "tool_positive_cases": [
+        "null_pointer"
+      ],
+      "limitations": [
+        "A fatal null dereference without sanitizer evidence is only unclassified crash evidence today."
+      ]
+    },
+    {
+      "class": "misaligned_pointer",
+      "category": "undefined_behavior",
+      "native": {
+        "status": "unsupported",
+        "evidence": "native agent does not inspect language-level UB expressions",
+        "positive_cases": [],
+        "clean_negative_cases": []
+      },
+      "tools": {
+        "valgrind": "not_applicable",
+        "asan": "not_applicable",
+        "lsan": "not_applicable",
+        "ubsan": "instrumented_binary_supported"
+      },
+      "tool_positive_cases": [
+        "misaligned_pointer"
+      ],
+      "limitations": [
+        "Requires an already-UBSan-built binary today."
+      ]
+    },
+    {
+      "class": "bounds",
+      "category": "undefined_behavior",
+      "native": {
+        "status": "unsupported",
+        "evidence": "native agent does not inspect language-level UB expressions",
+        "positive_cases": [],
+        "clean_negative_cases": []
+      },
+      "tools": {
+        "valgrind": "not_applicable",
+        "asan": "planned",
+        "lsan": "not_applicable",
+        "ubsan": "instrumented_binary_supported"
+      },
+      "tool_positive_cases": [
+        "bounds"
+      ],
+      "limitations": [
+        "Requires sanitizer/tool evidence today; native heap-overflow evidence is separate from UBSan bounds evidence."
+      ]
+    },
+    {
+      "class": "race",
+      "category": "concurrency",
+      "native": {
+        "status": "not_covered",
+        "evidence": "no pthread/futex/race detector is wired",
+        "positive_cases": [],
+        "clean_negative_cases": []
+      },
+      "tools": {
+        "valgrind": "planned",
+        "asan": "not_applicable",
+        "lsan": "not_applicable",
+        "ubsan": "not_applicable",
+        "tsan": "planned"
+      },
+      "limitations": [
+        "Needs TSan and/or rr plus scheduler/thread evidence in a later phase."
+      ]
+    },
+    {
+      "class": "uninitialized_read",
+      "category": "memory_safety",
+      "native": {
+        "status": "not_covered",
+        "evidence": "no shadow-memory or MSan integration is wired",
+        "positive_cases": [],
+        "clean_negative_cases": []
+      },
+      "tools": {
+        "valgrind": "planned",
+        "asan": "not_applicable",
+        "lsan": "not_applicable",
+        "ubsan": "not_applicable",
+        "msan": "planned"
+      },
+      "limitations": [
+        "Needs Valgrind/Memcheck parsing expansion or already-MSan-built binaries later."
+      ]
+    },
+    {
+      "class": "stack_overflow",
+      "category": "memory_safety",
+      "native": {
+        "status": "not_covered",
+        "evidence": "no stack object bounds tracking is wired",
+        "positive_cases": [],
+        "clean_negative_cases": []
+      },
+      "tools": {
+        "valgrind": "planned",
+        "asan": "planned",
+        "lsan": "not_applicable",
+        "ubsan": "not_applicable"
+      },
+      "limitations": [
+        "Signal-only stack crashes must remain unclassified unless sanitizer/tool evidence confirms the class."
+      ]
+    }
+  ]
+}

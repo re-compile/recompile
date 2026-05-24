@@ -1,4 +1,4 @@
-.PHONY: all bpf passes agent agent-test toolchain examples user-samples project-fixtures external-smoke escalation-smoke asan-smoke lsan-smoke ubsan-smoke summarize-smoke replay-smoke observe-smoke project-smoke observe-hit-rate recc-smoke hit-rate phase1 rc phase2 phase4
+.PHONY: all bpf passes agent agent-test toolchain examples user-samples project-fixtures external-smoke escalation-smoke asan-smoke lsan-smoke ubsan-smoke summarize-smoke replay-smoke observe-smoke project-smoke observe-hit-rate support-matrix-smoke recc-smoke hit-rate phase1 rc phase2 phase4 phase5
 
 all: examples
 
@@ -41,6 +41,9 @@ project-smoke:
 observe-hit-rate:
 	./scripts/validate-observe-hit-rate.sh
 
+support-matrix-smoke:
+	./scripts/validate-support-matrix.sh
+
 recc-smoke:
 	./scripts/validate-recc.sh
 
@@ -70,6 +73,10 @@ phase4:
 	./scripts/validate-observe-hit-rate.sh
 	./scripts/validate-hit-rate.sh
 	./scripts/validate-recc.sh
+
+phase5:
+	$(MAKE) support-matrix-smoke
+	$(MAKE) phase4
 
 passes:
 	cmake -S llvm-passes -B build/passes && cmake --build build/passes
