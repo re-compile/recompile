@@ -206,6 +206,19 @@ clang -g -O0 -fno-omit-frame-pointer \
 jq . build/my-test/findings.json
 ```
 
+For the agent-first observation path, prefer `observe`:
+
+```bash
+./target/release/rerun observe ./my_test --output build/my-observation
+jq . build/my-observation/run-summary.json
+./target/release/rerun summarize build/my-observation/targets/my_test --format json
+```
+
+If the binary terminates with `SIGSEGV`, `SIGABRT`, `SIGBUS`, or `SIGFPE` and no
+precise detector fires, the crashpack records `unclassified_crash` with signal
+metadata and captured target stdout/stderr paths. That is crash evidence, not a
+guessed memory-bug class.
+
 To assert an expected class for one binary:
 
 ```bash

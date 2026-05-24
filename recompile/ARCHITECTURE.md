@@ -155,6 +155,15 @@ native findings exist. Deep observe policy additionally asks Valgrind to scan
 clean native runs and asks ASan to scan only when the binary is already
 ASan-instrumented.
 
+Signal-only crashes are surfaced by the native runner, not inferred by eBPF. If
+the target exits via `SIGSEGV`, `SIGABRT`, `SIGBUS`, or `SIGFPE` and there are
+no more precise native/tool findings, the runner appends an `unclassified_crash`
+finding. The finding carries `evidence.crash` with the signal name/number,
+exit metadata, binary identity, args/cwd, target stdout/stderr log paths, and
+console log path. This gives agents concrete crash evidence while keeping the
+classification honest: a signal alone is not reported as heap overflow,
+use-after-free, or another precise memory class.
+
 ### Debug contract
 
 - `re-findings.jsonl`
@@ -267,6 +276,13 @@ Current native resource lifecycle coverage:
 - `fd_leak` by draining still-open fd records when the target exits
 - `double_close` for descriptors tracked as opened and then closed already
 - `invalid_close` for failed close calls on descriptors that were never tracked
+
+Current native crash evidence coverage:
+
+- `unclassified_crash` for `SIGSEGV`, `SIGABRT`, `SIGBUS`, and `SIGFPE`
+- captured target stdout/stderr under each target crashpack `logs/` directory
+- crash evidence propagated into `evidence-pack.json` and `rerun summarize`
+- no precise memory class is inferred from a signal without detector/tool evidence
 
 `realloc` tracking preserves the old allocation on failed non-zero resize,
 marks the old allocation freed on successful moves, and treats
