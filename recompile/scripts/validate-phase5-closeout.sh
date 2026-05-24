@@ -17,7 +17,6 @@ scan_paths = [
     root / 're-crashpack' / 'src',
     root / 'runtime' / 'agent',
     root / 'runtime' / 'bpf',
-    root / 'recc' / 'src',
 ]
 allowed_suffixes = {'.rs', '.c', '.h'}
 forbidden_patterns = [
@@ -38,6 +37,8 @@ forbidden_patterns = [
     re.compile(r'project-fixtures'),
     re.compile(r'hotfix', re.IGNORECASE),
     re.compile(r'golden', re.IGNORECASE),
+    re.compile(r'RECC Sentinel'),
+    re.compile(r'Week-1'),
 ]
 allowed_comments = [
     'Native mode is only supported on Linux',

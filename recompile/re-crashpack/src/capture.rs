@@ -94,7 +94,7 @@ impl ToolVersions {
     /// Capture tool versions
     pub fn capture() -> Result<Self> {
         Ok(Self {
-            recc_version: env!("CARGO_PKG_VERSION").to_string(),
+            tool_version: env!("CARGO_PKG_VERSION").to_string(),
             clang_version: get_tool_version("clang", &["--version"]),
             llvm_symbolizer_version: get_tool_version("llvm-symbolizer", &["--version"]),
             asan_version: get_tool_version("clang", &["--version"]), // ASan is part of clang

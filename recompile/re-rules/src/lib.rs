@@ -1,6 +1,8 @@
-//! RECC Rule Engine
+//! Deferred rule-engine primitives.
 //!
-//! Hardcoded rules for anomaly detection with debounce, confidence, and severity handling.
+//! The active finding engine is the native runtime agent. This crate remains in
+//! the workspace for shared types, symbolization utilities, and possible future
+//! rule experiments; it is not the supported runtime detector.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

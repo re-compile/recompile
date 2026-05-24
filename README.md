@@ -5,8 +5,8 @@
 Current supported path:
 
 - build or provide a Linux ELF binary
-- run `rerun run --native <binary>`
-- attach the C eBPF agent in `recompile/runtime/agent/re-mini.c`
+- run `rerun observe <binary>` for the human/agent observation path
+- let `observe` call `rerun run --native` per target and attach the C eBPF agent in `recompile/runtime/agent/re-mini.c`
 - persist canonical findings to `findings.json`
 - keep streaming/debug output in `re-findings.jsonl`
 
@@ -105,8 +105,7 @@ make recc-smoke
 ```
 
 `recc` is an advanced compile-wrapper path. It is not required for the primary
-`rerun run --native <binary>` workflow and is not part of the Phase 2 release
-gate.
+`rerun observe <binary>` workflow and is not part of the current phase gates.
 
 To score the current native/escalation hit rate:
 
@@ -127,6 +126,7 @@ jq . build/hit-rate/summary.json
 - [`recompile/ARCHITECTURE.md`](recompile/ARCHITECTURE.md)
 - [`recompile/docs/support-matrix.md`](recompile/docs/support-matrix.md)
 - [`recompile/docs/phase5-closeout.md`](recompile/docs/phase5-closeout.md)
+- [`recompile/docs/deferred-components.md`](recompile/docs/deferred-components.md)
 
 ## Not In Scope Right Now
 
@@ -168,7 +168,7 @@ cd recompile
 make recc-smoke
 ```
 
-`recc` is not part of the primary `rerun run --native <binary>` workflow.
+`recc` is not part of the primary `rerun observe <binary>` workflow.
 
 To score only the current native/escalation hit rate:
 
@@ -194,9 +194,10 @@ make phase5
 `recompile/docs/support-matrix.json` is validated against the committed
 hit-rate and sanitizer smoke scripts. `make phase5-closeout-smoke` scans active
 production paths for sample-specific and hotfix-like logic. `make phase5` runs
-both checks plus the Phase 4 gate. These reports are regression and coverage
-signals, not exhaustive production proof; they make supported, tool-backed,
-unsupported, and not-covered classes explicit.
+both checks plus the Phase 4 gate. Optional `recc`/LLVM validation remains
+manual through `make recc-smoke` and is not part of `make phase5`. These reports
+are regression and coverage signals, not exhaustive production proof; they make
+supported, tool-backed, unsupported, and not-covered classes explicit.
 
 Native findings include `provenance.source_status` so unresolved source
 locations are explicit instead of silently missing.

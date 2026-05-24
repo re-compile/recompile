@@ -83,7 +83,7 @@ pub fn handle_run_command(matches: &ArgMatches) -> Result<()> {
         .map(|args| args.map(|s| s.to_string()).collect())
         .unwrap_or_default();
 
-    println!("RECC Sentinel v0.1.0");
+    println!("re:compile runtime observer v0.1.0");
     println!("Analyzing binary: {}", binary_path.display());
     println!(
         "Mode: {}",
@@ -137,7 +137,7 @@ pub fn handle_observe_command(matches: &ArgMatches) -> Result<()> {
     fs::create_dir_all(&target_dir)?;
     let native_diagnostics = observation_diagnostics_from_native(native_capability_diagnostics());
 
-    println!("RECC Sentinel v0.1.0");
+    println!("re:compile runtime observer v0.1.0");
     println!("Observing binary: {}", binary_path.display());
     println!("Output root: {}", output_root.display());
     println!("Target output: {}", target_dir.display());
@@ -1712,22 +1712,6 @@ fn open_crashpack(path: &str) -> Result<()> {
         print_findings_summary(&findings);
     }
 
-    // Check for harnesses
-    let harnesses_dir = crashpack_path.join("harnesses");
-    if harnesses_dir.exists() {
-        let harness_files: Vec<_> = fs::read_dir(&harnesses_dir)?
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.file_name().to_string_lossy().to_string())
-            .collect();
-
-        if !harness_files.is_empty() {
-            println!("\nGenerated harnesses:");
-            for harness in harness_files {
-                println!("  {}", harness);
-            }
-        }
-    }
-
     Ok(())
 }
 
@@ -1765,7 +1749,7 @@ fn validate_crashpack(path: &str) -> Result<()> {
                     {
                         println!("Tool version: {}", tool_version);
                     } else {
-                        warnings.push("Manifest missing recc_version");
+                        warnings.push("Manifest missing tool_version or legacy recc_version");
                     }
 
                     if let Some(schema_version) = manifest.get("schema_version") {
@@ -1803,24 +1787,6 @@ fn validate_crashpack(path: &str) -> Result<()> {
             Err(e) => {
                 errors.push(format!("Cannot read findings.json: {}", e));
             }
-        }
-    }
-
-    // Check harnesses directory
-    let harnesses_dir = crashpack_path.join("harnesses");
-    if harnesses_dir.exists() {
-        let harness_count = fs::read_dir(&harnesses_dir)?
-            .filter(|entry| {
-                if let Ok(entry) = entry {
-                    entry.file_name().to_string_lossy().ends_with(".c")
-                } else {
-                    false
-                }
-            })
-            .count();
-
-        if harness_count > 0 {
-            println!("Harnesses: {} generated", harness_count);
         }
     }
 

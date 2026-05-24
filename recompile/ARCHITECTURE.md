@@ -69,7 +69,7 @@ Current important objects:
 
 ### `re-crashpack/`
 
-Helpers for canonical findings, manifests, and captured binary metadata.
+Shared artifact types and writer helpers for canonical findings, manifests, and captured binary metadata. It is a library used by `rerun`, not a separate user-facing crashpack generator.
 
 ### `re-escalate/`
 
@@ -108,8 +108,8 @@ Optional compiler-wrapper and compiler-pass experiments.
 Current decision:
 
 - `recc` remains an advanced optional path
-- `recc` is not required for `rerun run --native <binary>`
-- LLVM pass building is validated by `make recc-smoke`, not by the native MVP or Phase 2 gates
+- `recc` is not required for `rerun observe <binary>` or `rerun run --native <binary>`
+- LLVM pass building is validated only by explicit `make recc-smoke`, not by `make phase2`, `make phase4`, or `make phase5`
 - implicit pass injection is deferred until the pass ABI and compiler version contract are stable
 
 ## Contracts
@@ -219,9 +219,9 @@ make phase5
 
 `make phase5` runs the Phase 5 support-matrix check, active-path closeout scan,
 the Phase 2 gate, observe smoke tests, project-shaped fixtures, observation
-hit-rate scoring, lower-level hit-rate scoring, and optional `recc` wiring
-validation. `recc` remains optional because it is not part of the primary native
-runtime workflow.
+hit-rate scoring, and lower-level hit-rate scoring. Optional `recc`/LLVM
+validation is deliberately excluded from the phase gate and remains available
+through explicit `make recc-smoke`.
 
 Post-Phase-5 candidates:
 

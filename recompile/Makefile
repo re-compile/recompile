@@ -78,7 +78,6 @@ phase4:
 	./scripts/validate-project-fixtures.sh
 	./scripts/validate-observe-hit-rate.sh
 	./scripts/validate-hit-rate.sh
-	./scripts/validate-recc.sh
 
 phase5:
 	$(MAKE) support-matrix-smoke
@@ -100,4 +99,4 @@ agent-test: agent
 	runtime/agent/re-mini --self-test-dedupe
 
 toolchain:
-	cargo build -p rerun -p re-rules -p re-crashpack -p re-escalate -p recc
+	cargo build -p rerun -p re-crashpack -p re-escalate

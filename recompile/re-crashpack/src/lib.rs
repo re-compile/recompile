@@ -1,6 +1,7 @@
-//! RECC Crashpack Generator
+//! Crashpack data model and writer helpers for re:compile.
 //!
-//! Creates self-contained crashpack artifacts with findings, logs, and repro harnesses.
+//! The active runtime path is `rerun observe` / `rerun run --native`; this crate
+//! provides shared artifact types and writer utilities used by that path.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -26,7 +27,7 @@ pub struct Crashpack {
     pub manifest: Manifest,
 }
 
-/// V1 schema finding (from re-rules)
+/// Canonical v1 finding shape used by runtime and escalation artifacts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Finding {
     pub schema_version: String,
@@ -137,7 +138,8 @@ pub struct RuntimeInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolVersions {
-    pub recc_version: String,
+    #[serde(alias = "recc_version")]
+    pub tool_version: String,
     pub clang_version: Option<String>,
     pub llvm_symbolizer_version: Option<String>,
     pub asan_version: Option<String>,
@@ -159,7 +161,8 @@ pub struct BinaryInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
     pub schema_version: String,
-    pub recc_version: String,
+    #[serde(alias = "recc_version")]
+    pub tool_version: String,
     pub kernel_version: String,
     pub commit_hash: Option<String>,
     pub toolchain: String,
@@ -212,7 +215,7 @@ impl Crashpack {
                     start_time: 0,
                 },
                 tools: ToolVersions {
-                    recc_version: "unknown".to_string(),
+                    tool_version: "unknown".to_string(),
                     clang_version: None,
                     llvm_symbolizer_version: None,
                     asan_version: None,

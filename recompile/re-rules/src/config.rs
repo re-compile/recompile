@@ -1,4 +1,4 @@
-//! Configuration system for RECC rules engine
+//! Configuration types for the deferred rule-engine primitives
 
 use crate::Result;
 use serde::{Deserialize, Serialize};

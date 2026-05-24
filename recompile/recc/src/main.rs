@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
 #[derive(Parser, Debug)]
-#[command(name = "recc", about = "re:compile compiler wrapper")]
+#[command(name = "recc", about = "optional re:compile compile-only wrapper")]
 struct Args {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     rest: Vec<OsString>,
@@ -31,7 +31,7 @@ fn main() -> Result<()> {
         forwarded.push(OsString::from("-Wl,--export-dynamic"));
     }
 
-    // TODO: add -Xclang -load -Xclang <pass>.so when available
+    // LLVM pass injection is deferred until the pass ABI and compiler contract are stable.
 
     let status: ExitStatus = if args.emit_manifest_only {
         // Manifest-only mode: try to infer -o from args, write manifest, return 0
@@ -52,7 +52,7 @@ fn main() -> Result<()> {
     // Best-effort manifest emit if we detect a link step with -o <binary>
     if status.success() {
         if let Some(bin) = detect_output_binary(&args.rest) {
-            let manifest_path = write_manifest_stub(&bin).ok(); // best effort in Week-1
+            let manifest_path = write_manifest_stub(&bin).ok();
             if let Some(p) = manifest_path {
                 eprintln!("recc: wrote manifest stub at {}", p.display());
             }
@@ -186,8 +186,22 @@ fn detect_dsos(binary: &Path) -> Result<Vec<String>> {
     }
 }
 
-fn detect_build_id(_binary: &Path) -> Result<String> {
-    // Week-1: platform-specific. macOS lacks ELF build-id; leave empty.
+fn detect_build_id(binary: &Path) -> Result<String> {
+    if !cfg!(target_os = "linux") {
+        return Ok(String::new());
+    }
+
+    let output = Command::new("readelf").arg("-n").arg(binary).output()?;
+    if !output.status.success() {
+        return Ok(String::new());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Some((_, build_id)) = line.split_once("Build ID:") {
+            return Ok(build_id.trim().to_string());
+        }
+    }
     Ok(String::new())
 }
 

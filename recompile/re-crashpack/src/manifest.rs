@@ -7,7 +7,7 @@ impl Default for Manifest {
     fn default() -> Self {
         Self {
             schema_version: "1.0".to_string(),
-            recc_version: env!("CARGO_PKG_VERSION").to_string(),
+            tool_version: env!("CARGO_PKG_VERSION").to_string(),
             kernel_version: get_kernel_version().unwrap_or_else(|| "unknown".to_string()),
             commit_hash: get_git_commit_hash(),
             toolchain: get_toolchain_info().unwrap_or_else(|| "unknown".to_string()),
