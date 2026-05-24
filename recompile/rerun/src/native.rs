@@ -31,6 +31,10 @@ const GENERATED_OUTPUT_FILES: &[&str] = &[
 ];
 
 const GENERATED_OUTPUT_DIRS: &[&str] = &[".re", "bins", "escalations", "logs", "replay"];
+#[cfg(target_os = "linux")]
+const AGENT_TERMINATION_GRACE_MS: u64 = 10_000;
+#[cfg(target_os = "linux")]
+const AGENT_TERMINATION_POLL_MS: u64 = 50;
 
 #[cfg(target_os = "linux")]
 use libc;
@@ -586,10 +590,13 @@ fn terminate_agent_gracefully(agent: &mut Child) {
         libc::kill(pid, libc::SIGTERM);
     }
 
-    for _ in 0..20 {
+    // Stack symbolization can still be in-flight after the target exits. SIGTERM
+    // asks the agent to stop polling, but it should be allowed to finish the
+    // current ring-buffer callback before we fall back to SIGKILL.
+    for _ in 0..(AGENT_TERMINATION_GRACE_MS / AGENT_TERMINATION_POLL_MS) {
         match agent.try_wait() {
             Ok(Some(_)) => return,
-            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Ok(None) => std::thread::sleep(Duration::from_millis(AGENT_TERMINATION_POLL_MS)),
             Err(_) => return,
         }
     }
