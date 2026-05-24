@@ -224,6 +224,12 @@ import sys
 cases_path = pathlib.Path(sys.argv[1])
 summary_path = pathlib.Path(sys.argv[2])
 cases = [json.loads(line) for line in cases_path.read_text().splitlines() if line.strip()]
+support_matrix_path = pathlib.Path("docs/support-matrix.json")
+support_matrix = json.loads(support_matrix_path.read_text())
+support_by_class = {
+    entry["class"]: entry
+    for entry in support_matrix.get("classes", [])
+}
 
 def outcome_totals(key):
     totals = {}
@@ -237,14 +243,62 @@ for case in cases:
     actual_status = case["status"]["actual"]
     status_totals[actual_status] = status_totals.get(actual_status, 0) + 1
 
+def coverage_by_class():
+    coverage = {}
+    for case in cases:
+        native_expected = case["native"].get("expected_class")
+        if native_expected:
+            entry = coverage.setdefault(native_expected, {
+                "class": native_expected,
+                "category": (support_by_class.get(native_expected) or {}).get("category"),
+                "support": {
+                    "native": ((support_by_class.get(native_expected) or {}).get("native") or {}).get("status"),
+                    "tools": (support_by_class.get(native_expected) or {}).get("tools") or {},
+                },
+                "native_cases": [],
+                "escalation_cases": [],
+            })
+            entry["native_cases"].append({
+                "name": case["name"],
+                "outcome": case["native"]["outcome"],
+                "actual_classes": case["native"].get("native_classes") or {},
+            })
+        escalation_expected = case["escalation"].get("expected_class")
+        if escalation_expected:
+            entry = coverage.setdefault(escalation_expected, {
+                "class": escalation_expected,
+                "category": (support_by_class.get(escalation_expected) or {}).get("category"),
+                "support": {
+                    "native": ((support_by_class.get(escalation_expected) or {}).get("native") or {}).get("status"),
+                    "tools": (support_by_class.get(escalation_expected) or {}).get("tools") or {},
+                },
+                "native_cases": [],
+                "escalation_cases": [],
+            })
+            entry["escalation_cases"].append({
+                "name": case["name"],
+                "outcome": case["escalation"]["outcome"],
+                "expected_tool": case["escalation"].get("expected_tool"),
+            })
+    return [
+        {
+            **value,
+            "native_case_count": len(value["native_cases"]),
+            "escalation_case_count": len(value["escalation_cases"]),
+        }
+        for _, value in sorted(coverage.items())
+    ]
+
 summary = {
     "schema_version": "1.0",
     "purpose": "observe_hit_rate",
     "total_cases": len(cases),
+    "support_matrix": str(support_matrix_path),
     "status_totals": dict(sorted(status_totals.items())),
     "status_outcomes": outcome_totals("status"),
     "native_outcomes": outcome_totals("native"),
     "escalation_outcomes": outcome_totals("escalation"),
+    "coverage_by_class": coverage_by_class(),
     "total_issue_groups": sum(case["issue_groups"]["count"] for case in cases),
     "cases_jsonl": str(cases_path),
     "cases": cases,

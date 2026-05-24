@@ -225,6 +225,12 @@ cases = [
     for line in cases_path.read_text().splitlines()
     if line.strip()
 ]
+support_matrix_path = pathlib.Path("docs/support-matrix.json")
+support_matrix = json.loads(support_matrix_path.read_text())
+support_by_class = {
+    entry["class"]: entry
+    for entry in support_matrix.get("classes", [])
+}
 
 def totals_for(key):
     totals = {
@@ -250,11 +256,47 @@ def totals_for(key):
             raise SystemExit(f"unknown {key} outcome: {outcome}")
     return totals
 
+def class_coverage():
+    coverage = {}
+    for case in cases:
+        for plane in ("native", "escalation"):
+            expected = case.get(f"{plane}_expected_class")
+            if not expected:
+                continue
+            entry = coverage.setdefault(expected, {
+                "class": expected,
+                "category": (support_by_class.get(expected) or {}).get("category"),
+                "support": {
+                    "native": ((support_by_class.get(expected) or {}).get("native") or {}).get("status"),
+                    "tools": (support_by_class.get(expected) or {}).get("tools") or {},
+                },
+                "native_cases": [],
+                "escalation_cases": [],
+            })
+            entry[f"{plane}_cases"].append({
+                "binary": case["binary"],
+                "outcome": case[plane]["outcome"],
+                "actual_classes": case[plane].get("actual_classes")
+                    or case[plane].get("findings_detected")
+                    or case[plane].get("findings_detected", []),
+            })
+    return [
+        {
+            **value,
+            "native_case_count": len(value["native_cases"]),
+            "escalation_case_count": len(value["escalation_cases"]),
+        }
+        for _, value in sorted(coverage.items())
+    ]
+
 summary = {
     "schema_version": "1.0",
+    "purpose": "hit_rate",
     "total_cases": len(cases),
+    "support_matrix": str(support_matrix_path),
     "native": totals_for("native"),
     "escalation": totals_for("escalation"),
+    "coverage_by_class": class_coverage(),
     "cases": cases,
 }
 
