@@ -1,18 +1,35 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "re:compile Finding v1",
+  "description": "Active finding contract for crashpack findings and transient agent stream findings.",
   "type": "object",
-  "required": ["id", "origin", "kind", "severity", "primaryLocation", "evidence"],
+  "required": ["id", "severity", "evidence"],
+  "anyOf": [
+    {"required": ["schema_version", "class"]},
+    {"required": ["origin", "kind", "primaryLocation"]}
+  ],
   "properties": {
-    "id": {"type": "string"},
-    "origin": {"type": "string", "enum": ["ebpf", "runtime", "asan", "ubsan", "lsan", "tsan", "msan", "rr"]},
-    "kind": {"type": "string", "enum": [
-      "heap_overflow", "stack_overflow", "use_after_free", "double_free", "invalid_free",
-      "leak", "race", "uninitialized_read", "segfault", "ub", "fd_leak",
-      "double_close", "invalid_close", "unclassified_crash", "thread_leak"
-    ]},
-    "severity": {"type": "string", "enum": ["note", "warning", "error"]},
-    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "schema_version": {"type": "string", "enum": ["1.0"]},
+    "id": {"type": "string", "minLength": 1},
+    "origin": {
+      "type": "string",
+      "enum": ["ebpf", "runtime", "valgrind", "asan", "lsan", "ubsan", "gdb"]
+    },
+    "kind": {"$ref": "#/definitions/findingClass"},
+    "class": {"$ref": "#/definitions/findingClass"},
+    "confidence": {
+      "anyOf": [
+        {"type": "string", "enum": ["low", "medium", "high", "certain", "observed", "tool_confirmed"]},
+        {"type": "number", "minimum": 0, "maximum": 1}
+      ]
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["note", "warning", "error", "high", "critical"]
+    },
+    "timestamp": {"type": "integer", "minimum": 0},
+    "pid": {"type": "integer", "minimum": 0},
+    "message": {"type": "string"},
     "primaryLocation": {
       "type": "object",
       "required": ["uri", "range"],
@@ -22,8 +39,8 @@
           "type": "object",
           "required": ["start", "end"],
           "properties": {
-            "start": {"type": "object", "required": ["line", "character"], "properties": {"line": {"type": "integer", "minimum": 0}, "character": {"type": "integer", "minimum": 0}}},
-            "end":   {"type": "object", "required": ["line", "character"], "properties": {"line": {"type": "integer", "minimum": 0}, "character": {"type": "integer", "minimum": 0}}}
+            "start": {"$ref": "#/definitions/position"},
+            "end": {"$ref": "#/definitions/position"}
           }
         }
       }
@@ -33,40 +50,134 @@
       "properties": {
         "api": {"type": "string"},
         "len": {"type": "integer", "minimum": 0},
-        "memory": {"type": "object", "properties": {"ptr": {"type": "string"}, "size": {"type": "integer", "minimum": 0}}},
-        "resource": {"type": "object", "properties": {
-          "type": {"type": "string"},
-          "fd": {"type": "integer"},
-          "operation": {"type": "string"},
-          "return_value": {"type": "integer"}
-        }},
-        "crash": {"type": "object", "properties": {
-          "signal": {"type": "integer"},
-          "signal_name": {"type": "string"},
-          "exit_code": {"type": ["integer", "null"]},
-          "duration_ms": {"type": "integer", "minimum": 0},
-          "binary_path": {"type": "string"},
-          "captured_binary_path": {"type": "string"},
-          "args": {"type": "array", "items": {"type": "string"}},
-          "cwd": {"type": "string"},
-          "stdout_path": {"type": "string"},
-          "stderr_path": {"type": "string"},
-          "console_log_path": {"type": "string"}
-        }},
-        "dest_alloc": {"type": "object", "properties": {"ptr": {"type": "string"}, "size": {"type": "integer"}}},
-        "stacks": {"type": "object", "properties": {
-          "alloc": {"type": "array", "items": {"type": "string"}},
-          "call":  {"type": "array", "items": {"type": "string"}},
-          "open":  {"type": "array", "items": {"type": "string"}},
-          "action": {"type": "array", "items": {"type": "string"}},
-          "crash": {"type": "array", "items": {"type": "string"}}
-        }}
+        "memory": {
+          "type": "object",
+          "properties": {
+            "ptr": {"type": ["integer", "string"], "minimum": 0},
+            "size": {"type": "integer", "minimum": 0},
+            "alloc_size": {"type": "integer", "minimum": 0},
+            "operation": {"type": "string"},
+            "alloc_family": {"type": "string"},
+            "dealloc_family": {"type": "string"}
+          }
+        },
+        "resource": {
+          "type": "object",
+          "properties": {
+            "type": {"type": "string"},
+            "fd": {"type": "integer"},
+            "operation": {"type": "string"},
+            "return_value": {"type": "integer"}
+          }
+        },
+        "crash": {
+          "type": "object",
+          "properties": {
+            "signal": {"type": "integer"},
+            "signal_name": {"type": "string"},
+            "exit_code": {"type": ["integer", "null"]},
+            "duration_ms": {"type": "integer", "minimum": 0},
+            "binary_path": {"type": "string"},
+            "captured_binary_path": {"type": "string"},
+            "args": {"type": "array", "items": {"type": "string"}},
+            "cwd": {"type": "string"},
+            "stdout_path": {"type": "string"},
+            "stderr_path": {"type": "string"},
+            "console_log_path": {"type": "string"}
+          }
+        },
+        "dest_alloc": {
+          "type": "object",
+          "properties": {
+            "ptr": {"type": "string"},
+            "size": {"type": "integer", "minimum": 0}
+          }
+        },
+        "tool": {"type": "object"},
+        "stacks": {
+          "type": "object",
+          "properties": {
+            "alloc": {"type": "array", "items": {"type": "string"}},
+            "call": {"type": "array", "items": {"type": "string"}},
+            "free": {"type": "array", "items": {"type": "string"}},
+            "open": {"type": "array", "items": {"type": "string"}},
+            "action": {"type": "array", "items": {"type": "string"}},
+            "crash": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        "alloc_site": {"type": ["string", "null"]},
+        "event_sequence": {"type": "array", "items": {"type": "object"}}
       }
     },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "binary_path": {"type": "string"},
+        "original_binary_path": {"type": "string"},
+        "source_path": {"type": ["string", "null"]},
+        "source_status": {"type": "string", "enum": ["resolved", "unresolved", "unknown"]}
+      }
+    },
+    "escalation": {
+      "type": "object",
+      "properties": {
+        "tool": {"type": "string"},
+        "reason": {"type": "string"},
+        "estimated_cost": {"type": "string"},
+        "cooldown_ms": {"type": "integer", "minimum": 0}
+      }
+    },
+    "fingerprint": {"type": "string"},
+    "issue_group_id": {"type": "string"},
     "breadcrumbs": {"type": "array", "items": {"type": "string"}},
     "codeFlow": {"type": "array", "items": {"type": "object"}},
     "fixHints": {"type": "array", "items": {"type": "string"}},
+    "next_commands": {"type": "array", "items": {"type": "string"}},
     "relatedLocations": {"type": "array", "items": {"type": "object"}},
-    "dataQuality": {"type": "object", "properties": {"eventsDropped": {"type": "integer", "minimum": 0}}}
+    "dataQuality": {
+      "type": "object",
+      "properties": {
+        "eventsDropped": {"type": "integer", "minimum": 0}
+      }
+    },
+    "related": {"type": "array", "items": {"type": "string"}}
+  },
+  "definitions": {
+    "position": {
+      "type": "object",
+      "required": ["line", "character"],
+      "properties": {
+        "line": {"type": "integer", "minimum": 0},
+        "character": {"type": "integer", "minimum": 0}
+      }
+    },
+    "findingClass": {
+      "type": "string",
+      "enum": [
+        "heap_overflow",
+        "stack_overflow",
+        "global_overflow",
+        "use_after_free",
+        "double_free",
+        "invalid_free",
+        "allocator_mismatch",
+        "memory_leak",
+        "leak",
+        "race",
+        "uninitialized_read",
+        "segfault",
+        "unclassified_crash",
+        "thread_leak",
+        "fd_leak",
+        "double_close",
+        "invalid_close",
+        "signed_integer_overflow",
+        "shift_out_of_bounds",
+        "null_pointer_use",
+        "misaligned_pointer",
+        "bounds",
+        "undefined_behavior"
+      ]
+    }
   }
 }
