@@ -309,14 +309,16 @@ The current corpus includes native-confirmed heap write overflows through
 allocator tracking for `malloc`, `calloc`, `realloc`, `posix_memalign`,
 `aligned_alloc`, bounded `strdup` inputs, and default libstdc++ C++ new/delete
 families; native double/invalid-free and allocator-mismatch cases; native fd
-lifecycle coverage for `fd_leak`, `double_close`, and `invalid_close`; clean
+lifecycle coverage for `fd_leak`, `double_close`, and `invalid_close`,
+including `dup`, `dup2`, and `fcntl(F_DUPFD*)` descriptor ownership; clean
 negatives; native signal-only `unclassified_crash` observation smoke for
 supported fatal signals; and Valgrind-first `use_after_free` and `memory_leak` cases.
 Valgrind confirms native `fd_leak`; `double_close` and `invalid_close`
 escalation are marked unsupported until there is a reliable tool-backed
 confirmation path. `strcat`, `strncat`, custom C++ allocator overloads,
 placement new/delete, nothrow operators, aligned C++17 allocation overloads,
-socket lifecycle, and fd duplication/ownership transfer remain deferred.
+socket lifecycle, pipe lifecycle, `accept`, fork/exec inheritance, and
+cross-process fd handoff remain deferred.
 `strdup` allocation size tracking is native-supported for bounded strings, but
 source provenance can remain unresolved when the captured allocation stack stays
 inside libc. `invalid_close` can also have unresolved source provenance when the

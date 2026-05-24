@@ -164,6 +164,8 @@ struct re_fd_key {
 struct re_fd_info {
     __s32 open_stack_id;
     __s32 close_stack_id;
+    __s32 origin_stack_id;
+    __s32 _pad;
     __u64 opened_ts_ns;
     __u64 closed_ts_ns;
 };

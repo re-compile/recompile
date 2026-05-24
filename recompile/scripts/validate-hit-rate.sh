@@ -55,6 +55,8 @@ samples=(
     "fd_leak_case:fd_leak:fd_leak:1"
     "fd_double_close_case:double_close:__unsupported__:1"
     "fd_invalid_close_case:invalid_close:__unsupported__:1"
+    "fd_dup_leak_case:fd_leak:fd_leak:1"
+    "fd_dup2_leak_case:fd_leak:fd_leak:1"
     "use_after_free_case:__unsupported__:use_after_free:0"
     "memory_leak_case:__unsupported__:memory_leak:0"
     "clean_malloc_free:__none__:__none__:0"
@@ -72,6 +74,9 @@ samples=(
     "clean_bounded_strcpy:__none__:__none__:0"
     "clean_bounded_strncpy:__none__:__none__:0"
     "clean_fd_close:__none__:__none__:0"
+    "clean_fd_dup_close:__none__:__none__:0"
+    "clean_fd_dup2_replace:__none__:__none__:0"
+    "clean_fd_fcntl_dup_close:__none__:__none__:0"
 )
 
 append_case_record() {
