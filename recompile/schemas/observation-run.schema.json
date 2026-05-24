@@ -74,6 +74,7 @@
         "findings_by_class",
         "issue_group_count",
         "escalation",
+        "diagnostics",
         "artifacts",
         "replay_command",
         "summarize_command",
@@ -97,6 +98,7 @@
         },
         "issue_group_count": {"type": "integer", "minimum": 0},
         "escalation": {"type": "array", "items": {"$ref": "#/$defs/escalation"}},
+        "diagnostics": {"type": "array", "items": {"$ref": "#/$defs/diagnostic"}},
         "artifacts": {"$ref": "#/$defs/artifacts"},
         "replay_command": {"type": ["string", "null"]},
         "summarize_command": {"type": ["string", "null"]},
@@ -124,6 +126,20 @@
         "findings_detected": {"type": "array", "items": {"type": "string"}},
         "artifact_path": {"type": ["string", "null"]},
         "error": {"type": ["string", "null"]}
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component", "status", "detail", "remediation"],
+      "properties": {
+        "component": {"type": "string", "minLength": 1},
+        "status": {
+          "type": "string",
+          "enum": ["ok", "warning", "missing", "unavailable", "unsupported"]
+        },
+        "detail": {"type": "string", "minLength": 1},
+        "remediation": {"type": ["string", "null"]}
       }
     },
     "artifacts": {

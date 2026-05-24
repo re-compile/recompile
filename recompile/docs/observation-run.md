@@ -156,6 +156,27 @@ The support matrix lives at `docs/support-matrix.json` and is validated with
 classes, sanitizer/tool-backed classes, unsupported classes, and classes that
 are not part of the current product claim.
 
+## Sandbox And Fallback Behavior
+
+`rerun observe` is intended to be useful inside coding-agent sandboxes, but
+native eBPF tracing is not guaranteed there. The run summary includes
+`targets[].diagnostics`, a machine-readable list of checks for Linux support,
+privilege, bpffs, BTF, ptrace policy, Docker PID namespace, the `re-mini` agent,
+BPF objects, libc discovery, and fallback tools such as Valgrind, GDB, and
+Clang.
+
+When native tracing fails for an environment/setup reason and `--native-only`
+is not set, observe falls back to tool-only analysis instead of stopping at an
+opaque native error. The fallback writes the same target crashpack layout,
+records `analysis.json`, captures binary/dependency metadata, writes an empty
+native `findings.json` if no native evidence exists, and then runs a
+whole-binary Valgrind scan. With `--deep`, it also attempts ASan, LSan, and
+UBSan scans. Missing tools are reported as `tool_unavailable` or
+`not_applicable`; they are not treated as evidence that the target is clean.
+
+`--native-only` is the strict mode for validating the eBPF path. In that mode,
+native setup failures remain target failures and no tool-only fallback is run.
+
 ## Manual Linux Validation Checklist
 
 Phase 4 should be validated on Linux or in the supported Docker-native setup.

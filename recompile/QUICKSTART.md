@@ -210,6 +210,13 @@ Debug/streaming output only:
 ## Known Constraints
 
 - Docker-native tracing requires `--privileged --pid=host`
+- `rerun observe` writes `targets[].diagnostics` so agents can see whether
+  Linux, eBPF, BTF, ptrace, PID namespace, privilege, native artifacts, and
+  escalation tools are available.
+- If native tracing is unavailable and `--native-only` is not set, `observe`
+  attempts a tool-only fallback by creating a minimal crashpack and running a
+  whole-binary Valgrind scan. `--deep` also attempts ASan, LSan, and UBSan scans
+  when the target binary/tooling supports them.
 - Valgrind confirmation requires `valgrind` in the Docker image or host PATH
 - `invalid_free` may not resolve to a user source file on the current arm64 Docker build even though the finding class is correct
 - VM mode is deferred

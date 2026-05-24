@@ -60,6 +60,14 @@ struct NativeConfig {
     target_stderr_path: PathBuf,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct NativeCapabilityDiagnostic {
+    pub component: String,
+    pub status: String,
+    pub detail: String,
+    pub remediation: Option<String>,
+}
+
 #[derive(Serialize)]
 struct NativeRunMetadata {
     binary_path: String,
@@ -325,6 +333,36 @@ pub fn run_native_with_options(
     })
 }
 
+pub(crate) fn prepare_tool_only_crashpack(
+    binary_path: &Path,
+    output_dir: &Path,
+    args: &[String],
+    options: &NativeRunOptions,
+) -> Result<()> {
+    prepare_output_dir(output_dir)?;
+    let binary_abs = std::fs::canonicalize(binary_path)
+        .with_context(|| format!("Binary not found: {}", binary_path.display()))?;
+    let cwd_abs = options
+        .cwd
+        .as_ref()
+        .map(|cwd| {
+            std::fs::canonicalize(cwd)
+                .with_context(|| format!("Working directory not found: {}", cwd.display()))
+        })
+        .transpose()?;
+    write_analysis_metadata(output_dir, &binary_abs, args, cwd_abs.as_deref())?;
+    finalize_findings(output_dir, &binary_abs)?;
+    append_console_log(
+        &output_dir.join("console.log"),
+        "native_tracing=unavailable tool_only_fallback=enabled\n",
+    )?;
+    Ok(())
+}
+
+pub fn native_capability_diagnostics() -> Vec<NativeCapabilityDiagnostic> {
+    native_capability_diagnostics_impl()
+}
+
 /// Locate all required components for native mode
 fn locate_components(output_dir: &Path) -> Result<NativeConfig> {
     // Try to find components relative to the executable, then in known paths
@@ -432,6 +470,239 @@ fn locate_components(output_dir: &Path) -> Result<NativeConfig> {
         target_stdout_path,
         target_stderr_path,
     })
+}
+
+fn native_capability_diagnostics_impl() -> Vec<NativeCapabilityDiagnostic> {
+    let mut diagnostics = Vec::new();
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        diagnostics.push(NativeCapabilityDiagnostic {
+            component: "linux".to_string(),
+            status: "unsupported".to_string(),
+            detail: format!(
+                "native eBPF tracing is not supported on {}",
+                std::env::consts::OS
+            ),
+            remediation: Some(
+                "Run inside the documented Linux Docker-native environment or on a Linux host."
+                    .to_string(),
+            ),
+        });
+        return diagnostics;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        diagnostics.push(ok_diag("linux", "running on Linux"));
+
+        let uid = unsafe { libc::getuid() };
+        if uid == 0 {
+            diagnostics.push(ok_diag("privilege", "running as uid 0"));
+        } else if can_access_bpf().unwrap_or(false) {
+            diagnostics.push(ok_diag(
+                "privilege",
+                "non-root process can read /sys/fs/bpf",
+            ));
+        } else {
+            diagnostics.push(NativeCapabilityDiagnostic {
+                component: "privilege".to_string(),
+                status: "unavailable".to_string(),
+                detail: format!("uid {uid} cannot access BPF resources"),
+                remediation: Some(
+                    "Use the privileged Docker command from the README or grant CAP_BPF/CAP_PERFMON."
+                        .to_string(),
+                ),
+            });
+        }
+
+        let bpf_path = Path::new("/sys/fs/bpf");
+        if bpf_path.exists() {
+            diagnostics.push(ok_diag("bpf_fs", "/sys/fs/bpf exists"));
+        } else {
+            diagnostics.push(NativeCapabilityDiagnostic {
+                component: "bpf_fs".to_string(),
+                status: "missing".to_string(),
+                detail: "/sys/fs/bpf is not mounted".to_string(),
+                remediation: Some("Mount bpffs or use the supported Docker image.".to_string()),
+            });
+        }
+
+        if Path::new("/sys/kernel/btf/vmlinux").exists() {
+            diagnostics.push(ok_diag("btf", "/sys/kernel/btf/vmlinux exists"));
+        } else {
+            diagnostics.push(NativeCapabilityDiagnostic {
+                component: "btf".to_string(),
+                status: "missing".to_string(),
+                detail: "kernel BTF vmlinux metadata is unavailable".to_string(),
+                remediation: Some(
+                    "Install the host kernel BTF/debug package or use the bootstrap image on a BTF-enabled Linux host."
+                        .to_string(),
+                ),
+            });
+        }
+
+        match ptrace_diagnostic() {
+            Some(diag) => diagnostics.push(diag),
+            None => diagnostics.push(ok_diag(
+                "ptrace",
+                "ptrace policy did not report a hard block",
+            )),
+        }
+
+        match check_pid_namespace() {
+            Ok(()) => diagnostics.push(ok_diag(
+                "pid_namespace",
+                "host PID namespace is available or not required",
+            )),
+            Err(error) => diagnostics.push(NativeCapabilityDiagnostic {
+                component: "pid_namespace".to_string(),
+                status: "unavailable".to_string(),
+                detail: error.to_string(),
+                remediation: Some(
+                    "Run Docker with --privileged --pid=host for native eBPF tracing.".to_string(),
+                ),
+            }),
+        }
+
+        if let Some(path) = find_file_in_paths("re-mini", &re_mini_candidates()) {
+            diagnostics.push(ok_diag("re-mini", format!("found {}", path.display())));
+        } else {
+            diagnostics.push(NativeCapabilityDiagnostic {
+                component: "re-mini".to_string(),
+                status: "missing".to_string(),
+                detail: "native C agent binary was not found".to_string(),
+                remediation: Some("Run `make agent` before native tracing.".to_string()),
+            });
+        }
+
+        diagnostics.extend(bpf_object_diagnostics());
+
+        match detect_libc() {
+            Ok(path) => diagnostics.push(ok_diag("libc", format!("found {}", path.display()))),
+            Err(error) => diagnostics.push(NativeCapabilityDiagnostic {
+                component: "libc".to_string(),
+                status: "missing".to_string(),
+                detail: error.to_string(),
+                remediation: Some("Install glibc runtime metadata or set RE_LIBC.".to_string()),
+            }),
+        }
+
+        for tool in ["valgrind", "gdb", "clang"] {
+            if let Some(path) = find_file_in_paths(tool, &[PathBuf::from(tool)]) {
+                diagnostics.push(ok_diag(tool, format!("found {}", path.display())));
+            } else {
+                diagnostics.push(NativeCapabilityDiagnostic {
+                    component: tool.to_string(),
+                    status: "missing".to_string(),
+                    detail: format!("{tool} was not found in PATH"),
+                    remediation: Some(format!(
+                        "Install {tool} in the host/container for tool-only fallback or escalation."
+                    )),
+                });
+            }
+        }
+
+        diagnostics
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn ok_diag(component: impl Into<String>, detail: impl Into<String>) -> NativeCapabilityDiagnostic {
+    NativeCapabilityDiagnostic {
+        component: component.into(),
+        status: "ok".to_string(),
+        detail: detail.into(),
+        remediation: None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn ptrace_diagnostic() -> Option<NativeCapabilityDiagnostic> {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    if status.lines().any(|line| line.trim() == "Seccomp:\t2") {
+        return Some(NativeCapabilityDiagnostic {
+            component: "ptrace".to_string(),
+            status: "warning".to_string(),
+            detail: "process is running under seccomp filter mode; ptrace may be blocked"
+                .to_string(),
+            remediation: Some(
+                "Use the documented privileged Docker run command if target pausing fails."
+                    .to_string(),
+            ),
+        });
+    }
+
+    let ptrace_scope = std::fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope").ok()?;
+    let trimmed = ptrace_scope.trim();
+    if trimmed == "0" || trimmed == "1" {
+        Some(ok_diag(
+            "ptrace",
+            format!("kernel yama ptrace_scope={trimmed}"),
+        ))
+    } else {
+        Some(NativeCapabilityDiagnostic {
+            component: "ptrace".to_string(),
+            status: "warning".to_string(),
+            detail: format!("kernel yama ptrace_scope={trimmed} may block tracing"),
+            remediation: Some(
+                "Use a tracing-capable Linux host/container or relax ptrace policy for this run."
+                    .to_string(),
+            ),
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn re_mini_candidates() -> Vec<PathBuf> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+    vec![
+        PathBuf::from("runtime/agent/re-mini"),
+        PathBuf::from("recompile/runtime/agent/re-mini"),
+        PathBuf::from("../runtime/agent/re-mini"),
+        exe_dir
+            .as_ref()
+            .map(|d| d.join("../runtime/agent/re-mini"))
+            .unwrap_or_default(),
+        PathBuf::from("/usr/local/bin/re-mini"),
+        PathBuf::from("/usr/bin/re-mini"),
+    ]
+}
+
+#[cfg(target_os = "linux")]
+fn bpf_object_diagnostics() -> Vec<NativeCapabilityDiagnostic> {
+    let bpf_search_paths = vec![
+        PathBuf::from("runtime/bpf"),
+        PathBuf::from("recompile/runtime/bpf"),
+        PathBuf::from("../runtime/bpf"),
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("../runtime/bpf")))
+            .unwrap_or_default(),
+        PathBuf::from("/usr/local/share/recompile/bpf"),
+    ];
+
+    ["heap_tracker.bpf.o", "copy_checker.bpf.o"]
+        .into_iter()
+        .map(|name| {
+            let candidates = bpf_search_paths
+                .iter()
+                .map(|path| path.join(name))
+                .collect::<Vec<_>>();
+            if let Some(path) = find_file_in_paths(name, &candidates) {
+                ok_diag(name, format!("found {}", path.display()))
+            } else {
+                NativeCapabilityDiagnostic {
+                    component: name.to_string(),
+                    status: "missing".to_string(),
+                    detail: format!("{name} was not found"),
+                    remediation: Some("Run `make bpf` before native tracing.".to_string()),
+                }
+            }
+        })
+        .collect()
 }
 
 fn prepare_output_dir(output_dir: &Path) -> Result<()> {
