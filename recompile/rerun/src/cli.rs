@@ -413,22 +413,24 @@ fn promote_tool_findings_to_crashpack(
         .filter_map(finding_class)
         .collect::<BTreeSet<_>>();
 
-    let mut appended = 0usize;
-    for result in results
-        .iter()
-        .filter(|result| result.success && result.confirmed && !result.findings_detected.is_empty())
-    {
+    let mut changed = enrich_gdb_crash_findings(&mut findings, results);
+    for result in results.iter().filter(|result| {
+        result.tool != "gdb"
+            && result.success
+            && result.confirmed
+            && !result.findings_detected.is_empty()
+    }) {
         for (index, detection) in tool_detections(result).into_iter().enumerate() {
             if known_classes.contains(&detection.class) {
                 continue;
             }
             known_classes.insert(detection.class.clone());
             findings.push(tool_backed_finding(result, &detection, index, &analysis));
-            appended += 1;
+            changed = true;
         }
     }
 
-    if appended == 0 {
+    if !changed {
         return Ok(None);
     }
 
@@ -445,6 +447,93 @@ fn promote_tool_findings_to_crashpack(
         class_counts: class_counts_for_values(&refreshed),
         issue_group_count: issue_group_count as u64,
     }))
+}
+
+fn enrich_gdb_crash_findings(findings: &mut [Value], results: &[EscalationResult]) -> bool {
+    let mut changed = false;
+    for result in results
+        .iter()
+        .filter(|result| result.tool == "gdb" && result.success && result.confirmed)
+    {
+        let Some(report) = read_gdb_report(result) else {
+            continue;
+        };
+        let crash_frames = report
+            .get("crash_frames")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if crash_frames.is_empty() {
+            continue;
+        }
+
+        for finding in findings.iter_mut().filter(|finding| {
+            finding_class(finding).as_deref() == Some("unclassified_crash")
+                && finding
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| id == result.finding_id)
+        }) {
+            ensure_object_path(finding, &["evidence", "stacks"])
+                .insert("crash".to_string(), Value::Array(crash_frames.clone()));
+            ensure_object_path(finding, &["evidence", "tool"]).insert(
+                "gdb".to_string(),
+                json!({
+                    "result_id": result.id,
+                    "report_path": result.report_path,
+                    "stdout_path": result.stdout_path,
+                    "stderr_path": result.stderr_path,
+                    "command": result.command,
+                    "exit_code": result.exit_code,
+                    "signal_name": report.get("signal_name").cloned().unwrap_or(Value::Null),
+                    "signal_line": report.get("signal_line").cloned().unwrap_or(Value::Null),
+                    "registers": report.get("registers").cloned().unwrap_or_else(|| json!([]))
+                }),
+            );
+            let next_commands = finding
+                .get_mut("next_commands")
+                .and_then(Value::as_array_mut);
+            if let Some(commands) = next_commands {
+                if let Some(report_path) = &result.report_path {
+                    let command = format!("cat {}", report_path);
+                    if !commands
+                        .iter()
+                        .any(|value| value.as_str() == Some(&command))
+                    {
+                        commands.push(Value::String(command));
+                    }
+                }
+            }
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn read_gdb_report(result: &EscalationResult) -> Option<Value> {
+    let report_path = result.report_path.as_deref()?;
+    let content = fs::read_to_string(report_path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn ensure_object_path<'a>(
+    value: &'a mut Value,
+    path: &[&str],
+) -> &'a mut serde_json::Map<String, Value> {
+    let mut current = value;
+    for key in path {
+        if !current.is_object() {
+            *current = json!({});
+        }
+        let object = current.as_object_mut().expect("object just initialized");
+        current = object
+            .entry((*key).to_string())
+            .or_insert_with(|| json!({}));
+    }
+    if !current.is_object() {
+        *current = json!({});
+    }
+    current.as_object_mut().expect("object just initialized")
 }
 
 fn tool_detections(result: &EscalationResult) -> Vec<ToolDetection> {
@@ -807,26 +896,27 @@ fn run_observe_escalation(
     if target.findings_count > 0 {
         let findings_path = crashpack_dir.join("findings.json");
         let findings = load_findings(&findings_path)?;
-        let mut valgrind_results = runtime.block_on(async {
+        let mut finding_results = runtime.block_on(async {
             let mut results = Vec::new();
             for mut finding in findings {
+                let tool = observe_tool_for_finding(&finding);
                 let mut plan = finding.escalation.unwrap_or(FindingEscalationPlan {
-                    tool: "valgrind".to_string(),
+                    tool: tool.to_string(),
                     reason: "observe_confirm".to_string(),
                     estimated_cost: "medium".to_string(),
                     cooldown_ms: 0,
                 });
-                plan.tool = "valgrind".to_string();
+                plan.tool = tool.to_string();
                 finding.escalation = Some(plan);
                 let mut runner = EscalationRunner::new(config.clone());
                 let result = runner.escalate(&finding).await.unwrap_or_else(|error| {
-                    observe_escalation_failure(&finding.id, "valgrind", error.to_string())
+                    observe_escalation_failure(&finding.id, tool, error.to_string())
                 });
                 results.push(result);
             }
             Ok::<Vec<EscalationResult>, anyhow::Error>(results)
         })?;
-        results.append(&mut valgrind_results);
+        results.append(&mut finding_results);
     } else if deep && !binary_has_sanitizer_runtime(&analysis.binary_path) {
         let valgrind_result = runtime.block_on(async {
             let mut runner = EscalationRunner::new(config.clone());
@@ -876,6 +966,14 @@ fn run_observe_escalation(
     }
 
     Ok(results)
+}
+
+fn observe_tool_for_finding(finding: &Finding) -> &'static str {
+    if finding.class == "unclassified_crash" {
+        "gdb"
+    } else {
+        "valgrind"
+    }
 }
 
 fn binary_has_sanitizer_runtime(binary_path: &str) -> bool {
@@ -1919,6 +2017,142 @@ mod tests {
                 .pointer("/summary/issue_group_count")
                 .and_then(Value::as_u64),
             Some(1)
+        );
+
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn gdb_escalation_enriches_existing_crash_finding() {
+        let base = std::env::temp_dir().join(format!(
+            "rerun-gdb-crash-enrich-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("escalations").join("gdb")).unwrap();
+
+        let binary = base.join("crash-app");
+        fs::write(&binary, "#!/bin/sh\nexit 139\n").unwrap();
+        let mut perms = fs::metadata(&binary).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&binary, perms).unwrap();
+
+        fs::write(
+            base.join("analysis.json"),
+            serde_json::to_vec_pretty(&json!({
+                "binary_path": binary.display().to_string(),
+                "args": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            base.join("findings.json"),
+            serde_json::to_vec_pretty(&json!([{
+                "schema_version": "1.0",
+                "id": "F-crash-1",
+                "origin": "runtime",
+                "class": "unclassified_crash",
+                "severity": "error",
+                "confidence": "observed",
+                "timestamp": 1,
+                "pid": 0,
+                "evidence": {
+                    "api": "crash_observed",
+                    "crash": {"signal": 11, "signal_name": "SIGSEGV"},
+                    "stacks": {"crash": []}
+                },
+                "provenance": {
+                    "binary_path": binary.display().to_string(),
+                    "source_status": "unresolved"
+                },
+                "next_commands": []
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let report_path = base.join("escalations").join("gdb").join("report.json");
+        fs::write(
+            &report_path,
+            serde_json::to_vec_pretty(&json!({
+                "tool": "gdb",
+                "confirmed": true,
+                "signal_name": "SIGSEGV",
+                "signal_line": "Program received signal SIGSEGV, Segmentation fault.",
+                "crash_frames": [
+                    "#0  crash_here () at crash_segv_case.c:5",
+                    "#1  main () at crash_segv_case.c:11"
+                ],
+                "registers": ["rip 0x401142"],
+                "detected": [{
+                    "class": "unclassified_crash",
+                    "summary": "Program received signal SIGSEGV, Segmentation fault.",
+                    "line": 1
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let result = EscalationResult {
+            id: "E-gdb".to_string(),
+            finding_id: "F-crash-1".to_string(),
+            tool: "gdb".to_string(),
+            success: true,
+            tool_available: true,
+            duration_ms: 10,
+            output_path: Some(report_path.display().to_string()),
+            stdout_path: Some(
+                base.join("escalations/gdb/stdout.log")
+                    .display()
+                    .to_string(),
+            ),
+            stderr_path: Some(
+                base.join("escalations/gdb/stderr.log")
+                    .display()
+                    .to_string(),
+            ),
+            report_path: Some(report_path.display().to_string()),
+            command: vec![
+                "gdb".to_string(),
+                "-batch".to_string(),
+                "--args".to_string(),
+                binary.display().to_string(),
+            ],
+            exit_code: Some(0),
+            confirmed: true,
+            error: None,
+            findings_detected: vec!["unclassified_crash".to_string()],
+            timestamp: 123,
+        };
+
+        let snapshot = promote_tool_findings_to_crashpack(&base, &[result])
+            .unwrap()
+            .expect("expected enriched crash finding");
+        assert_eq!(snapshot.count, 1);
+        assert_eq!(snapshot.class_counts.get("unclassified_crash"), Some(&1));
+
+        let findings = read_json_file(&base.join("findings.json")).unwrap();
+        assert_eq!(
+            findings
+                .pointer("/0/evidence/stacks/crash/0")
+                .and_then(Value::as_str),
+            Some("#0  crash_here () at crash_segv_case.c:5")
+        );
+        assert_eq!(
+            findings
+                .pointer("/0/evidence/tool/gdb/signal_name")
+                .and_then(Value::as_str),
+            Some("SIGSEGV")
+        );
+
+        let evidence_pack = read_json_file(&base.join("evidence-pack.json")).unwrap();
+        assert_eq!(
+            evidence_pack
+                .pointer("/findings/0/stacks/crash/0")
+                .and_then(Value::as_str),
+            Some("#0  crash_here () at crash_segv_case.c:5")
         );
 
         fs::remove_dir_all(base).unwrap();

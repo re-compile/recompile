@@ -8,12 +8,14 @@ use thiserror::Error;
 
 pub mod asan;
 pub mod config;
+pub mod gdb;
 pub mod lsan;
 pub mod runner;
 pub mod ubsan;
 pub mod valgrind;
 
 pub use asan::*;
+pub use gdb::*;
 pub use lsan::*;
 pub use runner::*;
 pub use ubsan::*;
@@ -222,9 +224,12 @@ impl Default for EscalationConfig {
                     enabled: true,
                     timeout_ms: 15000,
                     commands: vec![
+                        "set pagination off".to_string(),
+                        "set confirm off".to_string(),
                         "run".to_string(),
-                        "bt".to_string(),
-                        "info reg".to_string(),
+                        "bt full".to_string(),
+                        "info registers".to_string(),
+                        "thread apply all bt".to_string(),
                         "quit".to_string(),
                     ],
                 },
