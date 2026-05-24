@@ -14,18 +14,12 @@ fn main() -> Result<()> {
     env_logger::init();
 
     let matches = Command::new("re")
-        .about("RECC Sentinel - eBPF-driven compiler companion for C/C++ binaries")
+        .about("re:compile runtime observer for C/C++ binaries")
         .version("0.1.0")
         .subcommand(
             Command::new("run")
                 .about("Run binary analysis with eBPF monitoring")
                 .arg(Arg::new("binary").help("Binary to analyze").required(true))
-                .arg(
-                    Arg::new("manifest")
-                        .long("manifest")
-                        .value_name("PATH")
-                        .help("Path to manifest.json"),
-                )
                 .arg(
                     Arg::new("native")
                         .long("native")

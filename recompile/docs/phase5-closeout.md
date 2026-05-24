@@ -19,6 +19,9 @@ make phase5-closeout-smoke
 make phase4
 ```
 
+Optional `recc`/LLVM validation is deliberately excluded from `make phase5`.
+Run `make recc-smoke` only when intentionally working on that deferred path.
+
 The Docker invocation used for closeout is:
 
 ```bash

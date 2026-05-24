@@ -141,8 +141,8 @@ make escalation-smoke
 
 This validates positive confirmations for the current user-style bug samples
 and clean-negative confirmations for the current clean samples.
-The Valgrind-first bug classes currently include `use_after_free`,
-`memory_leak`, and `fd_leak`.
+The Valgrind-first bug classes currently include `use_after_free` and
+`memory_leak`. Native `fd_leak` is also Valgrind-confirmable.
 
 Run the checked ASan escalation smoke:
 
@@ -169,7 +169,8 @@ make recc-smoke
 ```
 
 This verifies that `recc` can compile a small C binary, write its manifest, and
-build the optional LLVM pass. It is separate from the primary native workflow.
+build the optional LLVM pass. It is separate from the primary `rerun observe`
+and `rerun run --native` workflows.
 
 Run the current hit-rate evaluation:
 
@@ -183,11 +184,10 @@ Run the Phase 2 closeout validation:
 ```bash
 make phase2
 make hit-rate
-make recc-smoke
 ```
 
-`make recc-smoke` is intentionally separate from the primary native workflow,
-but it is useful as an optional wiring check before starting Phase 3.
+`make recc-smoke` remains available as an explicit optional wiring check. It is
+not part of the current phase gates.
 
 To inspect the no-finding path:
 
@@ -221,4 +221,3 @@ Debug/streaming output only:
 - `invalid_free` may not resolve to a user source file on the current arm64 Docker build even though the finding class is correct
 - VM mode is deferred
 - macOS-first development is deferred
-- before Phase 3, the next planned step is a full codebase review for dead paths and hotfix-ish logic

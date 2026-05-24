@@ -16,8 +16,8 @@ Phase 5 is complete for the current memory/resource coverage expansion scope.
 
 What is working now:
 
-- `rerun run --native <binary>` is the primary execution path
-- `rerun observe <binary>` writes `.re/run-summary.json` plus per-target crashpack artifacts
+- `rerun observe <binary>` is the primary human/agent entry point
+- `rerun run --native <binary>` is the lower-level native execution path used per target
 - `rerun observe` supports args, `--cwd`, timeouts, native-only mode, and deep escalation mode
 - findings persist canonically to `findings.json`
 - agent-readable evidence persists to `evidence-pack.json`
@@ -189,8 +189,9 @@ make phase4
 ```
 
 `make phase4` runs the Phase 2 gate, observation-run smoke tests,
-project-shaped fixtures, observation hit-rate scoring, lower-level hit-rate
-scoring, and optional `recc` wiring validation.
+project-shaped fixtures, observation hit-rate scoring, and lower-level hit-rate
+scoring. Optional `recc`/LLVM validation is intentionally excluded from the
+phase gate and remains available through `make recc-smoke`.
 
 The individual gates remain available:
 
@@ -229,7 +230,7 @@ make phase5
 hit-rate, observe-hit-rate, ASan, LSan, UBSan, and signal-crash validation
 scripts. `make phase5-closeout-smoke` scans active production paths for
 sample-specific or hotfix-like logic. `make phase5` runs both checks plus the
-Phase 4 gate.
+Phase 4 gate; optional `recc`/LLVM validation is deliberately separate.
 
 Phase 5 closeout details and manual dry runs are documented in
 `docs/phase5-closeout.md`.
@@ -295,7 +296,8 @@ make recc-smoke
 ```
 
 This checks the optional compiler-wrapper path and LLVM pass build. It does not
-replace `rerun run --native`, and it is intentionally not part of `make phase2`.
+replace `rerun observe` or `rerun run --native`, and it is intentionally not
+part of `make phase2`, `make phase4`, or `make phase5`.
 
 ### Score hit rate
 
@@ -393,9 +395,9 @@ Running `--tool ubsan` on a normal binary is rejected with an explicit
 - `rerun/` - native CLI/orchestration
 - `runtime/agent/re-mini.c` - C agent
 - `runtime/bpf/` - BPF programs
-- `re-crashpack/` - findings/manifests/binary metadata helpers
+- `re-crashpack/` - shared artifact types and writer helpers used by `rerun`
 - `re-escalate/` - escalation adapters
-- `re-rules/` - shared config/types/symbolization support; not the active finding engine
+- `re-rules/` - deferred rule-engine primitives plus symbolization support; not the active finding engine
 - `recc/` - optional compiler wrapper; not required for the native MVP path
 - `llvm-passes/` - optional compiler pass experiments; not required for native runtime analysis
 
@@ -403,3 +405,4 @@ Running `--tool ubsan` on a normal binary is rejected with an explicit
 
 - [`QUICKSTART.md`](QUICKSTART.md)
 - [`ARCHITECTURE.md`](ARCHITECTURE.md)
+- [`docs/deferred-components.md`](docs/deferred-components.md)

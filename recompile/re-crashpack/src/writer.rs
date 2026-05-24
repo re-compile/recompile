@@ -1,4 +1,4 @@
-//! Crashpack writer for generating all artifacts
+//! Crashpack writer helpers for runtime-generated artifacts
 
 use crate::{BinaryInfo, Environment, Finding, Manifest, Result};
 use std::fs;
@@ -20,7 +20,6 @@ impl CrashpackWriter {
         fs::create_dir_all(base_dir.join("env"))?;
         fs::create_dir_all(base_dir.join("bins"))?;
         fs::create_dir_all(base_dir.join("sanitizer"))?;
-        fs::create_dir_all(base_dir.join("harnesses"))?;
         fs::create_dir_all(base_dir.join("gdb"))?;
         fs::create_dir_all(base_dir.join("inputs"))?;
         fs::create_dir_all(base_dir.join("symbols"))?;
@@ -53,8 +52,8 @@ impl CrashpackWriter {
         // Write tool-versions.txt
         let tools_path = self.base_dir.join("env/tool-versions.txt");
         let tools_content = format!(
-            "recc: {}\nclang: {}\nllvm-symbolizer: {}\nasan: {}\nvalgrind: {}\ngdb: {}\n",
-            env.tools.recc_version,
+            "recompile: {}\nclang: {}\nllvm-symbolizer: {}\nasan: {}\nvalgrind: {}\ngdb: {}\n",
+            env.tools.tool_version,
             env.tools.clang_version.as_deref().unwrap_or("unknown"),
             env.tools
                 .llvm_symbolizer_version
@@ -130,7 +129,7 @@ impl CrashpackWriter {
         let mut script = String::new();
         script.push_str("#!/bin/bash\n");
         script.push_str("set -euo pipefail\n\n");
-        script.push_str("# RECC Crashpack Repro Script\n");
+        script.push_str("# re:compile crashpack repro script\n");
         script.push_str("# Generated automatically\n\n");
         if let Some(binary) = &repro_binary {
             script.push_str(&format!("RE_TARGET={}\n", shell_quote(binary)));

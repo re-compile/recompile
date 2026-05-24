@@ -210,11 +210,11 @@ make observe-smoke
 make project-smoke
 make observe-hit-rate
 make hit-rate
-make recc-smoke
 ```
 
 `make phase4` remains available as the Phase 4 substrate gate. `make phase5`
 adds the support-matrix and closeout scans before running that substrate.
+Optional `recc`/LLVM validation is intentionally separate via `make recc-smoke`.
 
 ### Manual Dry Run
 
