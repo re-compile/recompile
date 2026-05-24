@@ -136,12 +136,17 @@
       "category": "resource_lifecycle",
       "native": {
         "status": "supported",
-        "evidence": "open/openat/open64/openat64/creat and close lifecycle tracking at target exit",
+        "evidence": "open/openat/open64/openat64/creat, dup/dup2/dup3/fcntl(F_DUPFD*) ownership tracking, and close lifecycle tracking at target exit",
         "positive_cases": [
-          "fd_leak_case"
+          "fd_leak_case",
+          "fd_dup_leak_case",
+          "fd_dup2_leak_case"
         ],
         "clean_negative_cases": [
-          "clean_fd_close"
+          "clean_fd_close",
+          "clean_fd_dup_close",
+          "clean_fd_dup2_replace",
+          "clean_fd_fcntl_dup_close"
         ]
       },
       "tools": {
@@ -151,7 +156,7 @@
         "ubsan": "not_applicable"
       },
       "limitations": [
-        "Socket, pipe, dup, fork/exec ownership transfer, and descriptor inheritance semantics are not fully modeled yet."
+        "Socket, pipe, accept, fork/exec inheritance, and cross-process descriptor handoff semantics are not fully modeled yet."
       ]
     },
     {
@@ -164,7 +169,10 @@
           "fd_double_close_case"
         ],
         "clean_negative_cases": [
-          "clean_fd_close"
+          "clean_fd_close",
+          "clean_fd_dup_close",
+          "clean_fd_dup2_replace",
+          "clean_fd_fcntl_dup_close"
         ]
       },
       "tools": {
@@ -175,7 +183,7 @@
       },
       "limitations": [
         "No reliable tool-backed confirmation path is wired for this class yet.",
-        "Descriptor reuse and cross-process ownership need more production hardening."
+        "Cross-process ownership and descriptor inheritance need more production hardening."
       ]
     },
     {
@@ -188,7 +196,10 @@
           "fd_invalid_close_case"
         ],
         "clean_negative_cases": [
-          "clean_fd_close"
+          "clean_fd_close",
+          "clean_fd_dup_close",
+          "clean_fd_dup2_replace",
+          "clean_fd_fcntl_dup_close"
         ]
       },
       "tools": {
@@ -199,7 +210,7 @@
       },
       "limitations": [
         "No reliable tool-backed confirmation path is wired for this class yet.",
-        "Descriptor reuse and cross-process ownership need more production hardening."
+        "Cross-process ownership and descriptor inheritance need more production hardening."
       ]
     },
     {

@@ -35,7 +35,7 @@ docker run --rm --privileged --pid=host \
 - UBSan adapter for already-UBSan-built binaries.
 - Standalone LSan adapter for already-LSan-built binaries.
 - Native default-libstdc++ allocator-family tracking for current new/delete mismatch cases.
-- Native fd lifecycle tracking for `open`/`openat`/`open64`/`openat64`/`creat` and `close`.
+- Native fd lifecycle tracking for `open`/`openat`/`open64`/`openat64`/`creat`, `dup`/`dup2`/`dup3`/`fcntl(F_DUPFD*)`, and `close`.
 - Native signal-only `unclassified_crash` evidence for `SIGSEGV`, `SIGABRT`, `SIGBUS`, and `SIGFPE` when no precise detector fires.
 - Machine-readable support matrix at `docs/support-matrix.json`.
 - `coverage_by_class` fields in hit-rate reports.
@@ -143,7 +143,7 @@ The test suite is regression-grade, not exhaustive production proof. It covers r
 
 - custom allocators and overloaded C++ allocation operators;
 - placement/nothrow/aligned C++17 allocation overloads;
-- fd duplication, inheritance, and ownership transfer;
+- fd inheritance and cross-process ownership transfer;
 - socket/pipe/accept lifecycle tracking;
 - stripped binaries or missing debug info;
 - plugin-loaded libraries and unusual dynamic loader behavior;

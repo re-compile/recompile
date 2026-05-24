@@ -18,7 +18,7 @@ The source of truth for class support is `docs/support-matrix.json`. This page i
 - `double_free`: native-supported through allocator lifecycle tracking.
 - `invalid_free`: native-supported through allocator lifecycle tracking.
 - `allocator_mismatch`: native-supported for default libstdc++ new/delete-family mismatches currently in the corpus.
-- `fd_leak`: native-supported for current libc open/close-family tracking.
+- `fd_leak`: native-supported for current libc open/dup/close-family tracking.
 - `double_close`: native-supported, but tool confirmation is not wired.
 - `invalid_close`: native-supported, but tool confirmation is not wired.
 - `unclassified_crash`: observed for supported fatal signals when no precise detector fires.

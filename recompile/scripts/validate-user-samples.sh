@@ -37,6 +37,8 @@ samples=(
     "build/user-samples/fd_leak_case:fd_leak:fd_leak"
     "build/user-samples/fd_double_close_case:double_close:double_close"
     "build/user-samples/fd_invalid_close_case:invalid_close:invalid_close"
+    "build/user-samples/fd_dup_leak_case:fd_leak:fd_leak"
+    "build/user-samples/fd_dup2_leak_case:fd_leak:fd_leak"
 )
 
 for entry in "${samples[@]}"; do
@@ -109,6 +111,9 @@ clean_samples=(
     "build/user-samples/clean_bounded_strcpy"
     "build/user-samples/clean_bounded_strncpy"
     "build/user-samples/clean_fd_close"
+    "build/user-samples/clean_fd_dup_close"
+    "build/user-samples/clean_fd_dup2_replace"
+    "build/user-samples/clean_fd_fcntl_dup_close"
 )
 
 for binary_path in "${clean_samples[@]}"; do

@@ -1690,11 +1690,14 @@ static void drain_fd_leaks(void)
         if (finding_already_emitted(&finding_key))
             continue;
 
-        __s32 open_sid = info.open_stack_id;
+        __s32 acquisition_sid = info.open_stack_id;
+        __s32 origin_sid = info.origin_stack_id >= 0 ? info.origin_stack_id : acquisition_sid;
         struct frame_info action_frames[MAX_CALL_FRAMES];
         struct frame_info open_frames[MAX_CALL_FRAMES];
-        int action_count = 0;
-        int open_count = collect_call_frames(key.pid, open_sid, open_frames, MAX_CALL_FRAMES);
+        int action_count = origin_sid != acquisition_sid
+            ? collect_call_frames(key.pid, acquisition_sid, action_frames, MAX_CALL_FRAMES)
+            : 0;
+        int open_count = collect_call_frames(key.pid, origin_sid, open_frames, MAX_CALL_FRAMES);
 
         mark_finding_emitted(&finding_key);
         emit_fd_finding(&ev, RE_SENTINEL_FD_LEAK, action_frames, action_count, open_frames, open_count);

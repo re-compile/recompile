@@ -74,6 +74,12 @@ struct re_pending_close {
     __s32 stack_id;
 };
 
+struct re_pending_dup {
+    __s32 old_fd;
+    __s32 requested_new_fd;
+    __s32 stack_id;
+};
+
 // tid -> close(fd) entry metadata, consumed by close return.
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -81,6 +87,14 @@ struct {
     __type(key,   __u32);
     __type(value, struct re_pending_close);
 } pending_close SEC(".maps");
+
+// tid -> dup-family entry metadata, consumed by dup-family return.
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 8192);
+    __type(key,   __u32);
+    __type(value, struct re_pending_dup);
+} pending_dup SEC(".maps");
 
 // Sentinel ring buffer (shared with other programs)
 struct {
@@ -245,6 +259,29 @@ static __always_inline bool take_pending_close_fd(struct re_pending_close *out)
     if (out)
         *out = *p;
     bpf_map_delete_elem(&pending_close, &tid);
+    return true;
+}
+
+static __always_inline void remember_dup_fd(__s32 old_fd, __s32 requested_new_fd, __s32 stack_id)
+{
+    __u32 tid = get_tid();
+    struct re_pending_dup info = {
+        .old_fd = old_fd,
+        .requested_new_fd = requested_new_fd,
+        .stack_id = stack_id,
+    };
+    bpf_map_update_elem(&pending_dup, &tid, &info, BPF_ANY);
+}
+
+static __always_inline bool take_pending_dup_fd(struct re_pending_dup *out)
+{
+    __u32 tid = get_tid();
+    struct re_pending_dup *p = bpf_map_lookup_elem(&pending_dup, &tid);
+    if (!p)
+        return false;
+    if (out)
+        *out = *p;
+    bpf_map_delete_elem(&pending_dup, &tid);
     return true;
 }
 
@@ -442,6 +479,8 @@ static __always_inline int record_fd_open_return(struct pt_regs *ctx, long ret)
     struct re_fd_info info = {
         .open_stack_id = stack_id,
         .close_stack_id = -1,
+        .origin_stack_id = stack_id,
+        ._pad = 0,
         .opened_ts_ns = bpf_ktime_get_ns(),
         .closed_ts_ns = 0,
     };
@@ -517,6 +556,67 @@ static __always_inline int record_fd_close_return(struct pt_regs *ctx, long ret)
         evt->site_id = (__u32)(open_stack + 1);
 
     sentinel_event_submit(evt);
+    return 0;
+}
+
+static __always_inline int record_fd_dup_return(long ret)
+{
+    struct re_pending_dup pending_info = {};
+    if (!take_pending_dup_fd(&pending_info))
+        return 0;
+
+    __s64 rc = (__s64)ret;
+    if (rc < 0 || rc > 0x7fffffff)
+        return 0;
+
+    __s32 old_fd = pending_info.old_fd;
+    __s32 new_fd = (__s32)rc;
+    if (old_fd < 0 || new_fd < 0)
+        return 0;
+
+    // dup2/dup3(old, old) is a documented no-op and should not create a
+    // second ownership record.
+    if (pending_info.requested_new_fd == old_fd && new_fd == old_fd)
+        return 0;
+
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+    struct re_fd_key old_key = {
+        .pid = pid,
+        .fd = old_fd,
+    };
+    struct re_fd_key new_key = {
+        .pid = pid,
+        .fd = new_fd,
+    };
+
+    struct re_fd_info info = {
+        .open_stack_id = pending_info.stack_id,
+        .close_stack_id = -1,
+        .origin_stack_id = pending_info.stack_id,
+        ._pad = 0,
+        .opened_ts_ns = bpf_ktime_get_ns(),
+        .closed_ts_ns = 0,
+    };
+
+    struct re_fd_info *old_info = bpf_map_lookup_elem(&open_fds, &old_key);
+    if (old_info) {
+        info = *old_info;
+        // The duplicate descriptor becomes a new owner at the dup call site.
+        info.open_stack_id = pending_info.stack_id;
+        info.close_stack_id = -1;
+        if (info.origin_stack_id < 0)
+            info.origin_stack_id = old_info->open_stack_id;
+        info.opened_ts_ns = bpf_ktime_get_ns();
+        info.closed_ts_ns = 0;
+    }
+
+    struct re_sentinel_state *st = sentinel_get_state(pid);
+    if (st)
+        st->flags |= RE_SENTINEL_STATE_ARMED;
+
+    bpf_map_delete_elem(&closed_fds, &new_key);
+    bpf_map_update_elem(&open_fds, &new_key, &info, BPF_ANY);
     return 0;
 }
 
@@ -789,6 +889,73 @@ SEC("uretprobe/creat")
 int BPF_KRETPROBE(u_creat_exit)
 {
     return record_fd_open_return(ctx, PT_REGS_RC(ctx));
+}
+
+SEC("uprobe/dup")
+int BPF_KPROBE(u_dup_enter)
+{
+    __s32 old_fd = (__s32)PT_REGS_PARM1(ctx);
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_dup_fd(old_fd, -1, stack_id);
+    return 0;
+}
+
+SEC("uretprobe/dup")
+int BPF_KRETPROBE(u_dup_exit)
+{
+    return record_fd_dup_return(PT_REGS_RC(ctx));
+}
+
+SEC("uprobe/dup2")
+int BPF_KPROBE(u_dup2_enter)
+{
+    __s32 old_fd = (__s32)PT_REGS_PARM1(ctx);
+    __s32 new_fd = (__s32)PT_REGS_PARM2(ctx);
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_dup_fd(old_fd, new_fd, stack_id);
+    return 0;
+}
+
+SEC("uretprobe/dup2")
+int BPF_KRETPROBE(u_dup2_exit)
+{
+    return record_fd_dup_return(PT_REGS_RC(ctx));
+}
+
+SEC("uprobe/dup3")
+int BPF_KPROBE(u_dup3_enter)
+{
+    __s32 old_fd = (__s32)PT_REGS_PARM1(ctx);
+    __s32 new_fd = (__s32)PT_REGS_PARM2(ctx);
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_dup_fd(old_fd, new_fd, stack_id);
+    return 0;
+}
+
+SEC("uretprobe/dup3")
+int BPF_KRETPROBE(u_dup3_exit)
+{
+    return record_fd_dup_return(PT_REGS_RC(ctx));
+}
+
+SEC("uprobe/fcntl")
+int BPF_KPROBE(u_fcntl_enter)
+{
+    __s32 old_fd = (__s32)PT_REGS_PARM1(ctx);
+    int cmd = (int)PT_REGS_PARM2(ctx);
+    // Linux values: F_DUPFD=0, F_DUPFD_CLOEXEC=1030.
+    if (cmd != 0 && cmd != 1030)
+        return 0;
+    __s32 min_fd = (__s32)PT_REGS_PARM3(ctx);
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_dup_fd(old_fd, min_fd, stack_id);
+    return 0;
+}
+
+SEC("uretprobe/fcntl")
+int BPF_KRETPROBE(u_fcntl_exit)
+{
+    return record_fd_dup_return(PT_REGS_RC(ctx));
 }
 
 SEC("uprobe/close")

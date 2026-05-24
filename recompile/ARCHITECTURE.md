@@ -278,6 +278,7 @@ Current native allocator tracking:
 Current native resource lifecycle coverage:
 
 - libc `open`, `open64`, `openat`, `openat64`, and `creat`
+- libc `dup`, `dup2`, `dup3`, and `fcntl(F_DUPFD*)`
 - libc `close`
 - `fd_leak` by draining still-open fd records when the target exits
 - `double_close` for descriptors tracked as opened and then closed already
@@ -307,14 +308,17 @@ available on the Linux host or Docker image. Native findings use
 overloaded C++ operators, placement new/delete, nothrow operators, or aligned
 C++17 allocation overloads.
 
-Fd lifecycle tracking is intentionally first-pass and descriptor-centric. It
-does not yet model `dup`, `dup2`, `dup3`, `fcntl(F_DUPFD*)`, socket creation,
-`accept`, pipe ownership, fork/exec inheritance, or intentional fd handoff to
-another owner. `fd_leak` is Valgrind-confirmable in escalation; `double_close`
-and `invalid_close` are currently native-only and appear as unsupported for
-tool-backed confirmation in hit-rate. `invalid_close` can retain only a
-binary-offset action stack when the target exits before full user-source
-symbolization completes.
+Fd lifecycle tracking models descriptor ownership for `dup`, `dup2`, `dup3`,
+and `fcntl(F_DUPFD*)` by creating a new open record for the duplicate
+descriptor. Duplicate leak evidence keeps the original acquisition stack as
+`stacks.open` and the duplicate acquisition stack as `stacks.action` when those
+stacks differ. `dup2(old, old)` and `dup3(old, old)` are treated as no-op ownership
+transfers. Socket creation, `accept`, pipe ownership, fork/exec inheritance, and
+intentional cross-process fd handoff remain deferred. `fd_leak` is
+Valgrind-confirmable in escalation; `double_close` and `invalid_close` are
+currently native-only and appear as unsupported for tool-backed confirmation in
+hit-rate. `invalid_close` can retain only a binary-offset action stack when the
+target exits before full user-source symbolization completes.
 
 Deferred native string-copy coverage:
 

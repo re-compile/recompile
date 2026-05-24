@@ -59,6 +59,8 @@ UBSAN_FLAGS=(
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/fd_leak_case samples/user-binaries/fd_leak_case.c
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/fd_double_close_case samples/user-binaries/fd_double_close_case.c
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/fd_invalid_close_case samples/user-binaries/fd_invalid_close_case.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/fd_dup_leak_case samples/user-binaries/fd_dup_leak_case.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/fd_dup2_leak_case samples/user-binaries/fd_dup2_leak_case.c
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/crash_segv_case samples/user-binaries/crash_segv_case.c
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_malloc_free samples/user-binaries/clean_malloc_free.c
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_realloc_grow samples/user-binaries/clean_realloc_grow.c
@@ -74,6 +76,9 @@ UBSAN_FLAGS=(
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_bounded_strcpy samples/user-binaries/clean_bounded_strcpy.c
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_bounded_strncpy samples/user-binaries/clean_bounded_strncpy.c
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_fd_close samples/user-binaries/clean_fd_close.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_fd_dup_close samples/user-binaries/clean_fd_dup_close.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_fd_dup2_replace samples/user-binaries/clean_fd_dup2_replace.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/clean_fd_fcntl_dup_close samples/user-binaries/clean_fd_fcntl_dup_close.c
 
 "$CXX" -std=c++17 "${COMMON_FLAGS[@]}" -o build/user-samples/clean_cxx_new_delete samples/user-binaries/clean_cxx_new_delete.cpp
 "$CXX" -std=c++17 "${COMMON_FLAGS[@]}" -o build/user-samples/cxx_new_free_mismatch samples/user-binaries/cxx_new_free_mismatch.cpp

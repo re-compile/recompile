@@ -99,6 +99,8 @@ positive_samples=(
     "build/user-samples/cxx_new_array_delete_mismatch:allocator_mismatch"
     "build/user-samples/cxx_new_delete_array_mismatch:allocator_mismatch"
     "build/user-samples/fd_leak_case:fd_leak"
+    "build/user-samples/fd_dup_leak_case:fd_leak"
+    "build/user-samples/fd_dup2_leak_case:fd_leak"
 )
 
 for entry in "${positive_samples[@]}"; do
@@ -162,6 +164,9 @@ clean_samples=(
     "build/user-samples/clean_bounded_strcpy"
     "build/user-samples/clean_bounded_strncpy"
     "build/user-samples/clean_fd_close"
+    "build/user-samples/clean_fd_dup_close"
+    "build/user-samples/clean_fd_dup2_replace"
+    "build/user-samples/clean_fd_fcntl_dup_close"
 )
 
 for binary_path in "${clean_samples[@]}"; do
