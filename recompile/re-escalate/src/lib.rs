@@ -1,6 +1,7 @@
-//! RECC Escalation Runner
+//! re:compile escalation adapters.
 //!
-//! Automatically escalates findings to appropriate debugging tools (ASan, TSan, MSan, Valgrind, GDB)
+//! Runs supported external tools such as Valgrind, ASan, LSan, UBSan, and GDB
+//! against recorded crashpack targets.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

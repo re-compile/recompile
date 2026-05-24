@@ -13,9 +13,39 @@ use cli::*;
 fn main() -> Result<()> {
     env_logger::init();
 
-    let matches = Command::new("re")
+    let matches = build_cli().get_matches();
+
+    match matches.subcommand() {
+        Some(("run", sub_matches)) => {
+            handle_run_command(sub_matches)?;
+        }
+        Some(("observe", sub_matches)) => {
+            handle_observe_command(sub_matches)?;
+        }
+        Some(("escalate", sub_matches)) => {
+            handle_escalate_command(sub_matches)?;
+        }
+        Some(("crashpack", sub_matches)) => {
+            handle_crashpack_command(sub_matches)?;
+        }
+        Some(("summarize", sub_matches)) => {
+            handle_summarize_command(sub_matches)?;
+        }
+        Some(("replay", sub_matches)) => {
+            handle_replay_command(sub_matches)?;
+        }
+        _ => unreachable!("clap requires a subcommand"),
+    }
+
+    Ok(())
+}
+
+fn build_cli() -> Command {
+    Command::new("rerun")
         .about("re:compile runtime observer for C/C++ binaries")
         .version("0.1.0")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
         .subcommand(
             Command::new("run")
                 .about("Run binary analysis with eBPF monitoring")
@@ -199,48 +229,22 @@ fn main() -> Result<()> {
                         .help("Output format"),
                 ),
         )
-        .get_matches();
-
-    match matches.subcommand() {
-        Some(("run", sub_matches)) => {
-            handle_run_command(sub_matches)?;
-        }
-        Some(("observe", sub_matches)) => {
-            handle_observe_command(sub_matches)?;
-        }
-        Some(("escalate", sub_matches)) => {
-            handle_escalate_command(sub_matches)?;
-        }
-        Some(("crashpack", sub_matches)) => {
-            handle_crashpack_command(sub_matches)?;
-        }
-        Some(("summarize", sub_matches)) => {
-            handle_summarize_command(sub_matches)?;
-        }
-        Some(("replay", sub_matches)) => {
-            handle_replay_command(sub_matches)?;
-        }
-        _ => {
-            // Fallback to legacy behavior for backward compatibility
-            handle_legacy_run(&matches)?;
-        }
-    }
-
-    Ok(())
 }
 
-fn handle_legacy_run(matches: &clap::ArgMatches) -> Result<()> {
-    let binary = matches.get_one::<String>("binary");
-    if let Some(bin) = binary {
-        return Err(anyhow::anyhow!(
-            "Legacy manifest-driven VM launch is no longer part of the supported workflow.\n\
-             Use `re run --native {}` on Linux, or start the documented Docker-native environment first.",
-            bin
-        ));
-    } else {
-        eprintln!(
-            "re: no binary specified. Use 're run <binary>' or see 're --help' for more options."
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::error::ErrorKind;
+
+    #[test]
+    fn no_subcommand_returns_clap_error_instead_of_panicking() {
+        let error = build_cli()
+            .try_get_matches_from(["rerun"])
+            .expect_err("missing subcommand should be a clap error");
+
+        assert_eq!(
+            error.kind(),
+            ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
         );
     }
-    Ok(())
 }

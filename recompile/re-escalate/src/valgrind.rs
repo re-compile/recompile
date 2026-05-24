@@ -99,10 +99,6 @@ fn push_detection(
     summary: &str,
     line: usize,
 ) {
-    if detected.iter().any(|existing| existing.class == class) {
-        return;
-    }
-
     detected.push(EscalationDetection {
         class: class.to_string(),
         summary: summary.to_string(),
@@ -248,6 +244,27 @@ mod tests {
 
         let report = parse_valgrind_output("", stderr);
         assert_eq!(report.detected_classes(), vec!["fd_leak"]);
+    }
+
+    #[test]
+    fn preserves_independent_same_class_detections() {
+        let stderr = r#"==1== Invalid read of size 1
+==1==    at 0x1091C0: score_first (cache.c:17)
+==1==  Address 0x4a45040 is 0 bytes inside a block of size 32 free'd
+==1==    at 0x484417B: free (vg_replace_malloc.c:872)
+==1==
+==1== Invalid read of size 1
+==1==    at 0x109240: score_second (cache.c:42)
+==1==  Address 0x4a45090 is 0 bytes inside a block of size 64 free'd
+==1==    at 0x484417B: free (vg_replace_malloc.c:872)
+"#;
+
+        let report = parse_valgrind_output("", stderr);
+
+        assert_eq!(report.detected_classes(), vec!["use_after_free"]);
+        assert_eq!(report.detected.len(), 2);
+        assert_eq!(report.detected[0].line, Some(1));
+        assert_eq!(report.detected[1].line, Some(6));
     }
 
     #[test]

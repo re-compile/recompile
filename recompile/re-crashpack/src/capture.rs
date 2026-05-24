@@ -213,6 +213,3 @@ fn calculate_sha256(path: &Path) -> Option<String> {
     let result = hasher.finalize();
     Some(format!("{:x}", result))
 }
-
-// Add sha2 dependency to Cargo.toml
-// sha2 = "0.10"
