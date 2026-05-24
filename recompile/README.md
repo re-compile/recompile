@@ -188,6 +188,7 @@ make phase2
 make observe-smoke
 make project-smoke
 make observe-hit-rate
+make support-matrix-smoke
 make hit-rate
 make recc-smoke
 ```
@@ -204,6 +205,17 @@ native findings, issue groups, escalation outcomes, next commands, and generated
 agent summaries for the project corpus. `make hit-rate` records native and
 escalation outcomes for the current user-style corpus. `make recc-smoke`
 validates optional compiler-wrapper wiring outside the primary runtime path.
+
+Phase 5 adds:
+
+```bash
+make support-matrix-smoke
+make phase5
+```
+
+`make support-matrix-smoke` validates `docs/support-matrix.json` against the
+hit-rate, observe-hit-rate, ASan, LSan, UBSan, and signal-crash validation
+scripts. `make phase5` runs the support-matrix check plus the Phase 4 gate.
 
 ### Run the golden-only baseline
 
@@ -293,6 +305,14 @@ source provenance can remain unresolved when the captured allocation stack stays
 inside libc. `invalid_close` can also have unresolved source provenance when the
 target exits before the action stack can be fully symbolized; the binary-offset
 stack is still preserved in the finding.
+
+`build/hit-rate/summary.json` and `build/observe-hit-rate/summary.json` include
+`support_matrix` and `coverage_by_class` fields. Those reports are intended to
+make production risk visible: they show which classes are native-supported,
+tool-backed, unsupported, or not covered by the current product claim. They are
+not exhaustive guarantees across every allocator, libc/libstdc++ variant, build
+system, dynamic loader pattern, descriptor ownership pattern, or nondeterministic
+thread schedule.
 
 For one external binary:
 

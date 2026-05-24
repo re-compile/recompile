@@ -179,6 +179,20 @@ Valgrind-first and marked as native-unsupported in that summary. Native
 `double_close` and `invalid_close` are tracked, but tool confirmation is marked
 unsupported until a reliable escalation path exists.
 
+Phase 5 adds a machine-readable support matrix:
+
+```bash
+cd recompile
+make support-matrix-smoke
+make phase5
+```
+
+`recompile/docs/support-matrix.json` is validated against the committed
+hit-rate and sanitizer smoke scripts. `make phase5` runs that support-matrix
+check plus the Phase 4 gate. These reports are regression and coverage signals,
+not exhaustive production proof; they make supported, tool-backed, unsupported,
+and not-covered classes explicit.
+
 Native findings include `provenance.source_status` so unresolved source
 locations are explicit instead of silently missing.
 
