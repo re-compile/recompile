@@ -11,6 +11,7 @@ Phase 1 is complete for the Linux-native MVP scope.
 Phase 2 is complete for the current issue-backed escalation and evaluation scope.
 Phase 3 is complete for the agentic runtime evidence MVP scope.
 Phase 4 is complete for the local runtime observability foundation.
+Phase 5 is complete for the current memory/resource coverage expansion scope.
 `rerun observe` is the primary human/agent observation-run entry point.
 
 What is working now:
@@ -61,7 +62,7 @@ make rc
 For the full current closeout gate:
 
 ```bash
-make phase4
+make phase5
 ```
 
 ### Native Linux host
@@ -189,6 +190,7 @@ make observe-smoke
 make project-smoke
 make observe-hit-rate
 make support-matrix-smoke
+make phase5-closeout-smoke
 make hit-rate
 make recc-smoke
 ```
@@ -215,7 +217,12 @@ make phase5
 
 `make support-matrix-smoke` validates `docs/support-matrix.json` against the
 hit-rate, observe-hit-rate, ASan, LSan, UBSan, and signal-crash validation
-scripts. `make phase5` runs the support-matrix check plus the Phase 4 gate.
+scripts. `make phase5-closeout-smoke` scans active production paths for
+sample-specific or hotfix-like logic. `make phase5` runs both checks plus the
+Phase 4 gate.
+
+Phase 5 closeout details and manual dry runs are documented in
+`docs/phase5-closeout.md`.
 
 ### Run the golden-only baseline
 

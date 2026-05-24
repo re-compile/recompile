@@ -17,6 +17,7 @@ Phase 1 is complete for the Linux-native MVP scope.
 Phase 2 is complete for the current issue-backed escalation and evaluation scope.
 Phase 3 is complete for the agentic runtime evidence MVP scope.
 Phase 4 is complete for the local runtime observability foundation.
+Phase 5 is complete for the current memory/resource coverage expansion scope.
 
 Validated native findings in Docker:
 
@@ -124,6 +125,8 @@ jq . build/hit-rate/summary.json
 - [`recompile/README.md`](recompile/README.md)
 - [`recompile/QUICKSTART.md`](recompile/QUICKSTART.md)
 - [`recompile/ARCHITECTURE.md`](recompile/ARCHITECTURE.md)
+- [`recompile/docs/support-matrix.md`](recompile/docs/support-matrix.md)
+- [`recompile/docs/phase5-closeout.md`](recompile/docs/phase5-closeout.md)
 
 ## Not In Scope Right Now
 
@@ -184,14 +187,16 @@ Phase 5 adds a machine-readable support matrix:
 ```bash
 cd recompile
 make support-matrix-smoke
+make phase5-closeout-smoke
 make phase5
 ```
 
 `recompile/docs/support-matrix.json` is validated against the committed
-hit-rate and sanitizer smoke scripts. `make phase5` runs that support-matrix
-check plus the Phase 4 gate. These reports are regression and coverage signals,
-not exhaustive production proof; they make supported, tool-backed, unsupported,
-and not-covered classes explicit.
+hit-rate and sanitizer smoke scripts. `make phase5-closeout-smoke` scans active
+production paths for sample-specific and hotfix-like logic. `make phase5` runs
+both checks plus the Phase 4 gate. These reports are regression and coverage
+signals, not exhaustive production proof; they make supported, tool-backed,
+unsupported, and not-covered classes explicit.
 
 Native findings include `provenance.source_status` so unresolved source
 locations are explicit instead of silently missing.

@@ -201,6 +201,7 @@ Phase 1 is complete for the Linux-native MVP scope.
 Phase 2 is complete for the current issue-backed escalation and evaluation scope.
 Phase 3 is complete for the agentic runtime evidence MVP scope.
 Phase 4 is complete for the local runtime observability foundation.
+Phase 5 is complete for the current memory/resource coverage expansion scope.
 
 The Phase 1 release gate is:
 
@@ -213,23 +214,23 @@ This runs active Rust checks/tests, the three golden regressions, and user-style
 The current closeout gate is:
 
 ```bash
-make phase4
+make phase5
 ```
 
-`make phase4` runs the Phase 2 gate, observe smoke tests, project-shaped
-fixtures, observation hit-rate scoring, lower-level hit-rate scoring, and
-optional `recc` wiring validation. `recc` remains optional because it is not
-part of the primary native runtime workflow.
+`make phase5` runs the Phase 5 support-matrix check, active-path closeout scan,
+the Phase 2 gate, observe smoke tests, project-shaped fixtures, observation
+hit-rate scoring, lower-level hit-rate scoring, and optional `recc` wiring
+validation. `recc` remains optional because it is not part of the primary native
+runtime workflow.
 
-Post-Phase-4 candidates:
+Post-Phase-5 candidates:
 
-1. grow memory/resource coverage without changing the observation contract
-2. add already-instrumented sanitizer adapters for UBSan/TSan/MSan/LSan
-3. add native resource lifecycle tracing where feasible
-4. add repeated-run and `rr`-backed nondeterminism evidence
-5. improve symbolization and source narratives beyond primary user frames
-6. capture richer replay inputs/environment when real workflows require it
-7. revisit optional `recc`/LLVM pass integration only if a concrete user workflow needs it
+1. add repeated-run and `rr`-backed nondeterminism evidence
+2. add TSan/MSan paths where practical and clearly marked as instrumented-binary support
+3. broaden native resource lifecycle tracing beyond fd MVP semantics
+4. improve symbolization and source narratives beyond primary user frames
+5. capture richer replay inputs/environment when real workflows require it
+6. revisit optional `recc`/LLVM pass integration only if a concrete user workflow needs it
 
 ## Evaluation
 
@@ -244,6 +245,11 @@ The summary records:
 - escalation detected classes and TP/TN/FP/FN outcome
 - unsupported native classes when a bug class is intentionally Valgrind-first
 - output directory per case
+- support-matrix path and per-class coverage summary
+
+`docs/support-matrix.json` is the current machine-readable support contract.
+`docs/phase5-closeout.md` documents the Phase 5 manual dry runs, closeout scan,
+and production validation boundary.
 
 Current Valgrind-first classes:
 

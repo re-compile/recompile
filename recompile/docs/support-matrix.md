@@ -48,3 +48,6 @@ The source of truth for class support is `docs/support-matrix.json`. This page i
 - Phase 5 committed classes stay tied to validation scripts instead of becoming stale prose.
 
 `make phase5` runs the support-matrix smoke plus the Phase 4 gate.
+
+Phase 5 closeout details, manual dry runs, and the active-path stale/hotfix
+scan are documented in `docs/phase5-closeout.md`.
