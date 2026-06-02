@@ -221,6 +221,13 @@ if not any(
     for result in target.get("escalation") or []
 ):
     raise SystemExit(f"observe did not surface UBSan escalation: {target.get('escalation')}")
+if not any(
+    result.get("tool") == "valgrind"
+    and result.get("status") == "skipped"
+    and "sanitizer runtime detected" in (result.get("error") or "")
+    for result in target.get("escalation") or []
+):
+    raise SystemExit(f"observe did not record Valgrind sanitizer skip: {target.get('escalation')}")
 print(json.dumps({
     "summary": str(sys.argv[1]),
     "classes": classes,

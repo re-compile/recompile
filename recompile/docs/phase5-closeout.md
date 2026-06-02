@@ -104,7 +104,9 @@ jq '.targets[0].findings_by_class, .targets[0].escalation' \
   build/manual-phase5-ubsan/run-summary.json
 ```
 
-Expected result: UBSan promotes one `signed_integer_overflow`; ASan/LSan report `not_applicable` for that binary.
+Expected result: UBSan promotes one `signed_integer_overflow`; Valgrind records
+`skipped` because sanitizer evidence is primary for this deep run; ASan/LSan
+report `not_applicable` for that binary.
 
 ### Resource Lifecycle Evidence
 
