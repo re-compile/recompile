@@ -91,10 +91,6 @@ fn push_detection(
     summary: &str,
     line: usize,
 ) {
-    if detected.iter().any(|existing| existing.class == class) {
-        return;
-    }
-
     detected.push(EscalationDetection {
         class: class.to_string(),
         summary: summary.to_string(),
@@ -163,6 +159,25 @@ SUMMARY: AddressSanitizer: 48 byte(s) leaked in 1 allocation(s).
 
         let report = parse_asan_output("", stderr);
         assert_eq!(report.detected_classes(), vec!["memory_leak"]);
+    }
+
+    #[test]
+    fn preserves_independent_same_class_detections() {
+        let stderr = r#"==42==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x602000000020
+WRITE of size 8 at 0x602000000020 thread T0
+SUMMARY: AddressSanitizer: heap-buffer-overflow packet.c:10 in write_header
+==42==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x602000000040
+WRITE of size 16 at 0x602000000040 thread T0
+SUMMARY: AddressSanitizer: heap-buffer-overflow packet.c:22 in write_payload
+"#;
+
+        let report = parse_asan_output("", stderr);
+        assert_eq!(report.detected_classes(), vec!["heap_overflow"]);
+        assert_eq!(report.detected.len(), 2);
+        assert_eq!(report.detected[0].line, Some(1));
+        assert_eq!(report.detected[1].line, Some(4));
+        assert!(report.detected[0].summary.contains("0x602000000020"));
+        assert!(report.detected[1].summary.contains("0x602000000040"));
     }
 
     #[test]
