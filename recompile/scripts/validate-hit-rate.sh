@@ -53,6 +53,7 @@ samples=(
     "cxx_malloc_delete_mismatch:allocator_mismatch:allocator_mismatch:1"
     "cxx_new_array_delete_mismatch:allocator_mismatch:allocator_mismatch:1"
     "cxx_new_delete_array_mismatch:allocator_mismatch:allocator_mismatch:1"
+    "fd_open_leak_case:fd_leak:fd_leak:1"
     "fd_leak_case:fd_leak:fd_leak:1"
     "fd_double_close_case:double_close:__unsupported__:1"
     "fd_invalid_close_case:invalid_close:__unsupported__:1"

@@ -295,6 +295,16 @@ static void build_stack_json(const struct frame_info *frames, int count, char *o
 
 static void on_sig(int sig){ (void)sig; stop = 1; }
 
+static void install_signal_handlers(void)
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = on_sig;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+}
+
 static int libbpf_vprintf(enum libbpf_print_level lvl, const char *fmt, va_list ap) {
   char buf[512];
   int n = vsnprintf(buf, sizeof(buf), fmt, ap);
@@ -1214,7 +1224,7 @@ static struct bpf_link *attach_uprobe_by_name(const struct bpf_program *prog, bo
 }
 
 struct link_vec {
-    struct bpf_link *links[32];
+    struct bpf_link *links[160];
     int count;
 };
 
@@ -1330,12 +1340,63 @@ static int attach_uprobes_for_object(struct bpf_object *obj, const char *libc_pa
             struct bpf_link *link = bpf_program__attach_tracepoint(prog, category, name);
             if (!link || libbpf_get_error(link)) {
                 long rc = libbpf_get_error(link);
+                if (strcmp(category, "syscalls") == 0) {
+                    log_line("skipping unavailable tracepoint %s/%s: %ld", category, name, rc);
+                    continue;
+                }
                 log_line("attach tracepoint %s/%s failed: %ld", category, name, rc);
                 return -1;
             }
             if (out_links && out_links->count < (int)(sizeof(out_links->links)/sizeof(out_links->links[0])))
                 out_links->links[out_links->count++] = link;
             log_line("attached tracepoint %s/%s", category, name);
+            continue;
+        }
+
+        if (strncmp(sec, "raw_tracepoint/", 15) == 0) {
+            const char *name = sec + 15;
+            if (!*name) {
+                log_line("invalid raw tracepoint section %s", sec);
+                return -1;
+            }
+            struct bpf_link *link = bpf_program__attach_raw_tracepoint(prog, name);
+            if (!link || libbpf_get_error(link)) {
+                long rc = libbpf_get_error(link);
+                log_line("attach raw tracepoint %s failed: %ld", name, rc);
+                return -1;
+            }
+            if (out_links && out_links->count < (int)(sizeof(out_links->links)/sizeof(out_links->links[0])))
+                out_links->links[out_links->count++] = link;
+            log_line("attached raw tracepoint %s", name);
+            continue;
+        }
+
+        if (strncmp(sec, "kretprobe/", 10) == 0) {
+            retprobe = true;
+            sym = sec + 10;
+            struct bpf_link *link = bpf_program__attach_kprobe(prog, retprobe, sym);
+            if (!link || libbpf_get_error(link)) {
+                long rc = libbpf_get_error(link);
+                log_line("skipping unavailable kretprobe %s: %ld", sym, rc);
+                continue;
+            }
+            if (out_links && out_links->count < (int)(sizeof(out_links->links)/sizeof(out_links->links[0])))
+                out_links->links[out_links->count++] = link;
+            log_line("attached kretprobe %s", sym);
+            continue;
+        }
+
+        if (strncmp(sec, "kprobe/", 7) == 0) {
+            sym = sec + 7;
+            struct bpf_link *link = bpf_program__attach_kprobe(prog, retprobe, sym);
+            if (!link || libbpf_get_error(link)) {
+                long rc = libbpf_get_error(link);
+                log_line("skipping unavailable kprobe %s: %ld", sym, rc);
+                continue;
+            }
+            if (out_links && out_links->count < (int)(sizeof(out_links->links)/sizeof(out_links->links[0])))
+                out_links->links[out_links->count++] = link;
+            log_line("attached kprobe %s", sym);
             continue;
         }
 
@@ -1385,7 +1446,7 @@ static int attach_uprobes_for_object(struct bpf_object *obj, const char *libc_pa
         }
 
         char impl[128] = {0};
-        int attach_pid = target_pid > 0 ? -1 : target_pid;
+        int attach_pid = target_pid > 0 ? target_pid : -1;
         struct bpf_link *link =
             attach_uprobe_by_name(prog, retprobe, attach_pid, attach_path, sym, impl, sizeof(impl));
         if (!link || libbpf_get_error(link)) {
@@ -2303,12 +2364,16 @@ int main(int argc, char **argv){
             log_line("warning: no 'ustacks' map found; stacks unavailable");
     }
 
+    install_signal_handlers();
     log_line("ready");
 
-    signal(SIGINT, on_sig); signal(SIGTERM, on_sig);
     while (!stop) {
         maybe_snapshot_target_modules();
         if (target_pid > 0) {
+            if (!pid_still_alive(target_pid)) {
+                stop = 1;
+                continue;
+            }
             struct module_cache *cache = get_module_cache((__u32)target_pid);
             if (cache && !cache->built && pid_still_alive(target_pid)) {
                 usleep(5 * 1000);

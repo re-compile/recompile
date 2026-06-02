@@ -81,11 +81,50 @@ struct re_pending_close {
     __s32 stack_id;
 };
 
+struct re_pending_open {
+    __s32 stack_id;
+};
+
 struct re_pending_dup {
     __s32 old_fd;
     __s32 requested_new_fd;
     __s32 stack_id;
 };
+
+struct re_sys_enter_ctx {
+    __u64 _unused;
+    long syscall_nr;
+    unsigned long args[6];
+};
+
+struct re_sys_exit_ctx {
+    __u64 _unused;
+    long syscall_nr;
+    long ret;
+};
+
+struct re_raw_tp_ctx {
+    __u64 args[3];
+};
+
+#if defined(__TARGET_ARCH_arm64)
+#define RE_NR_DUP 23
+#define RE_NR_DUP3 24
+#define RE_NR_FCNTL 25
+#define RE_NR_OPENAT 56
+#define RE_NR_CLOSE 57
+#define RE_NR_OPENAT2 437
+#elif defined(__TARGET_ARCH_x86)
+#define RE_NR_OPEN 2
+#define RE_NR_CLOSE 3
+#define RE_NR_DUP 32
+#define RE_NR_DUP2 33
+#define RE_NR_FCNTL 72
+#define RE_NR_CREAT 85
+#define RE_NR_OPENAT 257
+#define RE_NR_DUP3 292
+#define RE_NR_OPENAT2 437
+#endif
 
 // tid -> close(fd) entry metadata, consumed by close return.
 struct {
@@ -94,6 +133,14 @@ struct {
     __type(key,   __u32);
     __type(value, struct re_pending_close);
 } pending_close SEC(".maps");
+
+// tid -> pending open-family syscall metadata, consumed by raw sys_exit.
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 8192);
+    __type(key,   __u32);
+    __type(value, struct re_pending_open);
+} pending_open SEC(".maps");
 
 // tid -> dup-family entry metadata, consumed by dup-family return.
 struct {
@@ -257,6 +304,26 @@ static __always_inline void remember_close_fd(__s32 fd, __s32 stack_id)
         .stack_id = stack_id,
     };
     bpf_map_update_elem(&pending_close, &tid, &info, BPF_ANY);
+}
+
+static __always_inline void remember_open_fd(__s32 stack_id)
+{
+    __u32 tid = get_tid();
+    struct re_pending_open info = {
+        .stack_id = stack_id,
+    };
+    bpf_map_update_elem(&pending_open, &tid, &info, BPF_ANY);
+}
+
+static __always_inline bool take_pending_open_fd(struct re_pending_open *out)
+{
+    __u32 tid = get_tid();
+    struct re_pending_open *p = bpf_map_lookup_elem(&pending_open, &tid);
+    if (!p)
+        return false;
+    *out = *p;
+    bpf_map_delete_elem(&pending_open, &tid);
+    return true;
 }
 
 static __always_inline bool take_pending_close_fd(struct re_pending_close *out)
@@ -578,7 +645,7 @@ static __always_inline int record_deallocation(struct pt_regs *ctx, void *p, __u
     return 0;
 }
 
-static __always_inline int record_fd_open_return(struct pt_regs *ctx, long ret)
+static __always_inline int record_fd_open_return_with_stack(long ret, int stack_id)
 {
     __s64 rc = (__s64)ret;
     if (rc < 0 || rc > 0x7fffffff)
@@ -587,7 +654,6 @@ static __always_inline int record_fd_open_return(struct pt_regs *ctx, long ret)
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = pid_tgid >> 32;
     __s32 fd = (__s32)rc;
-    int stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
 
     struct re_sentinel_state *st = sentinel_get_state(pid);
     if (st)
@@ -611,7 +677,13 @@ static __always_inline int record_fd_open_return(struct pt_regs *ctx, long ret)
     return 0;
 }
 
-static __always_inline int record_fd_close_return(struct pt_regs *ctx, long ret)
+static __always_inline int record_fd_open_return(void *ctx, long ret)
+{
+    int stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    return record_fd_open_return_with_stack(ret, stack_id);
+}
+
+static __always_inline int record_fd_close_return(void *ctx, long ret)
 {
     struct re_pending_close pending_info = {};
     if (!take_pending_close_fd(&pending_info))
@@ -983,33 +1055,206 @@ int BPF_KPROBE(u_cxx_delete_array_sized_enter)
 }
 
 SEC("uretprobe/open")
-int BPF_KRETPROBE(u_open_exit)
+int BPF_KRETPROBE(u_open_exit, long ret)
 {
-    return record_fd_open_return(ctx, PT_REGS_RC(ctx));
+    return record_fd_open_return(ctx, ret);
 }
 
 SEC("uretprobe/open64")
-int BPF_KRETPROBE(u_open64_exit)
+int BPF_KRETPROBE(u_open64_exit, long ret)
 {
-    return record_fd_open_return(ctx, PT_REGS_RC(ctx));
+    return record_fd_open_return(ctx, ret);
 }
 
 SEC("uretprobe/openat")
-int BPF_KRETPROBE(u_openat_exit)
+int BPF_KRETPROBE(u_openat_exit, long ret)
 {
-    return record_fd_open_return(ctx, PT_REGS_RC(ctx));
+    return record_fd_open_return(ctx, ret);
 }
 
 SEC("uretprobe/openat64")
-int BPF_KRETPROBE(u_openat64_exit)
+int BPF_KRETPROBE(u_openat64_exit, long ret)
 {
-    return record_fd_open_return(ctx, PT_REGS_RC(ctx));
+    return record_fd_open_return(ctx, ret);
 }
 
 SEC("uretprobe/creat")
-int BPF_KRETPROBE(u_creat_exit)
+int BPF_KRETPROBE(u_creat_exit, long ret)
 {
-    return record_fd_open_return(ctx, PT_REGS_RC(ctx));
+    return record_fd_open_return(ctx, ret);
+}
+
+SEC("tracepoint/syscalls/sys_exit_open")
+int tp_sys_exit_open(struct re_sys_exit_ctx *ctx)
+{
+    return record_fd_open_return(ctx, ctx->ret);
+}
+
+SEC("tracepoint/syscalls/sys_exit_openat")
+int tp_sys_exit_openat(struct re_sys_exit_ctx *ctx)
+{
+    return record_fd_open_return(ctx, ctx->ret);
+}
+
+SEC("tracepoint/syscalls/sys_exit_openat2")
+int tp_sys_exit_openat2(struct re_sys_exit_ctx *ctx)
+{
+    return record_fd_open_return(ctx, ctx->ret);
+}
+
+SEC("tracepoint/syscalls/sys_exit_creat")
+int tp_sys_exit_creat(struct re_sys_exit_ctx *ctx)
+{
+    return record_fd_open_return(ctx, ctx->ret);
+}
+
+static __always_inline bool re_syscall_is_open(long nr)
+{
+#ifdef RE_NR_OPEN
+    if (nr == RE_NR_OPEN)
+        return true;
+#endif
+#ifdef RE_NR_CREAT
+    if (nr == RE_NR_CREAT)
+        return true;
+#endif
+#ifdef RE_NR_OPENAT
+    if (nr == RE_NR_OPENAT)
+        return true;
+#endif
+#ifdef RE_NR_OPENAT2
+    if (nr == RE_NR_OPENAT2)
+        return true;
+#endif
+    return false;
+}
+
+SEC("raw_tracepoint/sys_enter")
+int raw_sys_enter(struct re_raw_tp_ctx *ctx)
+{
+    struct pt_regs *regs = (struct pt_regs *)ctx->args[0];
+    long nr = (long)ctx->args[1];
+
+    if (re_syscall_is_open(nr)) {
+        __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+        remember_open_fd(stack_id);
+        return 0;
+    }
+
+#ifdef RE_NR_CLOSE
+    if (nr == RE_NR_CLOSE) {
+        __s32 fd = (__s32)PT_REGS_PARM1_CORE_SYSCALL(regs);
+        __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+        remember_close_fd(fd, stack_id);
+        return 0;
+    }
+#endif
+
+#ifdef RE_NR_DUP
+    if (nr == RE_NR_DUP) {
+        __s32 old_fd = (__s32)PT_REGS_PARM1_CORE_SYSCALL(regs);
+        __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+        remember_dup_fd(old_fd, -1, stack_id);
+        return 0;
+    }
+#endif
+
+#ifdef RE_NR_DUP2
+    if (nr == RE_NR_DUP2) {
+        __s32 old_fd = (__s32)PT_REGS_PARM1_CORE_SYSCALL(regs);
+        __s32 new_fd = (__s32)PT_REGS_PARM2_CORE_SYSCALL(regs);
+        __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+        remember_dup_fd(old_fd, new_fd, stack_id);
+        return 0;
+    }
+#endif
+
+#ifdef RE_NR_DUP3
+    if (nr == RE_NR_DUP3) {
+        __s32 old_fd = (__s32)PT_REGS_PARM1_CORE_SYSCALL(regs);
+        __s32 new_fd = (__s32)PT_REGS_PARM2_CORE_SYSCALL(regs);
+        __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+        remember_dup_fd(old_fd, new_fd, stack_id);
+        return 0;
+    }
+#endif
+
+#ifdef RE_NR_FCNTL
+    if (nr == RE_NR_FCNTL) {
+        __s32 old_fd = (__s32)PT_REGS_PARM1_CORE_SYSCALL(regs);
+        int cmd = (int)PT_REGS_PARM2_CORE_SYSCALL(regs);
+        if (cmd != 0 && cmd != 1030)
+            return 0;
+        __s32 min_fd = (__s32)PT_REGS_PARM3_CORE_SYSCALL(regs);
+        __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+        remember_dup_fd(old_fd, min_fd, stack_id);
+        return 0;
+    }
+#endif
+
+    return 0;
+}
+
+SEC("raw_tracepoint/sys_exit")
+int raw_sys_exit(struct re_raw_tp_ctx *ctx)
+{
+    long ret = (long)ctx->args[1];
+
+    struct re_pending_open open_info = {};
+    if (take_pending_open_fd(&open_info))
+        record_fd_open_return_with_stack(ret, open_info.stack_id);
+
+    record_fd_dup_return(ret);
+    record_fd_close_return(ctx, ret);
+    return 0;
+}
+
+SEC("kretprobe/__arm64_sys_open")
+int BPF_KRETPROBE(kret_sys_open_arm64, long ret)
+{
+    return record_fd_open_return(ctx, ret);
+}
+
+SEC("kretprobe/__arm64_sys_openat")
+int BPF_KRETPROBE(kret_sys_openat_arm64, long ret)
+{
+    return record_fd_open_return(ctx, ret);
+}
+
+SEC("kretprobe/__arm64_sys_openat2")
+int BPF_KRETPROBE(kret_sys_openat2_arm64, long ret)
+{
+    return record_fd_open_return(ctx, ret);
+}
+
+SEC("kretprobe/__arm64_sys_creat")
+int BPF_KRETPROBE(kret_sys_creat_arm64, long ret)
+{
+    return record_fd_open_return(ctx, ret);
+}
+
+SEC("kretprobe/__x64_sys_open")
+int BPF_KRETPROBE(kret_sys_open_x64, long ret)
+{
+    return record_fd_open_return(ctx, ret);
+}
+
+SEC("kretprobe/__x64_sys_openat")
+int BPF_KRETPROBE(kret_sys_openat_x64, long ret)
+{
+    return record_fd_open_return(ctx, ret);
+}
+
+SEC("kretprobe/__x64_sys_openat2")
+int BPF_KRETPROBE(kret_sys_openat2_x64, long ret)
+{
+    return record_fd_open_return(ctx, ret);
+}
+
+SEC("kretprobe/__x64_sys_creat")
+int BPF_KRETPROBE(kret_sys_creat_x64, long ret)
+{
+    return record_fd_open_return(ctx, ret);
 }
 
 SEC("uprobe/dup")
@@ -1022,9 +1267,52 @@ int BPF_KPROBE(u_dup_enter)
 }
 
 SEC("uretprobe/dup")
-int BPF_KRETPROBE(u_dup_exit)
+int BPF_KRETPROBE(u_dup_exit, long ret)
 {
-    return record_fd_dup_return(PT_REGS_RC(ctx));
+    return record_fd_dup_return(ret);
+}
+
+SEC("tracepoint/syscalls/sys_enter_dup")
+int tp_sys_enter_dup(struct re_sys_enter_ctx *ctx)
+{
+    __s32 old_fd = (__s32)ctx->args[0];
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_dup_fd(old_fd, -1, stack_id);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_dup")
+int tp_sys_exit_dup(struct re_sys_exit_ctx *ctx)
+{
+    return record_fd_dup_return(ctx->ret);
+}
+
+SEC("kprobe/__arm64_sys_dup")
+int BPF_KSYSCALL(k_sys_enter_dup_arm64, int old_fd)
+{
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_dup_fd((__s32)old_fd, -1, stack_id);
+    return 0;
+}
+
+SEC("kretprobe/__arm64_sys_dup")
+int BPF_KRETPROBE(kret_sys_dup_arm64, long ret)
+{
+    return record_fd_dup_return(ret);
+}
+
+SEC("kprobe/__x64_sys_dup")
+int BPF_KSYSCALL(k_sys_enter_dup_x64, int old_fd)
+{
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_dup_fd((__s32)old_fd, -1, stack_id);
+    return 0;
+}
+
+SEC("kretprobe/__x64_sys_dup")
+int BPF_KRETPROBE(kret_sys_dup_x64, long ret)
+{
+    return record_fd_dup_return(ret);
 }
 
 SEC("uprobe/dup2")
@@ -1038,9 +1326,53 @@ int BPF_KPROBE(u_dup2_enter)
 }
 
 SEC("uretprobe/dup2")
-int BPF_KRETPROBE(u_dup2_exit)
+int BPF_KRETPROBE(u_dup2_exit, long ret)
 {
-    return record_fd_dup_return(PT_REGS_RC(ctx));
+    return record_fd_dup_return(ret);
+}
+
+SEC("tracepoint/syscalls/sys_enter_dup2")
+int tp_sys_enter_dup2(struct re_sys_enter_ctx *ctx)
+{
+    __s32 old_fd = (__s32)ctx->args[0];
+    __s32 new_fd = (__s32)ctx->args[1];
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_dup_fd(old_fd, new_fd, stack_id);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_dup2")
+int tp_sys_exit_dup2(struct re_sys_exit_ctx *ctx)
+{
+    return record_fd_dup_return(ctx->ret);
+}
+
+SEC("kprobe/__arm64_sys_dup2")
+int BPF_KSYSCALL(k_sys_enter_dup2_arm64, int old_fd, int new_fd)
+{
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_dup_fd((__s32)old_fd, (__s32)new_fd, stack_id);
+    return 0;
+}
+
+SEC("kretprobe/__arm64_sys_dup2")
+int BPF_KRETPROBE(kret_sys_dup2_arm64, long ret)
+{
+    return record_fd_dup_return(ret);
+}
+
+SEC("kprobe/__x64_sys_dup2")
+int BPF_KSYSCALL(k_sys_enter_dup2_x64, int old_fd, int new_fd)
+{
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_dup_fd((__s32)old_fd, (__s32)new_fd, stack_id);
+    return 0;
+}
+
+SEC("kretprobe/__x64_sys_dup2")
+int BPF_KRETPROBE(kret_sys_dup2_x64, long ret)
+{
+    return record_fd_dup_return(ret);
 }
 
 SEC("uprobe/dup3")
@@ -1054,9 +1386,55 @@ int BPF_KPROBE(u_dup3_enter)
 }
 
 SEC("uretprobe/dup3")
-int BPF_KRETPROBE(u_dup3_exit)
+int BPF_KRETPROBE(u_dup3_exit, long ret)
 {
-    return record_fd_dup_return(PT_REGS_RC(ctx));
+    return record_fd_dup_return(ret);
+}
+
+SEC("tracepoint/syscalls/sys_enter_dup3")
+int tp_sys_enter_dup3(struct re_sys_enter_ctx *ctx)
+{
+    __s32 old_fd = (__s32)ctx->args[0];
+    __s32 new_fd = (__s32)ctx->args[1];
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_dup_fd(old_fd, new_fd, stack_id);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_dup3")
+int tp_sys_exit_dup3(struct re_sys_exit_ctx *ctx)
+{
+    return record_fd_dup_return(ctx->ret);
+}
+
+SEC("kprobe/__arm64_sys_dup3")
+int BPF_KSYSCALL(k_sys_enter_dup3_arm64, int old_fd, int new_fd, int flags)
+{
+    (void)flags;
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_dup_fd((__s32)old_fd, (__s32)new_fd, stack_id);
+    return 0;
+}
+
+SEC("kretprobe/__arm64_sys_dup3")
+int BPF_KRETPROBE(kret_sys_dup3_arm64, long ret)
+{
+    return record_fd_dup_return(ret);
+}
+
+SEC("kprobe/__x64_sys_dup3")
+int BPF_KSYSCALL(k_sys_enter_dup3_x64, int old_fd, int new_fd, int flags)
+{
+    (void)flags;
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_dup_fd((__s32)old_fd, (__s32)new_fd, stack_id);
+    return 0;
+}
+
+SEC("kretprobe/__x64_sys_dup3")
+int BPF_KRETPROBE(kret_sys_dup3_x64, long ret)
+{
+    return record_fd_dup_return(ret);
 }
 
 SEC("uprobe/fcntl")
@@ -1074,9 +1452,81 @@ int BPF_KPROBE(u_fcntl_enter)
 }
 
 SEC("uretprobe/fcntl")
-int BPF_KRETPROBE(u_fcntl_exit)
+int BPF_KRETPROBE(u_fcntl_exit, long ret)
 {
-    return record_fd_dup_return(PT_REGS_RC(ctx));
+    return record_fd_dup_return(ret);
+}
+
+SEC("tracepoint/syscalls/sys_enter_fcntl")
+int tp_sys_enter_fcntl(struct re_sys_enter_ctx *ctx)
+{
+    __s32 old_fd = (__s32)ctx->args[0];
+    int cmd = (int)ctx->args[1];
+    // Linux values: F_DUPFD=0, F_DUPFD_CLOEXEC=1030.
+    if (cmd != 0 && cmd != 1030)
+        return 0;
+    __s32 min_fd = (__s32)ctx->args[2];
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_dup_fd(old_fd, min_fd, stack_id);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_fcntl")
+int tp_sys_exit_fcntl(struct re_sys_exit_ctx *ctx)
+{
+    return record_fd_dup_return(ctx->ret);
+}
+
+SEC("tracepoint/syscalls/sys_enter_fcntl64")
+int tp_sys_enter_fcntl64(struct re_sys_enter_ctx *ctx)
+{
+    __s32 old_fd = (__s32)ctx->args[0];
+    int cmd = (int)ctx->args[1];
+    if (cmd != 0 && cmd != 1030)
+        return 0;
+    __s32 min_fd = (__s32)ctx->args[2];
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_dup_fd(old_fd, min_fd, stack_id);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_fcntl64")
+int tp_sys_exit_fcntl64(struct re_sys_exit_ctx *ctx)
+{
+    return record_fd_dup_return(ctx->ret);
+}
+
+static __always_inline int record_sys_fcntl_enter(void *ctx, int old_fd, int cmd, long min_fd)
+{
+    if (cmd != 0 && cmd != 1030)
+        return 0;
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_dup_fd((__s32)old_fd, (__s32)min_fd, stack_id);
+    return 0;
+}
+
+SEC("kprobe/__arm64_sys_fcntl")
+int BPF_KSYSCALL(k_sys_enter_fcntl_arm64, int old_fd, int cmd, long min_fd)
+{
+    return record_sys_fcntl_enter(ctx, old_fd, cmd, min_fd);
+}
+
+SEC("kretprobe/__arm64_sys_fcntl")
+int BPF_KRETPROBE(kret_sys_fcntl_arm64, long ret)
+{
+    return record_fd_dup_return(ret);
+}
+
+SEC("kprobe/__x64_sys_fcntl")
+int BPF_KSYSCALL(k_sys_enter_fcntl_x64, int old_fd, int cmd, long min_fd)
+{
+    return record_sys_fcntl_enter(ctx, old_fd, cmd, min_fd);
+}
+
+SEC("kretprobe/__x64_sys_fcntl")
+int BPF_KRETPROBE(kret_sys_fcntl_x64, long ret)
+{
+    return record_fd_dup_return(ret);
 }
 
 SEC("uprobe/close")
@@ -1089,9 +1539,52 @@ int BPF_KPROBE(u_close_enter)
 }
 
 SEC("uretprobe/close")
-int BPF_KRETPROBE(u_close_exit)
+int BPF_KRETPROBE(u_close_exit, long ret)
 {
-    return record_fd_close_return(ctx, PT_REGS_RC(ctx));
+    return record_fd_close_return(ctx, ret);
+}
+
+SEC("tracepoint/syscalls/sys_enter_close")
+int tp_sys_enter_close(struct re_sys_enter_ctx *ctx)
+{
+    __s32 fd = (__s32)ctx->args[0];
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_close_fd(fd, stack_id);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_close")
+int tp_sys_exit_close(struct re_sys_exit_ctx *ctx)
+{
+    return record_fd_close_return(ctx, ctx->ret);
+}
+
+SEC("kprobe/__arm64_sys_close")
+int BPF_KSYSCALL(k_sys_enter_close_arm64, int fd)
+{
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_close_fd((__s32)fd, stack_id);
+    return 0;
+}
+
+SEC("kretprobe/__arm64_sys_close")
+int BPF_KRETPROBE(kret_sys_close_arm64, long ret)
+{
+    return record_fd_close_return(ctx, ret);
+}
+
+SEC("kprobe/__x64_sys_close")
+int BPF_KSYSCALL(k_sys_enter_close_x64, int fd)
+{
+    __s32 stack_id = bpf_get_stackid(ctx, &ustacks, BPF_F_USER_STACK);
+    remember_close_fd((__s32)fd, stack_id);
+    return 0;
+}
+
+SEC("kretprobe/__x64_sys_close")
+int BPF_KRETPROBE(kret_sys_close_x64, long ret)
+{
+    return record_fd_close_return(ctx, ret);
 }
 
 SEC("uprobe/__close_nocancel")
@@ -1104,7 +1597,7 @@ int BPF_KPROBE(u_close_nocancel_enter)
 }
 
 SEC("uretprobe/__close_nocancel")
-int BPF_KRETPROBE(u_close_nocancel_exit)
+int BPF_KRETPROBE(u_close_nocancel_exit, long ret)
 {
-    return record_fd_close_return(ctx, PT_REGS_RC(ctx));
+    return record_fd_close_return(ctx, ret);
 }
