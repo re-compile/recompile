@@ -35,6 +35,7 @@ samples=(
     "build/user-samples/cxx_malloc_delete_mismatch:allocator_mismatch:delete:malloc:delete"
     "build/user-samples/cxx_new_array_delete_mismatch:allocator_mismatch:delete:new[]:delete"
     "build/user-samples/cxx_new_delete_array_mismatch:allocator_mismatch:delete[]:new:delete[]"
+    "build/user-samples/fd_open_leak_case:fd_leak:fd_leak"
     "build/user-samples/fd_leak_case:fd_leak:fd_leak"
     "build/user-samples/fd_double_close_case:double_close:double_close"
     "build/user-samples/fd_invalid_close_case:invalid_close:invalid_close"

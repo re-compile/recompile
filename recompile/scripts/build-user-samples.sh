@@ -57,6 +57,7 @@ UBSAN_FLAGS=(
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/realloc_zero_double_free samples/user-binaries/realloc_zero_double_free.c
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/use_after_free_case samples/user-binaries/use_after_free_case.c
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/memory_leak_case samples/user-binaries/memory_leak_case.c
+"$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/fd_open_leak_case samples/user-binaries/fd_open_leak_case.c
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/fd_leak_case samples/user-binaries/fd_leak_case.c
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/fd_double_close_case samples/user-binaries/fd_double_close_case.c
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/fd_invalid_close_case samples/user-binaries/fd_invalid_close_case.c
