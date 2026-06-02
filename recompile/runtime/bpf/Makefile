@@ -3,26 +3,23 @@
 # Builds BPF objects for re:compile's uprobe-based memory tracking.
 # vmlinux.h is auto-generated on first build using bpftool or a minimal fallback.
 
-# Detect LLVM toolchain (prefer system clang on Linux, Homebrew on macOS)
+# Detect the Linux LLVM toolchain used for native BPF builds.
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
 
-ifeq ($(UNAME_S),Darwin)
-  LLVM_PREFIX ?= /opt/homebrew/opt/llvm
-  CLANG       ?= $(LLVM_PREFIX)/bin/clang
-  OBJDUMP     ?= $(LLVM_PREFIX)/bin/llvm-objdump
+ifneq ($(UNAME_S),Linux)
+  $(error re:compile BPF builds are Linux-native only; build inside the Linux container or on a Linux host)
+endif
+
+CLANG       ?= clang
+OBJDUMP     ?= llvm-objdump
+# Auto-detect architecture from kernel (critical for Docker on Apple Silicon).
+ifeq ($(UNAME_M),aarch64)
+  TARGET_ARCH ?= arm64
+else ifeq ($(UNAME_M),arm64)
   TARGET_ARCH ?= arm64
 else
-  CLANG       ?= clang
-  OBJDUMP     ?= llvm-objdump
-  # Auto-detect architecture from kernel (critical for Docker on Apple Silicon)
-  ifeq ($(UNAME_M),aarch64)
-    TARGET_ARCH ?= arm64
-  else ifeq ($(UNAME_M),arm64)
-    TARGET_ARCH ?= arm64
-  else
-    TARGET_ARCH ?= x86
-  endif
+  TARGET_ARCH ?= x86
 endif
 
 BPF_DIR     := $(abspath .)
