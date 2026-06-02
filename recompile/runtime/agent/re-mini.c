@@ -1659,8 +1659,6 @@ static void drain_fd_leaks(void)
         prev = key;
         prev_ptr = &prev;
 
-        if (target_pid > 0 && key.pid != (__u32)target_pid)
-            continue;
         if (key.fd < 0)
             continue;
         if (!ensure_pid_allowed(key.pid))
