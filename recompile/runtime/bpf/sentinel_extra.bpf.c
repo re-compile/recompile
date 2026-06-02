@@ -116,6 +116,7 @@ static __always_inline struct re_sentinel_event *sentinel_event_reserve(struct r
     st->drops = 0;
     evt->len = 0;
     evt->alloc_size = 0;
+    evt->alloc_offset = 0;
     evt->fd = -1;
     evt->bytes_ret = 0;
     evt->errno_code = 0;
@@ -125,6 +126,7 @@ static __always_inline struct re_sentinel_event *sentinel_event_reserve(struct r
     evt->ts_ns = bpf_ktime_get_ns();
     evt->addr = 0;
     evt->lock_addr = 0;
+    evt->alloc_base = 0;
     return evt;
 }
 

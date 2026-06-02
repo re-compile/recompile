@@ -24,6 +24,7 @@ samples=(
     "build/user-samples/memset_overrun_case:heap_overflow:memset"
     "build/user-samples/strcpy_overrun_case:heap_overflow:strcpy"
     "build/user-samples/strncpy_overrun_case:heap_overflow:strncpy"
+    "build/user-samples/interior_overrun_case:heap_overflow:memcpy"
     "build/user-samples/posix_memalign_overrun_case:heap_overflow:memset"
     "build/user-samples/aligned_alloc_overrun_case:heap_overflow:memset"
     "build/user-samples/strdup_overrun_case:heap_overflow:memset"
@@ -85,6 +86,10 @@ if expected_dealloc_family:
     dealloc_families = [memory.get("dealloc_family") for memory in memory_blocks]
     if expected_dealloc_family not in dealloc_families:
         raise SystemExit(f"{binary_name}: expected dealloc_family {expected_dealloc_family}, got {dealloc_families}")
+if binary_name == "interior_overrun_case":
+    offsets = [memory.get("alloc_offset") for memory in memory_blocks]
+    if not any(isinstance(offset, int) and offset > 0 for offset in offsets):
+        raise SystemExit(f"{binary_name}: expected non-zero alloc_offset, got {offsets}")
 print(json.dumps({
     "binary": binary_name,
     "operation": expected_operation,
@@ -106,6 +111,7 @@ clean_samples=(
     "build/user-samples/clean_strdup"
     "build/user-samples/clean_cxx_new_delete"
     "build/user-samples/clean_bounded_memcpy"
+    "build/user-samples/clean_interior_memcpy"
     "build/user-samples/clean_bounded_memmove"
     "build/user-samples/clean_bounded_memset"
     "build/user-samples/clean_bounded_strcpy"

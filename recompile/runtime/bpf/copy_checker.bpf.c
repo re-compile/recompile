@@ -20,6 +20,13 @@ struct {
 } allocs SEC(".maps");
 
 struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
+    __type(key,   struct re_alloc_range_key);
+    __type(value, struct re_alloc_range_bucket);
+} alloc_ranges SEC(".maps");
+
+struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 8 << 20);
 } sentinel_events SEC(".maps");
@@ -83,6 +90,7 @@ static __always_inline struct re_sentinel_event *sentinel_event_reserve(struct r
     evt->drop_count = 0;
     evt->len = 0;
     evt->alloc_size = 0;
+    evt->alloc_offset = 0;
     evt->fd = -1;
     evt->bytes_ret = 0;
     evt->errno_code = 0;
@@ -91,6 +99,7 @@ static __always_inline struct re_sentinel_event *sentinel_event_reserve(struct r
     evt->ts_ns = bpf_ktime_get_ns();
     evt->addr = 0;
     evt->lock_addr = 0;
+    evt->alloc_base = 0;
 
     __u64 seq = st->seq + 1;
     evt->seq = seq;
@@ -121,6 +130,31 @@ enum {
 
 #define RE_STRING_COPY_MAX 256
 
+static __always_inline struct re_alloc_range_info *lookup_alloc_range(__u32 pid, __u64 addr)
+{
+    struct re_alloc_range_key range_key = {
+        .pid = pid,
+        .page = addr >> RE_ALLOC_PAGE_SHIFT,
+    };
+    struct re_alloc_range_bucket *bucket = bpf_map_lookup_elem(&alloc_ranges, &range_key);
+    if (!bucket)
+        return NULL;
+
+#pragma unroll
+    for (int i = 0; i < RE_ALLOC_RANGE_SLOTS; ++i) {
+        struct re_alloc_range_info *slot = &bucket->slots[i];
+        if (slot->base == 0 || slot->size == 0)
+            continue;
+        if (addr < slot->base)
+            continue;
+        __u64 offset = addr - slot->base;
+        if (offset < slot->size)
+            return slot;
+    }
+
+    return NULL;
+}
+
 static __always_inline int record_heap_write(struct pt_regs *ctx, void *dst, __u64 len,
                                              __u16 event_type, __s32 api)
 {
@@ -139,8 +173,20 @@ static __always_inline int record_heap_write(struct pt_regs *ctx, void *dst, __u
         .addr = (__u64)dst,
     };
     struct re_alloc_info *info = bpf_map_lookup_elem(&allocs, &key);
-    __u64 cap = info ? info->size : 0;
+    __u64 alloc_base = (__u64)dst;
+    __u64 alloc_size = info ? info->size : 0;
+    __u64 alloc_offset = 0;
     __s32 alloc_sid = info ? info->alloc_stack_id : -1;
+
+    if (!info) {
+        struct re_alloc_range_info *range = lookup_alloc_range(pid, (__u64)dst);
+        if (range) {
+            alloc_base = range->base;
+            alloc_size = range->size;
+            alloc_offset = (__u64)dst - range->base;
+            alloc_sid = range->alloc_stack_id;
+        }
+    }
 
     struct re_sentinel_state *st = sentinel_get_state(pid);
     if (!st)
@@ -161,7 +207,9 @@ static __always_inline int record_heap_write(struct pt_regs *ctx, void *dst, __u
     if (stack_id >= 0)
         evt->stack_fp = (__u32)stack_id;
     evt->len = saturate_u32(len);
-    evt->alloc_size = saturate_u32(cap);
+    evt->alloc_size = saturate_u32(alloc_size);
+    evt->alloc_offset = saturate_u32(alloc_offset);
+    evt->alloc_base = alloc_base;
 
     evt->errno_code = api;
     if (alloc_sid >= 0)

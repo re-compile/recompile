@@ -235,24 +235,12 @@ pub fn run_native_with_options(
     println!("Starting re-mini agent...");
     let mut agent = start_agent(&config, &binary_abs, target.id())?;
 
-    // Give the agent time to attach probes
-    std::thread::sleep(Duration::from_millis(500));
-
-    // Check if agent is still running
-    match agent.try_wait() {
-        Ok(Some(status)) => {
-            return Err(anyhow::anyhow!(
-                "Agent exited prematurely with status: {}",
-                status
-            ));
-        }
-        Ok(None) => {
-            println!("✓ Agent running (PID: {})", agent.id());
-        }
-        Err(e) => {
-            return Err(anyhow::anyhow!("Failed to check agent status: {}", e));
-        }
-    }
+    wait_for_agent_ready(
+        &mut agent,
+        &config.debug_findings_path,
+        Duration::from_secs(10),
+    )?;
+    println!("✓ Agent ready (PID: {})", agent.id());
 
     // Resume the target now that probes are attached.
     println!("\nRunning target binary...");
@@ -852,6 +840,39 @@ fn start_agent(config: &NativeConfig, binary_path: &Path, target_pid: u32) -> Re
         .with_context(|| format!("Failed to start agent: {}", config.re_mini_path.display()))?;
 
     Ok(child)
+}
+
+fn wait_for_agent_ready(agent: &mut Child, debug_log_path: &Path, timeout: Duration) -> Result<()> {
+    let started = Instant::now();
+    loop {
+        match agent.try_wait() {
+            Ok(Some(status)) => {
+                return Err(anyhow::anyhow!(
+                    "Agent exited before ready with status: {}",
+                    status
+                ));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                return Err(anyhow::anyhow!("Failed to check agent status: {}", e));
+            }
+        }
+
+        if let Ok(content) = std::fs::read_to_string(debug_log_path) {
+            if content.lines().any(|line| line.trim() == "RE:AGENT: ready") {
+                return Ok(());
+            }
+        }
+
+        if started.elapsed() >= timeout {
+            return Err(anyhow::anyhow!(
+                "Timed out waiting for agent readiness marker in {}",
+                debug_log_path.display()
+            ));
+        }
+
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 #[cfg(target_os = "linux")]
