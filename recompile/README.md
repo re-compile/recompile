@@ -112,8 +112,9 @@ crashpack path, writes `.re`-style run summaries, supports `--cwd`,
 `--timeout-ms`, `--native-only`, `--deep`, and target args after `--`.
 
 Default observe behavior runs Valgrind confirmation when native findings exist.
-`--deep` runs a Valgrind binary scan even when native is clean and records ASan
-as `not_applicable` unless the binary is already ASan-instrumented.
+`--deep` runs a Valgrind binary scan even when native is clean. If the binary is
+already sanitizer-instrumented, `observe` records the Valgrind clean scan as
+`skipped` and uses ASan, LSan, or UBSan scans as the primary deep evidence path.
 
 `observe` also reports native tracing capabilities in
 `run-summary.json.targets[].diagnostics`. In restricted agent sandboxes where
@@ -121,8 +122,9 @@ Linux eBPF tracing cannot start because BPF, BTF, ptrace, PID namespace,
 privilege, or native agent artifacts are unavailable, default observe creates a
 minimal crashpack and attempts a tool-only fallback. The default fallback runs a
 whole-binary Valgrind scan; `--deep` also attempts ASan, LSan, and UBSan scans
-when applicable. `--native-only` disables this fallback and preserves strict
-native-tracing failure behavior.
+when applicable. For sanitizer-built binaries, deep fallback records the
+Valgrind scan as `skipped` instead of silently omitting it. `--native-only`
+disables this fallback and preserves strict native-tracing failure behavior.
 
 If a target terminates with `SIGSEGV`, `SIGABRT`, `SIGBUS`, or `SIGFPE` and no
 more precise detector has emitted a finding, `observe` records an

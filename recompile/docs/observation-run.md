@@ -116,9 +116,12 @@ Default escalation policy:
 Deep escalation policy:
 
 - native first
-- Valgrind binary scan even when native is clean
+- Valgrind binary scan when native is clean and no sanitizer runtime is present
+- explicit Valgrind `skipped` status when sanitizer runtime is present
 - ASan binary scan when the binary is already ASan-instrumented
-- ASan `not_applicable` status for normal non-ASan binaries
+- LSan binary scan when the binary is already LSan-instrumented
+- UBSan binary scan when the binary is already UBSan-instrumented
+- sanitizer `not_applicable` status for normal non-instrumented binaries
 
 Dependency metadata is captured for each target.
 Issue groups are captured for each target.
@@ -171,8 +174,10 @@ opaque native error. The fallback writes the same target crashpack layout,
 records `analysis.json`, captures binary/dependency metadata, writes an empty
 native `findings.json` if no native evidence exists, and then runs a
 whole-binary Valgrind scan. With `--deep`, it also attempts ASan, LSan, and
-UBSan scans. Missing tools are reported as `tool_unavailable` or
-`not_applicable`; they are not treated as evidence that the target is clean.
+UBSan scans. When a sanitizer runtime is present, Valgrind is recorded as
+`skipped` and sanitizer scans become the primary evidence path. Missing tools
+are reported as `tool_unavailable` or `not_applicable`; they are not treated as
+evidence that the target is clean.
 
 `--native-only` is the strict mode for validating the eBPF path. In that mode,
 native setup failures remain target failures and no tool-only fallback is run.

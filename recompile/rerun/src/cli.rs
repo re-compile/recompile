@@ -1074,7 +1074,17 @@ fn run_observe_binary_scans(crashpack_dir: &Path, tools: &[&str]) -> Result<Vec<
 
     let runtime = tokio::runtime::Runtime::new()?;
     let mut results = Vec::new();
+    let deep_tool_set = tools.len() > 1;
+    let sanitizer_runtime = binary_has_sanitizer_runtime(&analysis.binary_path);
     for tool in tools {
+        if deep_tool_set && *tool == "valgrind" && sanitizer_runtime {
+            results.push(observe_escalation_skipped(
+                "tool-only-fallback",
+                "valgrind",
+                "sanitizer runtime detected; sanitizer scans provide the primary deep evidence path",
+            ));
+            continue;
+        }
         let result = runtime.block_on(async {
             let mut runner = EscalationRunner::new(config.clone());
             runner
@@ -1093,6 +1103,10 @@ fn fallback_target_status(
     target: &ObservationTargetSummary,
     results: &[EscalationResult],
 ) -> TargetStatus {
+    let non_skipped_results = results
+        .iter()
+        .filter(|result| escalation_status(result) != TargetStatus::Skipped)
+        .collect::<Vec<_>>();
     if target.findings_count > 0
         || results
             .iter()
@@ -1100,17 +1114,31 @@ fn fallback_target_status(
     {
         return TargetStatus::Findings;
     }
-    if results
+    if non_skipped_results
         .iter()
         .any(|result| escalation_status(result) == TargetStatus::Clean)
     {
         return TargetStatus::Clean;
     }
-    if results
+    if non_skipped_results
         .iter()
         .any(|result| escalation_status(result) == TargetStatus::ToolUnavailable)
     {
         return TargetStatus::ToolUnavailable;
+    }
+    if !non_skipped_results.is_empty()
+        && non_skipped_results
+            .iter()
+            .all(|result| escalation_status(result) == TargetStatus::NotApplicable)
+    {
+        return TargetStatus::NotApplicable;
+    }
+    if !results.is_empty()
+        && results
+            .iter()
+            .all(|result| escalation_status(result) == TargetStatus::Skipped)
+    {
+        return TargetStatus::Skipped;
     }
     if results
         .iter()
@@ -1165,17 +1193,25 @@ fn run_observe_escalation(
             Ok::<Vec<EscalationResult>, anyhow::Error>(results)
         })?;
         results.append(&mut finding_results);
-    } else if deep && !binary_has_sanitizer_runtime(&analysis.binary_path) {
-        let valgrind_result = runtime.block_on(async {
-            let mut runner = EscalationRunner::new(config.clone());
-            runner
-                .check_clean_binary("valgrind")
-                .await
-                .unwrap_or_else(|error| {
-                    observe_escalation_failure("clean-run", "valgrind", error.to_string())
-                })
-        });
-        results.push(valgrind_result);
+    } else if deep {
+        if binary_has_sanitizer_runtime(&analysis.binary_path) {
+            results.push(observe_escalation_skipped(
+                "clean-run",
+                "valgrind",
+                "sanitizer runtime detected; sanitizer scans provide the primary deep evidence path",
+            ));
+        } else {
+            let valgrind_result = runtime.block_on(async {
+                let mut runner = EscalationRunner::new(config.clone());
+                runner
+                    .check_clean_binary("valgrind")
+                    .await
+                    .unwrap_or_else(|error| {
+                        observe_escalation_failure("clean-run", "valgrind", error.to_string())
+                    })
+            });
+            results.push(valgrind_result);
+        }
     }
 
     if deep {
@@ -1261,6 +1297,27 @@ fn observe_escalation_failure(finding_id: &str, tool: &str, error: String) -> Es
     }
 }
 
+fn observe_escalation_skipped(finding_id: &str, tool: &str, reason: &str) -> EscalationResult {
+    EscalationResult {
+        id: format!("observe-{}-skipped", tool),
+        finding_id: finding_id.to_string(),
+        tool: tool.to_string(),
+        success: false,
+        tool_available: true,
+        duration_ms: 0,
+        output_path: None,
+        stdout_path: None,
+        stderr_path: None,
+        report_path: None,
+        command: Vec::new(),
+        exit_code: None,
+        confirmed: false,
+        error: Some(format!("skipped: {}", reason)),
+        findings_detected: Vec::new(),
+        timestamp: current_unix_timestamp(),
+    }
+}
+
 fn current_unix_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1285,6 +1342,14 @@ fn observation_escalation_summary(
 }
 
 fn escalation_status(result: &EscalationResult) -> TargetStatus {
+    if result
+        .error
+        .as_deref()
+        .map(|error| error.starts_with("skipped:"))
+        .unwrap_or(false)
+    {
+        return TargetStatus::Skipped;
+    }
     if (result.tool == "asan" || result.tool == "lsan" || result.tool == "ubsan")
         && !result.success
         && result
@@ -2763,12 +2828,27 @@ mod tests {
         result.confirmed = true;
         result.findings_detected = vec!["use_after_free".to_string()];
         assert_eq!(
-            fallback_target_status(&target, &[result]),
+            fallback_target_status(&target, &[result.clone()]),
             TargetStatus::Findings
         );
 
         target.findings_count = 1;
         assert_eq!(fallback_target_status(&target, &[]), TargetStatus::Findings);
+
+        target.findings_count = 0;
+        result.confirmed = false;
+        result.findings_detected.clear();
+        result.tool = "valgrind".to_string();
+        result.success = false;
+        result.tool_available = true;
+        result.error = Some(
+            "skipped: sanitizer runtime detected; sanitizer scans provide primary evidence"
+                .to_string(),
+        );
+        assert_eq!(
+            fallback_target_status(&target, &[result]),
+            TargetStatus::Skipped
+        );
     }
 
     #[test]
@@ -2806,5 +2886,55 @@ mod tests {
         result.tool_available = false;
         result.error = Some("ASan requires a binary built with -fsanitize=address".to_string());
         assert_eq!(escalation_status(&result), TargetStatus::NotApplicable);
+
+        result.tool = "valgrind".to_string();
+        result.tool_available = true;
+        result.error = Some(
+            "skipped: sanitizer runtime detected; sanitizer scans provide primary evidence"
+                .to_string(),
+        );
+        assert_eq!(escalation_status(&result), TargetStatus::Skipped);
+    }
+
+    #[test]
+    fn binary_has_sanitizer_runtime_detects_markers() {
+        let base = std::env::temp_dir().join(format!(
+            "rerun-sanitizer-marker-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+
+        let plain = base.join("plain-bin");
+        fs::write(&plain, b"ELF-ish payload without sanitizer markers").unwrap();
+        assert!(!binary_has_sanitizer_runtime(&plain.display().to_string()));
+
+        let instrumented = base.join("asan-bin");
+        fs::write(&instrumented, b"ELF-ish payload with __asan_report_load8").unwrap();
+        assert!(binary_has_sanitizer_runtime(
+            &instrumented.display().to_string()
+        ));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn skipped_valgrind_escalation_is_machine_readable() {
+        let result = observe_escalation_skipped(
+            "clean-run",
+            "valgrind",
+            "sanitizer runtime detected; sanitizer scans provide the primary deep evidence path",
+        );
+        let summary = observation_escalation_summary(&result);
+
+        assert_eq!(summary.tool, "valgrind");
+        assert_eq!(summary.status, TargetStatus::Skipped);
+        assert!(!summary.confirmed);
+        assert!(summary.findings_detected.is_empty());
+        assert!(summary
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("sanitizer runtime detected"));
     }
 }
