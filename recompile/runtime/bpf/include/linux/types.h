@@ -1,7 +1,7 @@
 #ifndef _LINUX_TYPES_H
 #define _LINUX_TYPES_H
 
-/* Minimal freestanding shim for BPF builds on macOS.
+/* Minimal freestanding shim for fallback BPF builds.
  * Important: do NOT include <stdint.h> here, and do NOT typedef int64_t/uint64_t.
  * vmlinux.h will provide u8/u16/u32/u64 and (in your case) int*_t typedefs.
  */
