@@ -121,6 +121,28 @@ for path in stale_surface_files:
                     'text': line.strip(),
                 })
 
+agent_path = root / 'runtime' / 'agent' / 're-mini.c'
+if agent_path.exists():
+    agent_text = agent_path.read_text(errors='replace')
+    marker = 'static void drain_fd_leaks(void)'
+    start = agent_text.find(marker)
+    if start != -1:
+        next_function = agent_text.find('\nstatic ', start + len(marker))
+        drain_body = agent_text[start:next_function if next_function != -1 else len(agent_text)]
+        exact_pid_filter = re.search(
+            r'target_pid\s*>\s*0\s*&&\s*key\.pid\s*!=\s*\(__u32\)target_pid',
+            drain_body,
+        )
+        allowed_check = drain_body.find('ensure_pid_allowed(key.pid)')
+        if exact_pid_filter and (allowed_check == -1 or exact_pid_filter.start() < allowed_check):
+            violations.append({
+                'scope': 'agent_invariant',
+                'path': str(agent_path),
+                'line': agent_text[:start + exact_pid_filter.start()].count('\n') + 1,
+                'pattern': 'fd_drain_exact_pid_prefilter',
+                'text': 'drain_fd_leaks must route PID filtering through ensure_pid_allowed()',
+            })
+
 if violations:
     print(json.dumps({'violations': violations}, indent=2))
     raise SystemExit('phase5 closeout scan found sample-specific or hotfix-like active code')
