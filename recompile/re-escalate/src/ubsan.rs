@@ -87,10 +87,6 @@ fn push_detection(
     summary: &str,
     line: usize,
 ) {
-    if detected.iter().any(|existing| existing.class == class) {
-        return;
-    }
-
     detected.push(EscalationDetection {
         class: class.to_string(),
         summary: summary.to_string(),
@@ -137,6 +133,21 @@ mod tests {
         let stderr = "bounds.c:6:15: runtime error: index 4 out of bounds for type 'int [4]'\n";
         let report = parse_ubsan_output("", stderr);
         assert_eq!(report.detected_classes(), vec!["bounds"]);
+    }
+
+    #[test]
+    fn preserves_independent_same_class_detections() {
+        let stderr = r#"overflow.c:8:14: runtime error: signed integer overflow: 2147483647 + 1 cannot be represented in type 'int'
+counter.c:12:18: runtime error: signed integer overflow: 2000000000 + 2000000000 cannot be represented in type 'int'
+"#;
+
+        let report = parse_ubsan_output("", stderr);
+        assert_eq!(report.detected_classes(), vec!["signed_integer_overflow"]);
+        assert_eq!(report.detected.len(), 2);
+        assert_eq!(report.detected[0].line, Some(1));
+        assert_eq!(report.detected[1].line, Some(2));
+        assert!(report.detected[0].summary.contains("overflow.c:8:14"));
+        assert!(report.detected[1].summary.contains("counter.c:12:18"));
     }
 
     #[test]
