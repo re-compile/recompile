@@ -56,6 +56,8 @@
             "ptr": {"type": ["integer", "string"], "minimum": 0},
             "size": {"type": "integer", "minimum": 0},
             "alloc_size": {"type": "integer", "minimum": 0},
+            "alloc_offset": {"type": "integer", "minimum": 0},
+            "alloc_base": {"type": "integer", "minimum": 0},
             "operation": {"type": "string"},
             "alloc_family": {"type": "string"},
             "dealloc_family": {"type": "string"}
@@ -90,7 +92,8 @@
           "type": "object",
           "properties": {
             "ptr": {"type": "string"},
-            "size": {"type": "integer", "minimum": 0}
+            "size": {"type": "integer", "minimum": 0},
+            "offset": {"type": "integer", "minimum": 0}
           }
         },
         "tool": {"type": "object"},

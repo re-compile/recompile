@@ -25,6 +25,7 @@
           "strcpy_overrun_case",
           "strncpy_overrun_case",
           "multi_overrun_case",
+          "interior_overrun_case",
           "posix_memalign_overrun_case",
           "aligned_alloc_overrun_case",
           "strdup_overrun_case",
@@ -35,6 +36,7 @@
         ],
         "clean_negative_cases": [
           "clean_bounded_memcpy",
+          "clean_interior_memcpy",
           "clean_bounded_memmove",
           "clean_bounded_memset",
           "clean_bounded_strcpy",
@@ -52,6 +54,7 @@
       },
       "limitations": [
         "Native support currently depends on observed libc allocation and copy/string APIs.",
+        "Interior destination pointers are resolved through a bounded per-page allocation index.",
         "Arbitrary handwritten pointer arithmetic is not classified unless it reaches a probed operation or a tool confirms it."
       ]
     },

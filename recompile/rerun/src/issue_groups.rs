@@ -54,6 +54,7 @@ pub struct IssueFingerprintInputs {
     pub free_site: Option<String>,
     pub access_size: Option<u64>,
     pub alloc_size: Option<u64>,
+    pub alloc_offset: Option<u64>,
     pub tool: Option<String>,
     pub tool_summary: Option<String>,
     pub binary_identity: Option<String>,
@@ -168,6 +169,7 @@ fn fingerprint_inputs(finding: &Value) -> IssueFingerprintInputs {
         free_site,
         access_size: finding_u64(finding, &["evidence", "memory", "size"]),
         alloc_size: finding_u64(finding, &["evidence", "memory", "alloc_size"]),
+        alloc_offset: finding_u64(finding, &["evidence", "memory", "alloc_offset"]),
         tool,
         tool_summary: normalized_tool_summary(finding),
         binary_identity,
@@ -183,6 +185,10 @@ fn issue_fingerprint(inputs: &IssueFingerprintInputs) -> String {
         .alloc_size
         .map(|value| value.to_string())
         .unwrap_or_default();
+    let alloc_offset = inputs
+        .alloc_offset
+        .map(|value| value.to_string())
+        .unwrap_or_default();
     let mut fields = vec![
         inputs.class.as_str(),
         inputs.operation.as_str(),
@@ -192,6 +198,7 @@ fn issue_fingerprint(inputs: &IssueFingerprintInputs) -> String {
         inputs.free_site.as_deref().unwrap_or(""),
         access_size.as_str(),
         alloc_size.as_str(),
+        alloc_offset.as_str(),
     ];
     if inputs.tool.is_some() {
         fields.push(inputs.tool.as_deref().unwrap_or(""));
@@ -450,8 +457,13 @@ mod tests {
         let report = annotate_findings_with_issue_groups(&mut findings);
 
         assert_eq!(report.group_count(), 2);
-        assert_eq!(report.groups[0].finding_count, 2);
-        assert_eq!(report.groups[1].finding_count, 1);
+        let mut group_counts = report
+            .groups
+            .iter()
+            .map(|group| group.finding_count)
+            .collect::<Vec<_>>();
+        group_counts.sort_unstable();
+        assert_eq!(group_counts, vec![1, 2]);
         assert_eq!(
             findings[0].get("fingerprint"),
             findings[1].get("fingerprint")
@@ -461,6 +473,39 @@ mod tests {
             findings[2].get("fingerprint")
         );
         assert!(findings[0].get("issue_group_id").is_some());
+    }
+
+    #[test]
+    fn fingerprints_split_independent_alloc_offsets() {
+        let left = json!({
+            "id": "F-1",
+            "class": "heap_overflow",
+            "severity": "error",
+            "confidence": "high",
+            "evidence": {
+                "memory": {"operation": "memcpy", "size": 32, "alloc_size": 64, "alloc_offset": 8},
+                "stacks": {"call": ["copy (/tmp/project/src/app.c:12:3)"]},
+                "alloc_site": "/tmp/project/src/app.c"
+            },
+            "provenance": {"source_status": "resolved", "source_path": "/tmp/project/src/app.c"}
+        });
+        let right = json!({
+            "id": "F-2",
+            "class": "heap_overflow",
+            "severity": "error",
+            "confidence": "high",
+            "evidence": {
+                "memory": {"operation": "memcpy", "size": 32, "alloc_size": 64, "alloc_offset": 24},
+                "stacks": {"call": ["copy (/tmp/project/src/app.c:12:3)"]},
+                "alloc_site": "/tmp/project/src/app.c"
+            },
+            "provenance": {"source_status": "resolved", "source_path": "/tmp/project/src/app.c"}
+        });
+
+        assert_ne!(
+            issue_fingerprint(&fingerprint_inputs(&left)),
+            issue_fingerprint(&fingerprint_inputs(&right))
+        );
     }
 
     #[test]

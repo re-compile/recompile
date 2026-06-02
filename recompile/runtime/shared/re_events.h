@@ -120,6 +120,7 @@ struct re_sentinel_event {
     __u32 drop_count;     /* events dropped since previous emit for pid */
     __u32 len;            /* bytes requested/read/written */
     __u32 alloc_size;     /* known allocation size */
+    __u32 alloc_offset;   /* byte offset from allocation base to addr */
     __s32 fd;             /* file descriptor for I/O; -1 if N/A */
     __s32 bytes_ret;      /* syscall return value */
     __s32 errno_code;     /* errno on failure */
@@ -129,6 +130,7 @@ struct re_sentinel_event {
     __u64 ts_ns;          /* timestamp */
     __u64 addr;           /* pointer/lock address */
     __u64 lock_addr;      /* futex/lock address */
+    __u64 alloc_base;     /* allocation base for interior heap writes */
     struct re_sentinel_extra extra[RE_SENTINEL_EXTRA_MAX];
 };
 
@@ -154,6 +156,28 @@ struct re_alloc_info {
     __u8 family;
     __u8 dealloc_family;
     __u8 _pad[2];
+};
+
+#define RE_ALLOC_PAGE_SHIFT 12
+#define RE_ALLOC_PAGE_SPAN_MAX 64
+#define RE_ALLOC_RANGE_SLOTS 4
+
+struct re_alloc_range_key {
+    __u32 pid;
+    __u32 _pad;
+    __u64 page;
+};
+
+struct re_alloc_range_info {
+    __u64 base;
+    __u64 size;
+    __s32 alloc_stack_id;
+    __u8 family;
+    __u8 _pad[3];
+};
+
+struct re_alloc_range_bucket {
+    struct re_alloc_range_info slots[RE_ALLOC_RANGE_SLOTS];
 };
 
 struct re_fd_key {

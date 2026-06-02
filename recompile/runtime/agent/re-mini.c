@@ -184,6 +184,7 @@ struct emitted_finding_key {
     __u64 addr;
     __u32 len;
     __u32 alloc_size;
+    __u32 alloc_offset;
 };
 
 #define MAX_EMITTED_FINDINGS 256
@@ -570,7 +571,10 @@ static void emit_heap_write_finding(const struct re_sentinel_event *ev,
     const char *api = heap_write_api_name(ev);
 
     bool known_cap = ev->alloc_size > 0;
-    bool hard_overflow = known_cap && ev->len > ev->alloc_size;
+    __u32 remaining_cap = 0;
+    if (known_cap && ev->alloc_offset < ev->alloc_size)
+        remaining_cap = ev->alloc_size - ev->alloc_offset;
+    bool hard_overflow = known_cap && remaining_cap > 0 && ev->len > remaining_cap;
     const char *severity = hard_overflow ? "error" : "warning";
 
     char call_stack_json[1536];
@@ -582,11 +586,13 @@ static void emit_heap_write_finding(const struct re_sentinel_event *ev,
     char message[512];
     if (known_cap) {
         snprintf(message, sizeof(message),
-                 "%s overflow: wrote %llu bytes into 0x%llx (capacity %u) at %s",
+                 "%s overflow: wrote %llu bytes into 0x%llx (remaining capacity %u of %u, offset %u) at %s",
                  api,
                  (unsigned long long)ev->len,
                  (unsigned long long)ev->addr,
+                 remaining_cap,
                  ev->alloc_size,
+                 ev->alloc_offset,
                  location_summary);
     } else {
         snprintf(message, sizeof(message),
@@ -603,9 +609,9 @@ static void emit_heap_write_finding(const struct re_sentinel_event *ev,
     char fix_hint[512];
     if (known_cap) {
         snprintf(fix_hint, sizeof(fix_hint),
-                 "Bound copy to <= %u bytes or grow the destination buffer to >= %llu bytes",
-                 ev->alloc_size,
-                 (unsigned long long)ev->len);
+                 "Bound copy to <= %u bytes from this offset or grow the destination buffer to >= %llu bytes",
+                 remaining_cap,
+                 (unsigned long long)ev->alloc_offset + (unsigned long long)ev->len);
     } else {
         snprintf(fix_hint, sizeof(fix_hint),
                  "Grow the destination allocation to at least %llu bytes or re-run with heap tracking enabled to capture its size",
@@ -632,12 +638,13 @@ static void emit_heap_write_finding(const struct re_sentinel_event *ev,
     snprintf(finding, sizeof(finding),
              "RE:FINDING: {\"id\":\"F-heap-overflow-%llu\",\"origin\":\"ebpf\",\"kind\":\"heap_overflow\","
              "\"severity\":\"%s\",\"message\":\"%s\",\"primaryLocation\":%s,"
-             "\"evidence\":{\"api\":\"%s\",\"len\":%llu,\"dest_alloc\":{\"ptr\":\"0x%llx\",\"size\":%u},"
+             "\"evidence\":{\"api\":\"%s\",\"len\":%llu,\"dest_alloc\":{\"ptr\":\"0x%llx\",\"size\":%u,\"offset\":%u},"
              "\"stacks\":{\"alloc\":%s,\"call\":%s}},\"fixHints\":[\"%s\"],\"dataQuality\":{\"eventsDropped\":0}}\n",
              (unsigned long long)ev->ts_ns, severity, escaped_message, primary_json,
              api,
-             (unsigned long long)ev->len, (unsigned long long)ev->addr,
-             ev->alloc_size, alloc_stack_json, call_stack_json, escaped_fix);
+             (unsigned long long)ev->len,
+             (unsigned long long)(ev->alloc_base ? ev->alloc_base : ev->addr),
+             ev->alloc_size, ev->alloc_offset, alloc_stack_json, call_stack_json, escaped_fix);
 
     dprintf(out_fd, "%s", finding);
 
@@ -646,20 +653,21 @@ static void emit_heap_write_finding(const struct re_sentinel_event *ev,
     snprintf(v1_finding, sizeof(v1_finding),
              "{\"schema_version\":\"1.0\",\"id\":\"F-heap-overflow-%llu\",\"class\":\"heap_overflow\","
              "\"confidence\":\"high\",\"severity\":\"%s\",\"timestamp\":%llu,\"pid\":%u,"
-             "\"evidence\":{\"memory\":{\"ptr\":%llu,\"size\":%u,\"alloc_size\":%u,\"operation\":\"%s\"},"
+             "\"evidence\":{\"memory\":{\"ptr\":%llu,\"size\":%u,\"alloc_size\":%u,\"alloc_offset\":%u,\"alloc_base\":%llu,\"operation\":\"%s\"},"
              "\"stacks\":{\"alloc\":%s,\"call\":%s},\"alloc_site\":\"%s\"},"
-             "\"escalation\":{\"tool\":\"asan\",\"reason\":\"len>alloc_size\",\"estimated_cost\":\"low\",\"cooldown_ms\":10000},"
+             "\"escalation\":{\"tool\":\"asan\",\"reason\":\"len>remaining_capacity\",\"estimated_cost\":\"low\",\"cooldown_ms\":10000},"
              "\"related\":[]}",
              (unsigned long long)ev->ts_ns, severity, (unsigned long long)ev->ts_ns, ev->pid,
-             (unsigned long long)ev->addr, ev->len, ev->alloc_size,
+             (unsigned long long)ev->addr, ev->len, ev->alloc_size, ev->alloc_offset,
+             (unsigned long long)(ev->alloc_base ? ev->alloc_base : ev->addr),
              api,
              alloc_stack_json, call_stack_json, primary ? primary->file : "unknown");
 
     emit_v1_finding(v1_finding, crashpack_dir ? crashpack_dir : "crashpack");
 
     const char *top = (primary_call && primary_call->summary[0]) ? primary_call->summary : location_summary;
-    log_line("heap overflow: api=%s pid=%u len=%u dst_size=%u dst=0x%llx at %s",
-             api, ev->pid, ev->len, ev->alloc_size,
+    log_line("heap overflow: api=%s pid=%u len=%u dst_size=%u dst_offset=%u dst=0x%llx at %s",
+             api, ev->pid, ev->len, ev->alloc_size, ev->alloc_offset,
              (unsigned long long)ev->addr, top);
 }
 
@@ -827,7 +835,11 @@ static int on_sentinel_event(void *ctx, void *data, size_t len)
         if (ev.alloc_size == 0)
             return 0;
 
-        if (ev.len <= ev.alloc_size)
+        if (ev.alloc_offset >= ev.alloc_size)
+            return 0;
+
+        __u32 remaining_cap = ev.alloc_size - ev.alloc_offset;
+        if (ev.len <= remaining_cap)
             return 0;
 
         struct emitted_finding_key key = finding_key_from_event(
@@ -1373,8 +1385,9 @@ static int attach_uprobes_for_object(struct bpf_object *obj, const char *libc_pa
         }
 
         char impl[128] = {0};
+        int attach_pid = target_pid > 0 ? -1 : target_pid;
         struct bpf_link *link =
-            attach_uprobe_by_name(prog, retprobe, target_pid, attach_path, sym, impl, sizeof(impl));
+            attach_uprobe_by_name(prog, retprobe, attach_pid, attach_path, sym, impl, sizeof(impl));
         if (!link || libbpf_get_error(link)) {
             long rc = libbpf_get_error(link);
             log_line("attach failed for %s%s%s: %ld",
@@ -1590,6 +1603,7 @@ static struct emitted_finding_key finding_key_from_event(
         .addr = ev->addr,
         .len = ev->len,
         .alloc_size = ev->alloc_size,
+        .alloc_offset = ev->alloc_offset,
     };
     return key;
 }
@@ -1604,7 +1618,8 @@ static bool finding_keys_equal(const struct emitted_finding_key *a,
         && a->stack_id == b->stack_id
         && a->addr == b->addr
         && a->len == b->len
-        && a->alloc_size == b->alloc_size;
+        && a->alloc_size == b->alloc_size
+        && a->alloc_offset == b->alloc_offset;
 }
 
 static bool finding_already_emitted(const struct emitted_finding_key *key)
@@ -1915,6 +1930,8 @@ static int run_dedupe_self_test(void)
         .stack_id = 11,
         .len = 64,
         .alloc_size = 16,
+        .alloc_offset = 0,
+        .alloc_base = 0x1000,
         .addr = 0x1000,
     };
     struct emitted_finding_key first_overflow = finding_key_from_event(
@@ -1998,6 +2015,7 @@ int main(int argc, char **argv){
     struct link_vec copy_links = {0};
     struct link_vec sentinel_links = {0};
     int shared_allocs_fd = -1;
+    int shared_alloc_ranges_fd = -1;
     int shared_ustacks_fd = -1;
     int shared_events_fd = -1;
     int shared_state_fd = -1;
@@ -2066,6 +2084,8 @@ int main(int argc, char **argv){
             log_line("warning: stat failed for %s", binary_path);
         }
     }
+    log_line("target filter: pid=%d binary=%s", (int)target_pid,
+        binary_path ? binary_path : "(none)");
 
     struct rlimit rl = { RLIM_INFINITY, RLIM_INFINITY }; setrlimit(RLIMIT_MEMLOCK, &rl);
 
@@ -2096,6 +2116,13 @@ int main(int argc, char **argv){
             shared_allocs_fd = bpf_map__fd(allocs_map);
         } else {
             log_line("heap tracker missing 'allocs' map");
+        }
+
+        struct bpf_map *alloc_ranges_map = bpf_object__find_map_by_name(heap_obj, "alloc_ranges");
+        if (alloc_ranges_map) {
+            shared_alloc_ranges_fd = bpf_map__fd(alloc_ranges_map);
+        } else {
+            log_line("heap tracker missing 'alloc_ranges' map");
         }
 
         struct bpf_map *heap_stacks = bpf_object__find_map_by_name(heap_obj, "ustacks");
@@ -2140,6 +2167,19 @@ int main(int argc, char **argv){
             }
         } else {
             log_line("copy checker missing 'allocs' map definition");
+        }
+    }
+    if (shared_alloc_ranges_fd >= 0) {
+        struct bpf_map *alloc_ranges_map = bpf_object__find_map_by_name(obj, "alloc_ranges");
+        if (alloc_ranges_map) {
+            int rc = bpf_map__reuse_fd(alloc_ranges_map, shared_alloc_ranges_fd);
+            if (rc) {
+                log_line("reuse alloc_ranges map failed: %d", rc);
+            } else {
+                log_line("reusing shared alloc_ranges map");
+            }
+        } else {
+            log_line("copy checker missing 'alloc_ranges' map definition");
         }
     }
     if (shared_ustacks_fd >= 0) {
@@ -2193,6 +2233,11 @@ int main(int argc, char **argv){
             struct bpf_map *allocs_map = bpf_object__find_map_by_name(sentinel_obj, "allocs");
             if (allocs_map)
                 bpf_map__reuse_fd(allocs_map, shared_allocs_fd);
+        }
+        if (shared_alloc_ranges_fd >= 0) {
+            struct bpf_map *alloc_ranges_map = bpf_object__find_map_by_name(sentinel_obj, "alloc_ranges");
+            if (alloc_ranges_map)
+                bpf_map__reuse_fd(alloc_ranges_map, shared_alloc_ranges_fd);
         }
         if (shared_ustacks_fd >= 0) {
             struct bpf_map *ustacks_map = bpf_object__find_map_by_name(sentinel_obj, "ustacks");
@@ -2257,6 +2302,8 @@ int main(int argc, char **argv){
         if (ustacks_fd < 0)
             log_line("warning: no 'ustacks' map found; stacks unavailable");
     }
+
+    log_line("ready");
 
     signal(SIGINT, on_sig); signal(SIGTERM, on_sig);
     while (!stop) {

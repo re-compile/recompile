@@ -21,6 +21,13 @@ struct {
     __type(value, struct re_alloc_info);
 } allocs SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
+    __type(key,   struct re_alloc_range_key);
+    __type(value, struct re_alloc_range_bucket);
+} alloc_ranges SEC(".maps");
+
 // cache for recently freed allocations (detect double/invalid frees)
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -167,6 +174,7 @@ static __always_inline struct re_sentinel_event *sentinel_event_reserve(struct r
     evt->drop_count = 0;
     evt->len = 0;
     evt->alloc_size = 0;
+    evt->alloc_offset = 0;
     evt->fd = -1;
     evt->bytes_ret = 0;
     evt->errno_code = 0;
@@ -175,6 +183,7 @@ static __always_inline struct re_sentinel_event *sentinel_event_reserve(struct r
     evt->ts_ns = bpf_ktime_get_ns();
     evt->addr = 0;
     evt->lock_addr = 0;
+    evt->alloc_base = 0;
 
     __u64 seq = st->seq + 1;
     evt->seq = seq;
@@ -301,6 +310,111 @@ static __always_inline void remember_string_size(const char *src)
         remember_size((__u64)len);
 }
 
+static __always_inline void store_range_slot(struct re_alloc_range_bucket *bucket,
+                                             __u64 addr,
+                                             const struct re_alloc_info *info)
+{
+    bool stored = false;
+
+#pragma unroll
+    for (int i = 0; i < RE_ALLOC_RANGE_SLOTS; ++i) {
+        struct re_alloc_range_info *slot = &bucket->slots[i];
+        if (!stored && (slot->base == addr || slot->base == 0)) {
+            slot->base = addr;
+            slot->size = info->size;
+            slot->alloc_stack_id = info->alloc_stack_id;
+            slot->family = info->family;
+            stored = true;
+        }
+    }
+
+    if (!stored) {
+        bucket->slots[0].base = addr;
+        bucket->slots[0].size = info->size;
+        bucket->slots[0].alloc_stack_id = info->alloc_stack_id;
+        bucket->slots[0].family = info->family;
+    }
+}
+
+static __always_inline void clear_range_slot(struct re_alloc_range_bucket *bucket, __u64 addr)
+{
+#pragma unroll
+    for (int i = 0; i < RE_ALLOC_RANGE_SLOTS; ++i) {
+        struct re_alloc_range_info *slot = &bucket->slots[i];
+        if (slot->base == addr) {
+            slot->base = 0;
+            slot->size = 0;
+            slot->alloc_stack_id = -1;
+            slot->family = RE_SENTINEL_ALLOC_UNKNOWN;
+        }
+    }
+}
+
+static __always_inline void index_allocation_range(__u32 pid,
+                                                   __u64 addr,
+                                                   const struct re_alloc_info *info)
+{
+    if (!addr || !info || info->size == 0)
+        return;
+
+    __u64 first_page = addr >> RE_ALLOC_PAGE_SHIFT;
+    __u64 last_byte = addr + info->size - 1;
+    if (last_byte < addr)
+        last_byte = addr;
+    __u64 last_page = last_byte >> RE_ALLOC_PAGE_SHIFT;
+    __u64 page_count = last_page - first_page + 1;
+    if (page_count > RE_ALLOC_PAGE_SPAN_MAX)
+        page_count = RE_ALLOC_PAGE_SPAN_MAX;
+
+#pragma unroll
+    for (int i = 0; i < RE_ALLOC_PAGE_SPAN_MAX; ++i) {
+        if ((__u64)i >= page_count)
+            break;
+        struct re_alloc_range_key range_key = {
+            .pid = pid,
+            .page = first_page + (__u64)i,
+        };
+        struct re_alloc_range_bucket *bucket = bpf_map_lookup_elem(&alloc_ranges, &range_key);
+        if (!bucket) {
+            struct re_alloc_range_bucket empty = {};
+            bpf_map_update_elem(&alloc_ranges, &range_key, &empty, BPF_NOEXIST);
+            bucket = bpf_map_lookup_elem(&alloc_ranges, &range_key);
+        }
+        if (bucket)
+            store_range_slot(bucket, addr, info);
+    }
+}
+
+static __always_inline void remove_allocation_range(__u32 pid,
+                                                    __u64 addr,
+                                                    const struct re_alloc_info *info)
+{
+    if (!addr || !info || info->size == 0)
+        return;
+
+    __u64 first_page = addr >> RE_ALLOC_PAGE_SHIFT;
+    __u64 last_byte = addr + info->size - 1;
+    if (last_byte < addr)
+        last_byte = addr;
+    __u64 last_page = last_byte >> RE_ALLOC_PAGE_SHIFT;
+    __u64 page_count = last_page - first_page + 1;
+    if (page_count > RE_ALLOC_PAGE_SPAN_MAX)
+        page_count = RE_ALLOC_PAGE_SPAN_MAX;
+
+#pragma unroll
+    for (int i = 0; i < RE_ALLOC_PAGE_SPAN_MAX; ++i) {
+        if ((__u64)i >= page_count)
+            break;
+        struct re_alloc_range_key range_key = {
+            .pid = pid,
+            .page = first_page + (__u64)i,
+        };
+        struct re_alloc_range_bucket *bucket = bpf_map_lookup_elem(&alloc_ranges, &range_key);
+        if (bucket)
+            clear_range_slot(bucket, addr);
+    }
+}
+
 static __always_inline void mark_allocation_freed(__u32 pid, struct re_alloc_key *key)
 {
     struct re_alloc_info *info = bpf_map_lookup_elem(&allocs, key);
@@ -309,6 +423,7 @@ static __always_inline void mark_allocation_freed(__u32 pid, struct re_alloc_key
 
     struct re_alloc_info snapshot = *info;
     snapshot.dealloc_family = RE_SENTINEL_DEALLOC_FREE;
+    remove_allocation_range(pid, key->addr, info);
     bpf_map_delete_elem(&allocs, key);
     bpf_map_update_elem(&freed, key, &snapshot, BPF_ANY);
 }
@@ -352,7 +467,11 @@ static __always_inline int record_allocation_return(struct pt_regs *ctx, void *r
             .alloc_stack_id = stack_id,
             .family = family,
         };
+        struct re_alloc_info *old_info = bpf_map_lookup_elem(&allocs, &key);
+        if (old_info)
+            remove_allocation_range(pid, key.addr, old_info);
         bpf_map_update_elem(&allocs, &key, &info, BPF_ANY);
+        index_allocation_range(pid, key.addr, &info);
     }
 
     struct re_sentinel_event *evt = sentinel_event_reserve(st, pid_tgid);
@@ -366,6 +485,7 @@ static __always_inline int record_allocation_return(struct pt_regs *ctx, void *r
         evt->stack_fp = (__u32)stack_id;
     evt->len = have_size ? saturate_u32(size) : 0;
     evt->alloc_size = evt->len;
+    evt->alloc_base = (__u64)ret;
 
     sentinel_event_submit(evt);
     return 0;
@@ -449,6 +569,7 @@ static __always_inline int record_deallocation(struct pt_regs *ctx, void *p, __u
     if (info) {
         struct re_alloc_info snapshot = *info;
         snapshot.dealloc_family = dealloc_family;
+        remove_allocation_range(pid, key.addr, info);
         bpf_map_delete_elem(&allocs, &key);
         bpf_map_update_elem(&freed, &key, &snapshot, BPF_ANY);
     }
