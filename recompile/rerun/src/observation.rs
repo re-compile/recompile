@@ -5,10 +5,12 @@
 //! the CLI/native orchestration modules.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const OBSERVATION_RUN_SCHEMA_VERSION: &str = "1.0";
 pub const OBSERVATION_RUN_PURPOSE: &str = "local_runtime_observation";
+pub const REPEAT_SUMMARY_SCHEMA_VERSION: &str = "1.0";
+pub const REPEAT_SUMMARY_PURPOSE: &str = "repeat_observation_summary";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -199,12 +201,232 @@ impl ObservationArtifacts {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepeatAttemptOutcome {
+    Pass,
+    Finding,
+    Failure,
+    Timeout,
+    Inconclusive,
+}
+
+impl RepeatAttemptOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RepeatAttemptOutcome::Pass => "pass",
+            RepeatAttemptOutcome::Finding => "finding",
+            RepeatAttemptOutcome::Failure => "failure",
+            RepeatAttemptOutcome::Timeout => "timeout",
+            RepeatAttemptOutcome::Inconclusive => "inconclusive",
+        }
+    }
+
+    pub fn from_status(status: TargetStatus) -> Self {
+        match status {
+            TargetStatus::Clean => RepeatAttemptOutcome::Pass,
+            TargetStatus::Findings => RepeatAttemptOutcome::Finding,
+            TargetStatus::Failed | TargetStatus::Skipped => RepeatAttemptOutcome::Failure,
+            TargetStatus::Timeout => RepeatAttemptOutcome::Timeout,
+            TargetStatus::ToolUnavailable | TargetStatus::NotApplicable => {
+                RepeatAttemptOutcome::Inconclusive
+            }
+        }
+    }
+
+    fn is_failure_like(self) -> bool {
+        matches!(
+            self,
+            RepeatAttemptOutcome::Finding
+                | RepeatAttemptOutcome::Failure
+                | RepeatAttemptOutcome::Timeout
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepeatRunSummary {
+    pub schema_version: String,
+    pub purpose: String,
+    pub output_root: String,
+    pub requested_attempts: u32,
+    pub completed_attempts: usize,
+    pub status_totals: BTreeMap<String, u64>,
+    pub outcome_totals: BTreeMap<String, u64>,
+    pub finding_totals_by_class: BTreeMap<String, u64>,
+    pub first_failure: Option<RepeatAttemptSelection>,
+    pub best_evidence_attempt: Option<RepeatAttemptSelection>,
+    pub attempts: Vec<RepeatAttemptSummary>,
+    pub next_commands: Vec<String>,
+}
+
+impl RepeatRunSummary {
+    pub fn new(
+        output_root: impl Into<String>,
+        requested_attempts: u32,
+        attempts: Vec<RepeatAttemptSummary>,
+        next_commands: Vec<String>,
+    ) -> Self {
+        let first_failure = attempts
+            .iter()
+            .find(|attempt| attempt.outcome.is_failure_like())
+            .map(|attempt| RepeatAttemptSelection::from_attempt(attempt, "first_non_pass"));
+        let best_evidence_attempt = attempts
+            .iter()
+            .find(|attempt| attempt.findings_count > 0)
+            .or_else(|| {
+                attempts
+                    .iter()
+                    .find(|attempt| matches!(attempt.outcome, RepeatAttemptOutcome::Timeout))
+            })
+            .or_else(|| {
+                attempts
+                    .iter()
+                    .find(|attempt| matches!(attempt.outcome, RepeatAttemptOutcome::Failure))
+            })
+            .map(|attempt| {
+                RepeatAttemptSelection::from_attempt(attempt, "best_available_evidence")
+            });
+
+        Self {
+            schema_version: REPEAT_SUMMARY_SCHEMA_VERSION.to_string(),
+            purpose: REPEAT_SUMMARY_PURPOSE.to_string(),
+            output_root: output_root.into(),
+            requested_attempts,
+            completed_attempts: repeat_completed_attempts(&attempts),
+            status_totals: repeat_status_totals(&attempts),
+            outcome_totals: repeat_outcome_totals(&attempts),
+            finding_totals_by_class: repeat_finding_totals_by_class(&attempts),
+            first_failure,
+            best_evidence_attempt,
+            attempts,
+            next_commands,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepeatAttemptSummary {
+    pub attempt: u32,
+    pub target_name: String,
+    pub status: TargetStatus,
+    pub outcome: RepeatAttemptOutcome,
+    pub output_root: String,
+    pub run_summary: String,
+    pub crashpack: String,
+    pub findings: String,
+    pub evidence_pack: String,
+    pub issue_groups: Option<String>,
+    pub findings_count: u64,
+    pub findings_by_class: BTreeMap<String, u64>,
+    pub issue_group_count: u64,
+    pub error: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub next_commands: Vec<String>,
+}
+
+impl RepeatAttemptSummary {
+    pub fn from_target(
+        attempt: u32,
+        target_name: impl Into<String>,
+        output_root: impl Into<String>,
+        run_summary: impl Into<String>,
+        target: &ObservationTargetSummary,
+    ) -> Self {
+        Self {
+            attempt,
+            target_name: target_name.into(),
+            status: target.status,
+            outcome: RepeatAttemptOutcome::from_status(target.status),
+            output_root: output_root.into(),
+            run_summary: run_summary.into(),
+            crashpack: target.artifacts.crashpack.clone(),
+            findings: target.artifacts.findings.clone(),
+            evidence_pack: target.artifacts.evidence_pack.clone(),
+            issue_groups: target.artifacts.issue_groups.clone(),
+            findings_count: target.findings_count,
+            findings_by_class: target.findings_by_class.clone(),
+            issue_group_count: target.issue_group_count,
+            error: target.error.clone(),
+            duration_ms: target.duration_ms,
+            next_commands: target.next_commands.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepeatAttemptSelection {
+    pub attempt: u32,
+    pub target_name: String,
+    pub status: TargetStatus,
+    pub outcome: RepeatAttemptOutcome,
+    pub reason: String,
+    pub run_summary: String,
+    pub crashpack: String,
+    pub findings_count: u64,
+    pub findings_by_class: BTreeMap<String, u64>,
+}
+
+impl RepeatAttemptSelection {
+    fn from_attempt(attempt: &RepeatAttemptSummary, reason: impl Into<String>) -> Self {
+        Self {
+            attempt: attempt.attempt,
+            target_name: attempt.target_name.clone(),
+            status: attempt.status,
+            outcome: attempt.outcome,
+            reason: reason.into(),
+            run_summary: attempt.run_summary.clone(),
+            crashpack: attempt.crashpack.clone(),
+            findings_count: attempt.findings_count,
+            findings_by_class: attempt.findings_by_class.clone(),
+        }
+    }
+}
+
 fn status_totals(targets: &[ObservationTargetSummary]) -> BTreeMap<String, u64> {
     let mut totals = BTreeMap::new();
     for target in targets {
         *totals
             .entry(target.status.as_str().to_string())
             .or_insert(0) += 1;
+    }
+    totals
+}
+
+fn repeat_status_totals(attempts: &[RepeatAttemptSummary]) -> BTreeMap<String, u64> {
+    let mut totals = BTreeMap::new();
+    for attempt in attempts {
+        *totals
+            .entry(attempt.status.as_str().to_string())
+            .or_insert(0) += 1;
+    }
+    totals
+}
+
+fn repeat_outcome_totals(attempts: &[RepeatAttemptSummary]) -> BTreeMap<String, u64> {
+    let mut totals = BTreeMap::new();
+    for attempt in attempts {
+        *totals
+            .entry(attempt.outcome.as_str().to_string())
+            .or_insert(0) += 1;
+    }
+    totals
+}
+
+fn repeat_completed_attempts(attempts: &[RepeatAttemptSummary]) -> usize {
+    attempts
+        .iter()
+        .map(|attempt| attempt.attempt)
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+fn repeat_finding_totals_by_class(attempts: &[RepeatAttemptSummary]) -> BTreeMap<String, u64> {
+    let mut totals = BTreeMap::new();
+    for attempt in attempts {
+        for (class, count) in &attempt.findings_by_class {
+            *totals.entry(class.clone()).or_insert(0) += count;
+        }
     }
     totals
 }
@@ -248,6 +470,27 @@ mod tests {
             status,
             TargetExitSummary::clean_exit(),
             ObservationArtifacts::target_defaults(format!(".re/targets/{name}")),
+        )
+    }
+
+    fn sample_repeat_attempt(
+        attempt: u32,
+        status: TargetStatus,
+        findings_by_class: &[(&str, u64)],
+    ) -> RepeatAttemptSummary {
+        let mut target = sample_target("app", status);
+        for (class, count) in findings_by_class {
+            target.findings_count += count;
+            target
+                .findings_by_class
+                .insert((*class).to_string(), *count);
+        }
+        RepeatAttemptSummary::from_target(
+            attempt,
+            format!("attempt-{attempt:04}-app"),
+            format!(".re/attempts/{attempt:04}"),
+            format!(".re/attempts/{attempt:04}/run-summary.json"),
+            &target,
         )
     }
 
@@ -311,6 +554,124 @@ mod tests {
     }
 
     #[test]
+    fn repeat_outcome_values_are_stable_snake_case() {
+        let outcomes = [
+            (RepeatAttemptOutcome::Pass, "pass"),
+            (RepeatAttemptOutcome::Finding, "finding"),
+            (RepeatAttemptOutcome::Failure, "failure"),
+            (RepeatAttemptOutcome::Timeout, "timeout"),
+            (RepeatAttemptOutcome::Inconclusive, "inconclusive"),
+        ];
+
+        for (outcome, expected) in outcomes {
+            assert_eq!(outcome.as_str(), expected);
+            assert_eq!(serde_json::to_value(outcome).unwrap(), json!(expected));
+        }
+    }
+
+    #[test]
+    fn repeat_summary_computes_attempt_totals_and_evidence_selection() {
+        let clean = sample_repeat_attempt(1, TargetStatus::Clean, &[]);
+        let finding = sample_repeat_attempt(2, TargetStatus::Findings, &[("heap_overflow", 1)]);
+        let timeout = sample_repeat_attempt(3, TargetStatus::Timeout, &[]);
+
+        let summary = RepeatRunSummary::new(
+            ".re",
+            3,
+            vec![clean, finding, timeout],
+            vec!["jq . .re/repeat-summary.json".to_string()],
+        );
+
+        assert_eq!(summary.schema_version, REPEAT_SUMMARY_SCHEMA_VERSION);
+        assert_eq!(summary.purpose, REPEAT_SUMMARY_PURPOSE);
+        assert_eq!(summary.requested_attempts, 3);
+        assert_eq!(summary.completed_attempts, 3);
+        assert_eq!(summary.status_totals.get("clean"), Some(&1));
+        assert_eq!(summary.status_totals.get("findings"), Some(&1));
+        assert_eq!(summary.status_totals.get("timeout"), Some(&1));
+        assert_eq!(summary.outcome_totals.get("pass"), Some(&1));
+        assert_eq!(summary.outcome_totals.get("finding"), Some(&1));
+        assert_eq!(summary.outcome_totals.get("timeout"), Some(&1));
+        assert_eq!(
+            summary.finding_totals_by_class.get("heap_overflow"),
+            Some(&1)
+        );
+
+        let first_failure = summary.first_failure.as_ref().unwrap();
+        assert_eq!(first_failure.attempt, 2);
+        assert_eq!(first_failure.status, TargetStatus::Findings);
+        assert_eq!(first_failure.reason, "first_non_pass");
+
+        let best_evidence = summary.best_evidence_attempt.as_ref().unwrap();
+        assert_eq!(best_evidence.attempt, 2);
+        assert_eq!(best_evidence.findings_count, 1);
+    }
+
+    #[test]
+    fn repeat_summary_keeps_all_clean_selection_empty() {
+        let summary = RepeatRunSummary::new(
+            ".re",
+            2,
+            vec![
+                sample_repeat_attempt(1, TargetStatus::Clean, &[]),
+                sample_repeat_attempt(2, TargetStatus::Clean, &[]),
+            ],
+            vec!["jq . .re/repeat-summary.json".to_string()],
+        );
+
+        assert_eq!(summary.outcome_totals.get("pass"), Some(&2));
+        assert!(summary.first_failure.is_none());
+        assert!(summary.best_evidence_attempt.is_none());
+    }
+
+    #[test]
+    fn repeat_summary_counts_completed_attempts_once_per_attempt() {
+        let mut app = sample_repeat_attempt(1, TargetStatus::Clean, &[]);
+        app.target_name = "attempt-0001-app".to_string();
+        let mut worker = sample_repeat_attempt(1, TargetStatus::Clean, &[]);
+        worker.target_name = "attempt-0001-worker".to_string();
+
+        let summary = RepeatRunSummary::new(
+            ".re",
+            1,
+            vec![app, worker],
+            vec!["jq . .re/repeat-summary.json".to_string()],
+        );
+
+        assert_eq!(summary.completed_attempts, 1);
+        assert_eq!(summary.status_totals.get("clean"), Some(&2));
+        assert_eq!(summary.outcome_totals.get("pass"), Some(&2));
+    }
+
+    #[test]
+    fn repeat_summary_uses_timeout_as_best_evidence_without_findings() {
+        let summary = RepeatRunSummary::new(
+            ".re",
+            2,
+            vec![
+                sample_repeat_attempt(1, TargetStatus::Clean, &[]),
+                sample_repeat_attempt(2, TargetStatus::Timeout, &[]),
+            ],
+            vec!["jq . .re/repeat-summary.json".to_string()],
+        );
+
+        assert_eq!(
+            summary
+                .best_evidence_attempt
+                .as_ref()
+                .map(|attempt| attempt.attempt),
+            Some(2)
+        );
+        assert_eq!(
+            summary
+                .best_evidence_attempt
+                .as_ref()
+                .map(|attempt| attempt.outcome),
+            Some(RepeatAttemptOutcome::Timeout)
+        );
+    }
+
+    #[test]
     fn serialized_summary_matches_schema_contract_shape() {
         let summary = ObservationRunSummary::new(
             ".re",
@@ -360,6 +721,63 @@ mod tests {
     }
 
     #[test]
+    fn serialized_repeat_summary_matches_contract_shape() {
+        let summary = RepeatRunSummary::new(
+            ".re",
+            1,
+            vec![sample_repeat_attempt(
+                1,
+                TargetStatus::Findings,
+                &[("heap_overflow", 1)],
+            )],
+            vec![
+                "jq . .re/repeat-summary.json".to_string(),
+                "jq . .re/run-summary.json".to_string(),
+            ],
+        );
+        let value = serde_json::to_value(summary).unwrap();
+
+        for key in [
+            "schema_version",
+            "purpose",
+            "output_root",
+            "requested_attempts",
+            "completed_attempts",
+            "status_totals",
+            "outcome_totals",
+            "finding_totals_by_class",
+            "first_failure",
+            "best_evidence_attempt",
+            "attempts",
+            "next_commands",
+        ] {
+            assert!(value.get(key).is_some(), "missing repeat field {key}");
+        }
+
+        let attempt: &Value = &value["attempts"][0];
+        for key in [
+            "attempt",
+            "target_name",
+            "status",
+            "outcome",
+            "output_root",
+            "run_summary",
+            "crashpack",
+            "findings",
+            "evidence_pack",
+            "issue_groups",
+            "findings_count",
+            "findings_by_class",
+            "issue_group_count",
+            "error",
+            "duration_ms",
+            "next_commands",
+        ] {
+            assert!(attempt.get(key).is_some(), "missing attempt field {key}");
+        }
+    }
+
+    #[test]
     fn schema_file_matches_rust_contract_statuses() {
         let schema_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -396,5 +814,61 @@ mod tests {
         .collect::<Vec<_>>();
 
         assert_eq!(schema_statuses, rust_statuses);
+    }
+
+    #[test]
+    fn repeat_schema_file_matches_rust_contract() {
+        let schema_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("schemas/repeat-summary.schema.json");
+        let schema: Value = serde_json::from_slice(&std::fs::read(schema_path).unwrap()).unwrap();
+
+        assert_eq!(
+            schema["properties"]["schema_version"]["const"],
+            json!(REPEAT_SUMMARY_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            schema["properties"]["purpose"]["const"],
+            json!(REPEAT_SUMMARY_PURPOSE)
+        );
+
+        let schema_statuses = schema["$defs"]["status"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        let rust_statuses = [
+            TargetStatus::Clean,
+            TargetStatus::Findings,
+            TargetStatus::Failed,
+            TargetStatus::Timeout,
+            TargetStatus::Skipped,
+            TargetStatus::ToolUnavailable,
+            TargetStatus::NotApplicable,
+        ]
+        .into_iter()
+        .map(|status| status.as_str().to_string())
+        .collect::<Vec<_>>();
+        assert_eq!(schema_statuses, rust_statuses);
+
+        let schema_outcomes = schema["$defs"]["outcome"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        let rust_outcomes = [
+            RepeatAttemptOutcome::Pass,
+            RepeatAttemptOutcome::Finding,
+            RepeatAttemptOutcome::Failure,
+            RepeatAttemptOutcome::Timeout,
+            RepeatAttemptOutcome::Inconclusive,
+        ]
+        .into_iter()
+        .map(|outcome| outcome.as_str().to_string())
+        .collect::<Vec<_>>();
+        assert_eq!(schema_outcomes, rust_outcomes);
     }
 }

@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "re:compile Repeat Observation Summary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "purpose",
+    "output_root",
+    "requested_attempts",
+    "completed_attempts",
+    "status_totals",
+    "outcome_totals",
+    "finding_totals_by_class",
+    "first_failure",
+    "best_evidence_attempt",
+    "attempts",
+    "next_commands"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "purpose": {"const": "repeat_observation_summary"},
+    "output_root": {"type": "string"},
+    "requested_attempts": {"type": "integer", "minimum": 1},
+    "completed_attempts": {"type": "integer", "minimum": 0},
+    "status_totals": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "outcome_totals": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "finding_totals_by_class": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "first_failure": {"anyOf": [{"$ref": "#/$defs/selection"}, {"type": "null"}]},
+    "best_evidence_attempt": {"anyOf": [{"$ref": "#/$defs/selection"}, {"type": "null"}]},
+    "attempts": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/attempt"}
+    },
+    "next_commands": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  },
+  "$defs": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "clean",
+        "findings",
+        "failed",
+        "timeout",
+        "skipped",
+        "tool_unavailable",
+        "not_applicable"
+      ]
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "finding",
+        "failure",
+        "timeout",
+        "inconclusive"
+      ]
+    },
+    "class_counts": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempt",
+        "target_name",
+        "status",
+        "outcome",
+        "reason",
+        "run_summary",
+        "crashpack",
+        "findings_count",
+        "findings_by_class"
+      ],
+      "properties": {
+        "attempt": {"type": "integer", "minimum": 1},
+        "target_name": {"type": "string", "minLength": 1},
+        "status": {"$ref": "#/$defs/status"},
+        "outcome": {"$ref": "#/$defs/outcome"},
+        "reason": {"type": "string", "minLength": 1},
+        "run_summary": {"type": "string"},
+        "crashpack": {"type": "string"},
+        "findings_count": {"type": "integer", "minimum": 0},
+        "findings_by_class": {"$ref": "#/$defs/class_counts"}
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempt",
+        "target_name",
+        "status",
+        "outcome",
+        "output_root",
+        "run_summary",
+        "crashpack",
+        "findings",
+        "evidence_pack",
+        "issue_groups",
+        "findings_count",
+        "findings_by_class",
+        "issue_group_count",
+        "error",
+        "duration_ms",
+        "next_commands"
+      ],
+      "properties": {
+        "attempt": {"type": "integer", "minimum": 1},
+        "target_name": {"type": "string", "minLength": 1},
+        "status": {"$ref": "#/$defs/status"},
+        "outcome": {"$ref": "#/$defs/outcome"},
+        "output_root": {"type": "string"},
+        "run_summary": {"type": "string"},
+        "crashpack": {"type": "string"},
+        "findings": {"type": "string"},
+        "evidence_pack": {"type": "string"},
+        "issue_groups": {"type": ["string", "null"]},
+        "findings_count": {"type": "integer", "minimum": 0},
+        "findings_by_class": {"$ref": "#/$defs/class_counts"},
+        "issue_group_count": {"type": "integer", "minimum": 0},
+        "error": {"type": ["string", "null"]},
+        "duration_ms": {"type": ["integer", "null"], "minimum": 0},
+        "next_commands": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

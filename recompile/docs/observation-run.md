@@ -34,6 +34,7 @@ With `--repeat N`, repeat mode is explicit and attempt-scoped:
 ```text
 .re/
   run-summary.json
+  repeat-summary.json
   attempts/
     0001/
       run-summary.json
@@ -53,7 +54,23 @@ With `--repeat N`, repeat mode is explicit and attempt-scoped:
 
 The root `run-summary.json` remains a normal observation summary and aggregates
 the per-attempt target summaries with names such as `attempt-0001-app`.
-Detailed flaky-run aggregation belongs to `repeat-summary.json` in Phase 6.
+`repeat-summary.json` is the repeat-specific artifact for agents and humans. It
+records:
+
+- requested and completed attempt counts
+- raw status totals such as `clean`, `findings`, `timeout`, or `failed`
+- outcome totals such as `pass`, `finding`, `timeout`, `failure`, or `inconclusive`
+- finding totals by class across attempts
+- one row per attempt with the attempt output root, run summary, crashpack,
+  findings, evidence pack, and issue-group paths
+- `first_failure`, which points at the first non-pass attempt when one exists
+- `best_evidence_attempt`, which prefers the first attempt with findings, then
+  timeout/failure evidence if no finding exists
+- next inspection commands for the repeat summary, aggregate run summary, and
+  each attempt summary
+
+All-pass repeat runs intentionally keep `first_failure` and
+`best_evidence_attempt` as `null`.
 Repeated deep escalation is policy-gated for now because sanitizer and Valgrind
 retries are expensive and must be budgeted deliberately.
 
@@ -146,8 +163,8 @@ The current Phase 4 baseline supports one binary, args after `--`, `--cwd`,
 The current Phase 6 baseline adds `--repeat N` for opt-in repeated native
 observation runs. Repeat mode runs the same binary multiple times, stores each
 attempt independently under `attempts/`, and writes an aggregate
-`run-summary.json`. It does not yet write `repeat-summary.json`, cross-attempt
-issue groups, or repeated escalation policy artifacts.
+`run-summary.json` plus `repeat-summary.json`. It does not yet write
+cross-attempt issue groups or repeated escalation policy artifacts.
 
 Default escalation policy:
 
