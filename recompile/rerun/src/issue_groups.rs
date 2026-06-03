@@ -111,7 +111,7 @@ pub fn annotate_findings_with_issue_groups(findings: &mut [Value]) -> IssueGroup
                     status: finding_string(finding, &["provenance", "source_status"])
                         .unwrap_or_else(|| "unknown".to_string()),
                     path: inputs.source_path.clone(),
-                    call_site: inputs.call_site.clone(),
+                    call_site: finding_call_site(finding),
                     alloc_site: inputs.alloc_site.clone(),
                     free_site: inputs.free_site.clone(),
                 },
@@ -136,7 +136,7 @@ fn fingerprint_inputs(finding: &Value) -> IssueFingerprintInputs {
     let tool = tool_name(finding);
     let source_path = finding_string(finding, &["provenance", "source_path"])
         .or_else(|| finding_file_uri(finding, &["primaryLocation", "uri"]));
-    let call_site = tool_frame(finding, "call_frame").or_else(|| first_stack_site(finding, "call"));
+    let raw_call_site = finding_call_site(finding);
     let alloc_site = finding_string(finding, &["evidence", "alloc_site"])
         .filter(|value| stable_non_unknown(value))
         .or_else(|| tool_frame(finding, "alloc_frame"))
@@ -145,6 +145,18 @@ fn fingerprint_inputs(finding: &Value) -> IssueFingerprintInputs {
         .filter(|value| stable_non_unknown(value))
         .or_else(|| tool_frame(finding, "free_frame"))
         .or_else(|| first_stack_site(finding, "free"));
+    let access_size = finding_u64(finding, &["evidence", "memory", "size"]);
+    let alloc_size = finding_u64(finding, &["evidence", "memory", "alloc_size"]);
+    let alloc_offset = finding_u64(finding, &["evidence", "memory", "alloc_offset"]);
+    let call_site = fingerprint_call_site(
+        tool.as_deref(),
+        raw_call_site,
+        source_path.as_deref(),
+        alloc_site.as_deref(),
+        access_size,
+        alloc_size,
+        alloc_offset,
+    );
     let binary_identity = if tool.is_some()
         && source_path.is_none()
         && call_site.is_none()
@@ -167,13 +179,41 @@ fn fingerprint_inputs(finding: &Value) -> IssueFingerprintInputs {
         call_site,
         alloc_site,
         free_site,
-        access_size: finding_u64(finding, &["evidence", "memory", "size"]),
-        alloc_size: finding_u64(finding, &["evidence", "memory", "alloc_size"]),
-        alloc_offset: finding_u64(finding, &["evidence", "memory", "alloc_offset"]),
+        access_size,
+        alloc_size,
+        alloc_offset,
         tool,
         tool_summary: normalized_tool_summary(finding),
         binary_identity,
     }
+}
+
+fn finding_call_site(finding: &Value) -> Option<String> {
+    tool_frame(finding, "call_frame").or_else(|| first_stack_site(finding, "call"))
+}
+
+fn fingerprint_call_site(
+    tool: Option<&str>,
+    call_site: Option<String>,
+    source_path: Option<&str>,
+    alloc_site: Option<&str>,
+    access_size: Option<u64>,
+    alloc_size: Option<u64>,
+    alloc_offset: Option<u64>,
+) -> Option<String> {
+    let call_site = call_site?;
+    if tool.is_some() {
+        return Some(call_site);
+    }
+
+    if source_path.is_some()
+        && alloc_site.is_some()
+        && (access_size.is_some() || alloc_size.is_some() || alloc_offset.is_some())
+    {
+        return None;
+    }
+
+    Some(call_site)
 }
 
 fn issue_fingerprint(inputs: &IssueFingerprintInputs) -> String {
@@ -414,7 +454,81 @@ mod tests {
     }
 
     #[test]
-    fn groups_repeated_findings_but_preserves_independent_sites() {
+    fn native_fingerprints_ignore_optional_call_site_with_stable_memory_identity() {
+        let resolved_call = json!({
+            "id": "F-1",
+            "class": "heap_overflow",
+            "severity": "error",
+            "confidence": "high",
+            "evidence": {
+                "memory": {"operation": "memcpy", "size": 80, "alloc_size": 24, "alloc_offset": 0},
+                "stacks": {
+                    "call": ["main (/tmp/project/src/app.c:25)"],
+                    "alloc": ["packet_new (/tmp/project/src/app.c:11)"]
+                },
+                "alloc_site": "/tmp/project/src/app.c"
+            },
+            "provenance": {"source_status": "resolved", "source_path": "/tmp/project/src/app.c"}
+        });
+        let raw_call = json!({
+            "id": "F-2",
+            "class": "heap_overflow",
+            "severity": "error",
+            "confidence": "high",
+            "evidence": {
+                "memory": {"operation": "memcpy", "size": 80, "alloc_size": 24, "alloc_offset": 0},
+                "stacks": {
+                    "call": ["0xffff88d21a80", "/tmp/project/build/app+0x9c4"],
+                    "alloc": ["packet_new (/tmp/project/src/app.c:11)"]
+                },
+                "alloc_site": "/tmp/project/src/app.c"
+            },
+            "provenance": {"source_status": "resolved", "source_path": "/tmp/project/src/app.c"}
+        });
+
+        let resolved_inputs = fingerprint_inputs(&resolved_call);
+        assert_eq!(
+            finding_call_site(&resolved_call).as_deref(),
+            Some("/tmp/project/src/app.c:25")
+        );
+        assert_eq!(resolved_inputs.call_site, None);
+        assert_eq!(
+            issue_fingerprint(&resolved_inputs),
+            issue_fingerprint(&fingerprint_inputs(&raw_call))
+        );
+    }
+
+    #[test]
+    fn native_fingerprints_use_call_site_without_memory_identity() {
+        let first = json!({
+            "id": "F-1",
+            "class": "unclassified_crash",
+            "severity": "error",
+            "confidence": "observed",
+            "evidence": {
+                "stacks": {"call": ["worker (/tmp/project/src/app.c:12)"]}
+            },
+            "provenance": {"source_status": "resolved", "source_path": "/tmp/project/src/app.c"}
+        });
+        let second = json!({
+            "id": "F-2",
+            "class": "unclassified_crash",
+            "severity": "error",
+            "confidence": "observed",
+            "evidence": {
+                "stacks": {"call": ["worker (/tmp/project/src/app.c:30)"]}
+            },
+            "provenance": {"source_status": "resolved", "source_path": "/tmp/project/src/app.c"}
+        });
+
+        assert_ne!(
+            issue_fingerprint(&fingerprint_inputs(&first)),
+            issue_fingerprint(&fingerprint_inputs(&second))
+        );
+    }
+
+    #[test]
+    fn groups_repeated_findings_but_preserves_independent_offsets() {
         let mut findings = vec![
             json!({
                 "id": "F-1",
@@ -422,7 +536,7 @@ mod tests {
                 "severity": "error",
                 "confidence": "high",
                 "evidence": {
-                    "memory": {"operation": "memcpy", "size": 64, "alloc_size": 16},
+                    "memory": {"operation": "memcpy", "size": 64, "alloc_size": 16, "alloc_offset": 0},
                     "stacks": {"call": ["copy (/tmp/project/src/app.c:12:3)"]},
                     "alloc_site": "/tmp/project/src/app.c"
                 },
@@ -434,7 +548,7 @@ mod tests {
                 "severity": "error",
                 "confidence": "high",
                 "evidence": {
-                    "memory": {"operation": "memcpy", "size": 64, "alloc_size": 16},
+                    "memory": {"operation": "memcpy", "size": 64, "alloc_size": 16, "alloc_offset": 0},
                     "stacks": {"call": ["copy (/tmp/project/src/app.c:12:9)"]},
                     "alloc_site": "/tmp/project/src/app.c"
                 },
@@ -446,7 +560,7 @@ mod tests {
                 "severity": "error",
                 "confidence": "high",
                 "evidence": {
-                    "memory": {"operation": "memcpy", "size": 64, "alloc_size": 16},
+                    "memory": {"operation": "memcpy", "size": 64, "alloc_size": 16, "alloc_offset": 8},
                     "stacks": {"call": ["other (/tmp/project/src/app.c:30:1)"]},
                     "alloc_site": "/tmp/project/src/app.c"
                 },
