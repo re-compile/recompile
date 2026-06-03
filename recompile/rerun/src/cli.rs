@@ -18,7 +18,7 @@ use crate::native::{
 };
 use crate::observation::{
     ObservationArtifacts, ObservationDiagnostic, ObservationRunSummary, ObservationTargetSummary,
-    TargetExitSummary, TargetStatus,
+    RepeatAttemptSummary, RepeatRunSummary, TargetExitSummary, TargetStatus,
 };
 use crate::summary::{print_findings_summary, read_findings};
 
@@ -317,10 +317,15 @@ fn run_observe_repeated(request: &ObserveRequest, repeat: u32) -> Result<()> {
     fs::create_dir_all(&attempts_root)?;
 
     let mut aggregate_targets = Vec::new();
+    let mut repeat_attempts = Vec::new();
     let mut next_commands = vec![format!(
         "jq . {}",
-        request.output_root.join("run-summary.json").display()
+        request.output_root.join("repeat-summary.json").display()
     )];
+    next_commands.push(format!(
+        "jq . {}",
+        request.output_root.join("run-summary.json").display()
+    ));
 
     for attempt in 1..=repeat {
         let attempt_dir = repeat_attempt_dir(&request.output_root, attempt);
@@ -335,6 +340,17 @@ fn run_observe_repeated(request: &ObserveRequest, repeat: u32) -> Result<()> {
         attempt_request.output_root = attempt_dir.clone();
         let attempt_summary = run_observe_once(&attempt_request)?;
 
+        for target in &attempt_summary.targets {
+            let target_name = repeat_target_name(attempt, &target.name);
+            repeat_attempts.push(RepeatAttemptSummary::from_target(
+                attempt,
+                target_name,
+                attempt_dir.display().to_string(),
+                attempt_dir.join("run-summary.json").display().to_string(),
+                target,
+            ));
+        }
+
         next_commands.push(format!(
             "jq . {}",
             attempt_dir.join("run-summary.json").display()
@@ -348,10 +364,21 @@ fn run_observe_repeated(request: &ObserveRequest, repeat: u32) -> Result<()> {
     let summary = ObservationRunSummary::new(
         request.output_root.display().to_string(),
         aggregate_targets,
+        next_commands.clone(),
+    );
+    let repeat_summary = RepeatRunSummary::new(
+        request.output_root.display().to_string(),
+        repeat,
+        repeat_attempts,
         next_commands,
     );
+    write_repeat_summary(&request.output_root, &repeat_summary)?;
     write_observation_summary(&request.output_root, &summary)?;
 
+    println!(
+        "Repeat summary saved to: {}",
+        request.output_root.join("repeat-summary.json").display()
+    );
     println!(
         "Repeated observation summary saved to: {}",
         request.output_root.join("run-summary.json").display()
@@ -1087,6 +1114,13 @@ fn class_counts_for_values(findings: &[Value]) -> BTreeMap<String, u64> {
 fn write_observation_summary(output_root: &Path, summary: &ObservationRunSummary) -> Result<()> {
     fs::create_dir_all(output_root)?;
     let summary_path = output_root.join("run-summary.json");
+    fs::write(&summary_path, serde_json::to_vec_pretty(summary)?)?;
+    Ok(())
+}
+
+fn write_repeat_summary(output_root: &Path, summary: &RepeatRunSummary) -> Result<()> {
+    fs::create_dir_all(output_root)?;
+    let summary_path = output_root.join("repeat-summary.json");
     fs::write(&summary_path, serde_json::to_vec_pretty(summary)?)?;
     Ok(())
 }

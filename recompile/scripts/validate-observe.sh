@@ -163,14 +163,35 @@ import sys
 
 summary_path = pathlib.Path(sys.argv[1])
 summary = json.loads(summary_path.read_text())
+repeat_summary_path = summary_path.parent / "repeat-summary.json"
+if not repeat_summary_path.exists():
+    raise SystemExit(f"{summary_path}: missing repeat summary {repeat_summary_path}")
+repeat_summary = json.loads(repeat_summary_path.read_text())
 if summary.get("target_count") != 2:
     raise SystemExit(f"{summary_path}: expected two repeated targets, got {summary.get('target_count')}")
 if (summary.get("status_totals") or {}).get("clean") != 2:
     raise SystemExit(f"{summary_path}: expected two clean attempts, got {summary.get('status_totals')}")
+if repeat_summary.get("schema_version") != "1.0":
+    raise SystemExit(f"{repeat_summary_path}: schema_version must be 1.0")
+if repeat_summary.get("purpose") != "repeat_observation_summary":
+    raise SystemExit(f"{repeat_summary_path}: unexpected purpose {repeat_summary.get('purpose')}")
+if repeat_summary.get("requested_attempts") != 2 or repeat_summary.get("completed_attempts") != 2:
+    raise SystemExit(f"{repeat_summary_path}: unexpected attempt counts {repeat_summary}")
+if (repeat_summary.get("status_totals") or {}).get("clean") != 2:
+    raise SystemExit(f"{repeat_summary_path}: expected two clean statuses, got {repeat_summary.get('status_totals')}")
+if (repeat_summary.get("outcome_totals") or {}).get("pass") != 2:
+    raise SystemExit(f"{repeat_summary_path}: expected two pass outcomes, got {repeat_summary.get('outcome_totals')}")
+if repeat_summary.get("first_failure") is not None:
+    raise SystemExit(f"{repeat_summary_path}: expected null first_failure for clean repeat")
+if repeat_summary.get("best_evidence_attempt") is not None:
+    raise SystemExit(f"{repeat_summary_path}: expected null best_evidence_attempt for clean repeat")
 expected_names = ["attempt-0001-clean_malloc_free", "attempt-0002-clean_malloc_free"]
 actual_names = [target.get("name") for target in summary.get("targets") or []]
 if actual_names != expected_names:
     raise SystemExit(f"{summary_path}: unexpected repeated target names {actual_names}")
+attempts = repeat_summary.get("attempts") or []
+if [attempt.get("target_name") for attempt in attempts] != expected_names:
+    raise SystemExit(f"{repeat_summary_path}: unexpected attempt names {attempts}")
 for index, target in enumerate(summary.get("targets") or [], start=1):
     attempt_summary = summary_path.parent / "attempts" / f"{index:04}" / "run-summary.json"
     if not attempt_summary.exists():
@@ -178,10 +199,21 @@ for index, target in enumerate(summary.get("targets") or [], start=1):
     crashpack = pathlib.Path((target.get("artifacts") or {}).get("crashpack", ""))
     if f"attempts/{index:04}/targets/clean_malloc_free" not in crashpack.as_posix():
         raise SystemExit(f"{summary_path}: target crashpack is not attempt-scoped: {crashpack}")
+    repeat_attempt = attempts[index - 1]
+    if pathlib.Path(repeat_attempt.get("run_summary", "")) != attempt_summary:
+        raise SystemExit(f"{repeat_summary_path}: attempt run_summary mismatch {repeat_attempt}")
+    for key in ["crashpack", "findings", "evidence_pack", "issue_groups"]:
+        path = pathlib.Path(repeat_attempt.get(key, ""))
+        if not path.exists():
+            raise SystemExit(f"{repeat_summary_path}: attempt {key} missing at {path}")
+if not any("repeat-summary.json" in command for command in repeat_summary.get("next_commands") or []):
+    raise SystemExit(f"{repeat_summary_path}: next_commands should include repeat-summary.json")
 print(json.dumps({
     "summary": str(summary_path),
+    "repeat_summary": str(repeat_summary_path),
     "target_count": summary.get("target_count"),
     "status_totals": summary.get("status_totals"),
+    "outcome_totals": repeat_summary.get("outcome_totals"),
     "targets": actual_names,
 }, sort_keys=True))
 PY
@@ -248,6 +280,52 @@ PY
 printf '[observe] finding binary with default confirmation\n'
 "$runner_path" observe build/user-samples/copy_overrun_case --output "$output_root/copy_overrun_case"
 assert_observation "$output_root/copy_overrun_case/run-summary.json" findings heap_overflow 1 valgrind findings heap_overflow
+
+printf '[observe] opt-in repeated finding binary writes repeat summary\n'
+"$runner_path" observe --native-only --repeat 2 build/user-samples/copy_overrun_case --output "$output_root/copy_overrun_case_native_repeat"
+python3 - "$output_root/copy_overrun_case_native_repeat/repeat-summary.json" <<'PY'
+import json
+import pathlib
+import sys
+
+summary_path = pathlib.Path(sys.argv[1])
+summary = json.loads(summary_path.read_text())
+if summary.get("purpose") != "repeat_observation_summary":
+    raise SystemExit(f"{summary_path}: unexpected purpose {summary.get('purpose')}")
+if summary.get("requested_attempts") != 2 or summary.get("completed_attempts") != 2:
+    raise SystemExit(f"{summary_path}: unexpected attempt counts {summary}")
+if (summary.get("status_totals") or {}).get("findings") != 2:
+    raise SystemExit(f"{summary_path}: expected two finding statuses, got {summary.get('status_totals')}")
+if (summary.get("outcome_totals") or {}).get("finding") != 2:
+    raise SystemExit(f"{summary_path}: expected two finding outcomes, got {summary.get('outcome_totals')}")
+if (summary.get("finding_totals_by_class") or {}).get("heap_overflow") != 2:
+    raise SystemExit(f"{summary_path}: expected two heap_overflow findings, got {summary.get('finding_totals_by_class')}")
+first_failure = summary.get("first_failure") or {}
+best_evidence = summary.get("best_evidence_attempt") or {}
+if first_failure.get("attempt") != 1 or first_failure.get("status") != "findings":
+    raise SystemExit(f"{summary_path}: unexpected first_failure {first_failure}")
+if best_evidence.get("attempt") != 1 or best_evidence.get("findings_count") != 1:
+    raise SystemExit(f"{summary_path}: unexpected best_evidence_attempt {best_evidence}")
+attempts = summary.get("attempts") or []
+if len(attempts) != 2:
+    raise SystemExit(f"{summary_path}: expected two attempts, got {attempts}")
+for index, attempt in enumerate(attempts, start=1):
+    if attempt.get("target_name") != f"attempt-{index:04}-copy_overrun_case":
+        raise SystemExit(f"{summary_path}: bad target_name for attempt {index}: {attempt}")
+    if attempt.get("findings_by_class", {}).get("heap_overflow") != 1:
+        raise SystemExit(f"{summary_path}: missing heap_overflow for attempt {index}: {attempt}")
+    for key in ["run_summary", "crashpack", "findings", "evidence_pack", "issue_groups"]:
+        path = pathlib.Path(attempt.get(key, ""))
+        if not path.exists():
+            raise SystemExit(f"{summary_path}: attempt {index} {key} missing at {path}")
+print(json.dumps({
+    "repeat_summary": str(summary_path),
+    "status_totals": summary.get("status_totals"),
+    "outcome_totals": summary.get("outcome_totals"),
+    "first_failure": first_failure.get("attempt"),
+    "best_evidence_attempt": best_evidence.get("attempt"),
+}, sort_keys=True))
+PY
 
 printf '[observe] repeated finding binary keeps stable fingerprint\n'
 "$runner_path" observe build/user-samples/copy_overrun_case --output "$output_root/copy_overrun_case_repeat"

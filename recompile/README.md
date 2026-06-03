@@ -136,7 +136,10 @@ jq . build/repeat-demo/run-summary.json
 
 Repeat mode writes each attempt under
 `build/repeat-demo/attempts/000N/` and writes an aggregate
-`build/repeat-demo/run-summary.json` with attempt-prefixed target names.
+`build/repeat-demo/run-summary.json` with attempt-prefixed target names. It
+also writes `build/repeat-demo/repeat-summary.json`, which records attempt
+counts, status/outcome totals, per-attempt artifact paths, first non-pass
+attempt, best evidence attempt, and next inspection commands.
 `--repeat --deep` is intentionally rejected until the repeat escalation policy
 is implemented, because repeated sanitizer/Valgrind scans are expensive and
 should not become an accidental default path.
@@ -151,6 +154,7 @@ evidence for agent inspection.
 Primary outputs:
 
 - `build/observe-demo/run-summary.json` - run-level observation summary
+- `build/observe-demo/repeat-summary.json` - repeat-run summary when `--repeat N` is used
 - `build/observe-demo/targets/copy_overrun_case/findings.json` - target findings
 - `build/observe-demo/targets/copy_overrun_case/evidence-pack.json` - target evidence pack
 - `build/observe-demo/targets/copy_overrun_case/dependencies.json` - target binary/dependency metadata
