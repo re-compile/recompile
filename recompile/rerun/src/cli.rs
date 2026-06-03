@@ -65,6 +65,17 @@ struct ToolDetection {
     free_frame: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct ObserveRequest {
+    binary_path: PathBuf,
+    output_root: PathBuf,
+    cwd: Option<PathBuf>,
+    timeout_ms: Option<u64>,
+    native_only: bool,
+    deep: bool,
+    args: Vec<String>,
+}
+
 /// Handle the 'run' command
 pub fn handle_run_command(matches: &ArgMatches) -> Result<()> {
     let binary = matches.get_one::<String>("binary").unwrap();
@@ -121,51 +132,95 @@ pub fn handle_run_command(matches: &ArgMatches) -> Result<()> {
 
 /// Handle the 'observe' command
 pub fn handle_observe_command(matches: &ArgMatches) -> Result<()> {
-    let binary_path = PathBuf::from(matches.get_one::<String>("binary").unwrap());
-    let output_root = PathBuf::from(matches.get_one::<String>("output").unwrap());
-    let cwd = matches.get_one::<String>("cwd").map(PathBuf::from);
-    let timeout_ms = matches.get_one::<u64>("timeout-ms").copied();
-    let native_only = matches.get_flag("native-only");
-    let deep = matches.get_flag("deep");
-    let args: Vec<String> = matches
-        .get_many::<String>("args")
-        .map(|args| args.map(|s| s.to_string()).collect())
-        .unwrap_or_default();
+    let request = ObserveRequest {
+        binary_path: PathBuf::from(matches.get_one::<String>("binary").unwrap()),
+        output_root: PathBuf::from(matches.get_one::<String>("output").unwrap()),
+        cwd: matches.get_one::<String>("cwd").map(PathBuf::from),
+        timeout_ms: matches.get_one::<u64>("timeout-ms").copied(),
+        native_only: matches.get_flag("native-only"),
+        deep: matches.get_flag("deep"),
+        args: matches
+            .get_many::<String>("args")
+            .map(|args| args.map(|s| s.to_string()).collect())
+            .unwrap_or_default(),
+    };
+    let repeat = matches.get_one::<u32>("repeat").copied().unwrap_or(1);
+    validate_observe_repeat_options(repeat, request.deep)?;
 
-    let target_name = observation_target_name(&binary_path);
-    let target_dir = output_root.join("targets").join(&target_name);
-    fs::create_dir_all(&target_dir)?;
-    let native_diagnostics = observation_diagnostics_from_native(native_capability_diagnostics());
+    print_observe_request(&request, repeat);
 
+    if repeat > 1 {
+        return run_observe_repeated(&request, repeat);
+    }
+
+    let summary = run_observe_once(&request)?;
+    if observation_summary_had_error(&summary) {
+        return Err(anyhow::anyhow!(
+            "Observation completed with target status {}",
+            summary.targets[0].status.as_str()
+        ));
+    }
+
+    Ok(())
+}
+
+fn print_observe_request(request: &ObserveRequest, repeat: u32) {
     println!("re:compile runtime observer v0.1.0");
-    println!("Observing binary: {}", binary_path.display());
-    println!("Output root: {}", output_root.display());
-    println!("Target output: {}", target_dir.display());
-    if let Some(cwd) = &cwd {
+    println!("Observing binary: {}", request.binary_path.display());
+    println!("Output root: {}", request.output_root.display());
+    if repeat > 1 {
+        println!("Repeat: {} attempts", repeat);
+        println!(
+            "Attempt output root: {}",
+            request.output_root.join("attempts").display()
+        );
+    }
+    if let Some(cwd) = &request.cwd {
         println!("Cwd: {}", cwd.display());
     }
-    if let Some(timeout_ms) = timeout_ms {
+    if let Some(timeout_ms) = request.timeout_ms {
         println!("Timeout: {}ms", timeout_ms);
     }
-    if native_only {
+    if request.native_only {
         println!("Escalation: native-only");
-    } else if deep {
+    } else if request.deep {
         println!("Escalation: deep");
     } else {
         println!("Escalation: confirm");
     }
+}
+
+fn validate_observe_repeat_options(repeat: u32, deep: bool) -> Result<()> {
+    if repeat == 0 {
+        return Err(anyhow::anyhow!("--repeat must be at least 1"));
+    }
+    if repeat > 1 && deep {
+        return Err(anyhow::anyhow!(
+            "--repeat with --deep requires a repeat escalation policy; run repeat without --deep for now"
+        ));
+    }
+    Ok(())
+}
+
+fn run_observe_once(request: &ObserveRequest) -> Result<ObservationRunSummary> {
+    let target_name = observation_target_name(&request.binary_path);
+    let target_dir = request.output_root.join("targets").join(&target_name);
+    fs::create_dir_all(&target_dir)?;
+    let native_diagnostics = observation_diagnostics_from_native(native_capability_diagnostics());
+
+    println!("Target output: {}", target_dir.display());
 
     let started = Instant::now();
     let run_options = NativeRunOptions {
-        cwd: cwd.clone(),
-        timeout: timeout_ms.map(Duration::from_millis),
+        cwd: request.cwd.clone(),
+        timeout: request.timeout_ms.map(Duration::from_millis),
     };
     let native_result = run_native_with_options(
-        &binary_path,
+        &request.binary_path,
         &target_dir,
         "never",
         "llvm",
-        &args,
+        &request.args,
         run_options.clone(),
     );
 
@@ -173,7 +228,7 @@ pub fn handle_observe_command(matches: &ArgMatches) -> Result<()> {
     let mut target = match native_result {
         Ok(result) => {
             let mut target =
-                observation_target_from_native_result(&target_name, timeout_ms, result);
+                observation_target_from_native_result(&target_name, request.timeout_ms, result);
             target.diagnostics = native_diagnostics.clone();
             target
         }
@@ -181,33 +236,33 @@ pub fn handle_observe_command(matches: &ArgMatches) -> Result<()> {
             let native_error = error.to_string();
             let mut target = observation_target_from_error(
                 &target_name,
-                &binary_path,
-                &args,
-                cwd.as_deref(),
-                &output_root,
-                timeout_ms,
+                &request.binary_path,
+                &request.args,
+                request.cwd.as_deref(),
+                &request.output_root,
+                request.timeout_ms,
                 native_error.clone(),
                 started.elapsed().as_millis(),
             );
             target.diagnostics = native_diagnostics.clone();
-            if !native_only && native_error_allows_tool_only_fallback(&native_error) {
+            if !request.native_only && native_error_allows_tool_only_fallback(&native_error) {
                 used_tool_only_fallback = true;
                 run_observe_tool_only_fallback(
                     &mut target,
-                    &binary_path,
+                    &request.binary_path,
                     &target_dir,
-                    &args,
+                    &request.args,
                     &run_options,
-                    deep,
-                    timeout_ms,
+                    request.deep,
+                    request.timeout_ms,
                 )?;
             }
             target
         }
     };
 
-    if !native_only && !used_tool_only_fallback && !had_observation_error(target.status) {
-        let escalation_results = run_observe_escalation(&target, deep)?;
+    if !request.native_only && !used_tool_only_fallback && !had_observation_error(target.status) {
+        let escalation_results = run_observe_escalation(&target, request.deep)?;
         if !escalation_results.is_empty() {
             write_escalation_results(
                 &PathBuf::from(&target.artifacts.crashpack),
@@ -236,30 +291,101 @@ pub fn handle_observe_command(matches: &ArgMatches) -> Result<()> {
         }
     }
 
-    let had_error = had_observation_error(target.status);
     let summary = ObservationRunSummary::new(
-        output_root.display().to_string(),
+        request.output_root.display().to_string(),
         vec![target],
         vec![format!(
             "jq . {}",
-            output_root.join("run-summary.json").display()
+            request.output_root.join("run-summary.json").display()
         )],
     );
-    write_observation_summary(&output_root, &summary)?;
+    write_observation_summary(&request.output_root, &summary)?;
 
     println!(
         "Observation summary saved to: {}",
-        output_root.join("run-summary.json").display()
+        request.output_root.join("run-summary.json").display()
     );
 
-    if had_error {
+    Ok(summary)
+}
+
+fn run_observe_repeated(request: &ObserveRequest, repeat: u32) -> Result<()> {
+    let attempts_root = request.output_root.join("attempts");
+    if attempts_root.exists() {
+        fs::remove_dir_all(&attempts_root)?;
+    }
+    fs::create_dir_all(&attempts_root)?;
+
+    let mut aggregate_targets = Vec::new();
+    let mut next_commands = vec![format!(
+        "jq . {}",
+        request.output_root.join("run-summary.json").display()
+    )];
+
+    for attempt in 1..=repeat {
+        let attempt_dir = repeat_attempt_dir(&request.output_root, attempt);
+        println!(
+            "Repeat attempt {}/{}: {}",
+            attempt,
+            repeat,
+            attempt_dir.display()
+        );
+
+        let mut attempt_request = request.clone();
+        attempt_request.output_root = attempt_dir.clone();
+        let attempt_summary = run_observe_once(&attempt_request)?;
+
+        next_commands.push(format!(
+            "jq . {}",
+            attempt_dir.join("run-summary.json").display()
+        ));
+        for mut target in attempt_summary.targets {
+            target.name = repeat_target_name(attempt, &target.name);
+            aggregate_targets.push(target);
+        }
+    }
+
+    let summary = ObservationRunSummary::new(
+        request.output_root.display().to_string(),
+        aggregate_targets,
+        next_commands,
+    );
+    write_observation_summary(&request.output_root, &summary)?;
+
+    println!(
+        "Repeated observation summary saved to: {}",
+        request.output_root.join("run-summary.json").display()
+    );
+
+    if observation_summary_had_error(&summary) {
+        let statuses = summary
+            .status_totals
+            .iter()
+            .map(|(status, count)| format!("{status}={count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(anyhow::anyhow!(
-            "Observation completed with target status {}",
-            summary.targets[0].status.as_str()
+            "Repeated observation completed with error statuses: {}",
+            statuses
         ));
     }
 
     Ok(())
+}
+
+fn repeat_attempt_dir(output_root: &Path, attempt: u32) -> PathBuf {
+    output_root.join("attempts").join(format!("{attempt:04}"))
+}
+
+fn repeat_target_name(attempt: u32, target_name: &str) -> String {
+    format!("attempt-{attempt:04}-{target_name}")
+}
+
+fn observation_summary_had_error(summary: &ObservationRunSummary) -> bool {
+    summary
+        .targets
+        .iter()
+        .any(|target| had_observation_error(target.status))
 }
 
 /// Handle the 'escalate' command
@@ -1961,6 +2087,60 @@ fn validate_crashpack(path: &str) -> Result<()> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn repeat_attempt_paths_are_zero_padded() {
+        assert_eq!(
+            repeat_attempt_dir(Path::new(".re"), 1),
+            PathBuf::from(".re/attempts/0001")
+        );
+        assert_eq!(
+            repeat_attempt_dir(Path::new(".re"), 42),
+            PathBuf::from(".re/attempts/0042")
+        );
+    }
+
+    #[test]
+    fn repeat_target_names_include_attempt_index() {
+        assert_eq!(repeat_target_name(7, "app"), "attempt-0007-app".to_string());
+    }
+
+    #[test]
+    fn repeated_summary_reports_error_if_any_attempt_errors() {
+        let clean = ObservationTargetSummary::new(
+            "attempt-0001-app",
+            "build/app",
+            Vec::new(),
+            ".",
+            TargetStatus::Clean,
+            TargetExitSummary::clean_exit(),
+            ObservationArtifacts::target_defaults(".re/attempts/0001/targets/app"),
+        );
+        let timeout = ObservationTargetSummary::new(
+            "attempt-0002-app",
+            "build/app",
+            Vec::new(),
+            ".",
+            TargetStatus::Timeout,
+            TargetExitSummary::not_run(),
+            ObservationArtifacts::target_defaults(".re/attempts/0002/targets/app"),
+        );
+
+        let summary = ObservationRunSummary::new(".re", vec![clean, timeout], Vec::new());
+        assert!(observation_summary_had_error(&summary));
+        assert_eq!(summary.status_totals.get("clean"), Some(&1));
+        assert_eq!(summary.status_totals.get("timeout"), Some(&1));
+    }
+
+    #[test]
+    fn repeat_deep_is_rejected_until_policy_exists() {
+        assert!(validate_observe_repeat_options(1, true).is_ok());
+        assert!(validate_observe_repeat_options(2, false).is_ok());
+
+        let error = validate_observe_repeat_options(2, true)
+            .expect_err("repeat deep should require an explicit policy");
+        assert!(error.to_string().contains("repeat escalation policy"));
+    }
 
     #[test]
     fn crashpack_validate_returns_error_for_missing_required_files() {
