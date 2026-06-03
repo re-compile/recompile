@@ -18,7 +18,7 @@ What is working now:
 
 - `rerun observe <binary>` is the primary human/agent entry point
 - `rerun run --native <binary>` is the lower-level native execution path used per target
-- `rerun observe` supports args, `--cwd`, timeouts, native-only mode, and deep escalation mode
+- `rerun observe` supports args, `--cwd`, timeouts, native-only mode, deep escalation mode, and opt-in repeated runs
 - findings persist canonically to `findings.json`
 - agent-readable evidence persists to `evidence-pack.json`
 - binary and dynamic dependency metadata persists to `dependencies.json`
@@ -109,7 +109,8 @@ jq . build/observe-demo/run-summary.json
 
 `observe` is the Phase 4 local observability entry point. It runs the native
 crashpack path, writes `.re`-style run summaries, supports `--cwd`,
-`--timeout-ms`, `--native-only`, `--deep`, and target args after `--`.
+`--timeout-ms`, `--native-only`, `--deep`, `--repeat`, and target args after
+`--`.
 
 Default observe behavior runs Valgrind confirmation when native findings exist.
 `--deep` runs a Valgrind binary scan even when native is clean. If the binary is
@@ -125,6 +126,20 @@ whole-binary Valgrind scan; `--deep` also attempts ASan, LSan, and UBSan scans
 when applicable. For sanitizer-built binaries, deep fallback records the
 Valgrind scan as `skipped` instead of silently omitting it. `--native-only`
 disables this fallback and preserves strict native-tracing failure behavior.
+
+Repeated observation is opt-in:
+
+```bash
+cargo run -p rerun -- observe --repeat 3 --native-only build/user-samples/clean_malloc_free --output build/repeat-demo
+jq . build/repeat-demo/run-summary.json
+```
+
+Repeat mode writes each attempt under
+`build/repeat-demo/attempts/000N/` and writes an aggregate
+`build/repeat-demo/run-summary.json` with attempt-prefixed target names.
+`--repeat --deep` is intentionally rejected until the repeat escalation policy
+is implemented, because repeated sanitizer/Valgrind scans are expensive and
+should not become an accidental default path.
 
 If a target terminates with `SIGSEGV`, `SIGABRT`, `SIGBUS`, or `SIGFPE` and no
 more precise detector has emitted a finding, `observe` records an

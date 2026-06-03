@@ -124,6 +124,14 @@ fn build_cli() -> Command {
                         .help("Kill the target if it runs longer than this many milliseconds"),
                 )
                 .arg(
+                    Arg::new("repeat")
+                        .long("repeat")
+                        .value_name("N")
+                        .default_value("1")
+                        .value_parser(clap::value_parser!(u32))
+                        .help("Run observe N times as an opt-in flaky-failure diagnostic"),
+                )
+                .arg(
                     Arg::new("native-only")
                         .long("native-only")
                         .action(ArgAction::SetTrue)
@@ -246,5 +254,18 @@ mod tests {
             error.kind(),
             ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
         );
+    }
+
+    #[test]
+    fn observe_accepts_repeat_count() {
+        let matches = build_cli()
+            .try_get_matches_from(["rerun", "observe", "--repeat", "3", "build/app"])
+            .expect("observe --repeat should parse");
+
+        let Some(("observe", observe)) = matches.subcommand() else {
+            panic!("expected observe subcommand");
+        };
+
+        assert_eq!(observe.get_one::<u32>("repeat"), Some(&3));
     }
 }

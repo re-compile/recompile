@@ -29,6 +29,34 @@ The existing `rerun run --native <binary>` command remains the low-level crashpa
       replay/
 ```
 
+With `--repeat N`, repeat mode is explicit and attempt-scoped:
+
+```text
+.re/
+  run-summary.json
+  attempts/
+    0001/
+      run-summary.json
+      targets/
+        app/
+          findings.json
+          evidence-pack.json
+          issue-groups.json
+    0002/
+      run-summary.json
+      targets/
+        app/
+          findings.json
+          evidence-pack.json
+          issue-groups.json
+```
+
+The root `run-summary.json` remains a normal observation summary and aggregates
+the per-attempt target summaries with names such as `attempt-0001-app`.
+Detailed flaky-run aggregation belongs to `repeat-summary.json` in Phase 6.
+Repeated deep escalation is policy-gated for now because sanitizer and Valgrind
+retries are expensive and must be budgeted deliberately.
+
 `run-summary.json` is versioned by `schemas/observation-run.schema.json` and uses `schema_version: "1.0"` with `purpose: "local_runtime_observation"`.
 
 ## Target Statuses
@@ -90,7 +118,7 @@ Fingerprints are deterministic. The current inputs are:
 - finding class
 - observed operation or API
 - resolved source path when available
-- normalized call site
+- normalized call site when it is deterministic enough for the source
 - normalized allocation site
 - normalized free site when available
 - access size
@@ -102,10 +130,24 @@ those vary between runs. Repeated executions of the same bug path should keep
 the same fingerprint. Independent findings should split when their class,
 operation, source site, lifecycle site, or size evidence differs.
 
-## Phase 4 Complete Scope
+Native eBPF stack symbolization is opportunistic, so a source call site may be
+present in one run and missing in another. For native memory findings that
+already have stable source, allocation, and size evidence, the call site stays
+visible in the issue-group source context but is not part of the primary
+fingerprint. Tool-backed findings from ASan, Valgrind, UBSan, LSan, or GDB can
+use normalized tool frames because those outputs are deterministic enough for
+the escalation layer.
+
+## Phase 4 And Phase 6 Baseline Scope
 
 The current Phase 4 baseline supports one binary, args after `--`, `--cwd`,
 `--output`, `--timeout-ms`, `--native-only`, and `--deep`.
+
+The current Phase 6 baseline adds `--repeat N` for opt-in repeated native
+observation runs. Repeat mode runs the same binary multiple times, stores each
+attempt independently under `attempts/`, and writes an aggregate
+`run-summary.json`. It does not yet write `repeat-summary.json`, cross-attempt
+issue groups, or repeated escalation policy artifacts.
 
 Default escalation policy:
 

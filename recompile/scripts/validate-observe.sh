@@ -154,6 +154,45 @@ printf '[observe] clean binary\n'
 "$runner_path" observe build/user-samples/clean_malloc_free --output "$output_root/clean_malloc_free"
 assert_observation "$output_root/clean_malloc_free/run-summary.json" clean __none__ 0
 
+printf '[observe] opt-in repeated clean binary\n'
+"$runner_path" observe --native-only --repeat 2 build/user-samples/clean_malloc_free --output "$output_root/clean_malloc_free_repeat"
+python3 - "$output_root/clean_malloc_free_repeat/run-summary.json" <<'PY'
+import json
+import pathlib
+import sys
+
+summary_path = pathlib.Path(sys.argv[1])
+summary = json.loads(summary_path.read_text())
+if summary.get("target_count") != 2:
+    raise SystemExit(f"{summary_path}: expected two repeated targets, got {summary.get('target_count')}")
+if (summary.get("status_totals") or {}).get("clean") != 2:
+    raise SystemExit(f"{summary_path}: expected two clean attempts, got {summary.get('status_totals')}")
+expected_names = ["attempt-0001-clean_malloc_free", "attempt-0002-clean_malloc_free"]
+actual_names = [target.get("name") for target in summary.get("targets") or []]
+if actual_names != expected_names:
+    raise SystemExit(f"{summary_path}: unexpected repeated target names {actual_names}")
+for index, target in enumerate(summary.get("targets") or [], start=1):
+    attempt_summary = summary_path.parent / "attempts" / f"{index:04}" / "run-summary.json"
+    if not attempt_summary.exists():
+        raise SystemExit(f"{summary_path}: missing attempt summary {attempt_summary}")
+    crashpack = pathlib.Path((target.get("artifacts") or {}).get("crashpack", ""))
+    if f"attempts/{index:04}/targets/clean_malloc_free" not in crashpack.as_posix():
+        raise SystemExit(f"{summary_path}: target crashpack is not attempt-scoped: {crashpack}")
+print(json.dumps({
+    "summary": str(summary_path),
+    "target_count": summary.get("target_count"),
+    "status_totals": summary.get("status_totals"),
+    "targets": actual_names,
+}, sort_keys=True))
+PY
+
+printf '[observe] repeated deep mode is policy-gated\n'
+if "$runner_path" observe --deep --repeat 2 build/user-samples/clean_malloc_free --output "$output_root/repeat_deep_reject" > "$output_root/repeat-deep-reject.log" 2>&1; then
+    printf 'observe --repeat --deep unexpectedly succeeded before repeat escalation policy exists\n' >&2
+    exit 1
+fi
+grep -q 'repeat escalation policy' "$output_root/repeat-deep-reject.log"
+
 printf '[observe] signal-only crash evidence\n'
 "$runner_path" observe build/user-samples/crash_segv_case --output "$output_root/crash_segv_case"
 assert_observation "$output_root/crash_segv_case/run-summary.json" findings unclassified_crash 1 gdb findings unclassified_crash
