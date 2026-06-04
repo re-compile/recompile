@@ -65,6 +65,12 @@ For the full current closeout gate:
 make phase5
 ```
 
+For the Phase 6 repeat/flaky fixture gate:
+
+```bash
+make phase6
+```
+
 ### Native Linux host
 
 ```bash
@@ -220,6 +226,7 @@ The individual gates remain available:
 make phase2
 make observe-smoke
 make project-smoke
+make repeat-fixtures-smoke
 make observe-hit-rate
 make support-matrix-smoke
 make phase5-closeout-smoke
@@ -233,6 +240,8 @@ agent summary smoke, and replay smoke. `make observe-smoke` validates the Phase
 deep-escalation, and fingerprint stability cases. `make project-smoke`
 validates project-shaped observation fixtures including multi-file, args/cwd,
 multi-binary, shared-library, Valgrind-first, and timeout cases. `make
+repeat-fixtures-smoke` validates deterministic repeated-run fixtures: stable
+clean, stable failing, state-controlled flaky, and timeout. `make
 observe-hit-rate` writes
 `build/observe-hit-rate/summary.json` with observation-run target statuses,
 native findings, issue groups, escalation outcomes, next commands, and generated
@@ -255,6 +264,19 @@ Phase 4 gate; optional `recc`/LLVM validation is deliberately separate.
 
 Phase 5 closeout details and manual dry runs are documented in
 `docs/phase5-closeout.md`.
+
+Phase 6 adds:
+
+```bash
+make repeat-fixtures-smoke
+make phase6
+```
+
+`make repeat-fixtures-smoke` runs reproducible repeat-mode fixtures without true
+randomness. `repeat_flaky` uses a counter file in its `--cwd` to produce a fixed
+clean/finding/clean sequence, so local and CI runs can assert first failure,
+best evidence attempt, status totals, and per-attempt artifact paths.
+`make phase6` runs `make phase5` and then this repeat fixture gate.
 
 ### Run the golden-only baseline
 

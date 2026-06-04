@@ -166,6 +166,18 @@ attempt independently under `attempts/`, and writes an aggregate
 `run-summary.json` plus `repeat-summary.json`. It does not yet write
 cross-attempt issue groups or repeated escalation policy artifacts.
 
+Repeat/flaky fixtures are covered by `make repeat-fixtures-smoke`:
+
+- stable clean repeated run
+- stable failing repeated run
+- state-controlled flaky run with a deterministic clean/finding/clean sequence
+- repeated timeout run
+
+The flaky fixture uses a counter file in its `--cwd`; it does not use randomness
+or timing races. This keeps repeat-mode tests reproducible while still proving
+that `repeat-summary.json` can report mixed pass/fail distributions and select
+the first failure and best evidence attempt.
+
 Default escalation policy:
 
 - native first
@@ -194,6 +206,13 @@ Project-style fixtures are covered by `make project-smoke`:
 - shared-library target with dependency metadata
 - Valgrind-first target
 - timeout target
+
+Repeat-specific fixtures are covered by `make repeat-fixtures-smoke`:
+
+- stable clean
+- stable failing
+- deterministic clean/finding/clean flaky sequence
+- timeout
 
 ## Observation Hit Rate
 
@@ -272,12 +291,14 @@ make phase5-closeout-smoke
 make phase2
 make observe-smoke
 make project-smoke
+make repeat-fixtures-smoke
 make observe-hit-rate
 make hit-rate
 ```
 
 `make phase4` remains available as the Phase 4 substrate gate. `make phase5`
 adds the support-matrix and closeout scans before running that substrate.
+`make phase6` runs `make phase5` and then the deterministic repeat fixture gate.
 Optional `recc`/LLVM validation is intentionally separate via `make recc-smoke`.
 
 ### Manual Dry Run

@@ -13,7 +13,11 @@ mkdir -p \
     "$fixture_root/multi-binary" \
     "$fixture_root/shared-lib/lib" \
     "$fixture_root/valgrind-first" \
-    "$fixture_root/timeout"
+    "$fixture_root/timeout" \
+    "$fixture_root/repeat-clean" \
+    "$fixture_root/repeat-failing" \
+    "$fixture_root/repeat-flaky/run" \
+    "$fixture_root/repeat-timeout"
 
 COMMON_FLAGS=(
   -g
@@ -81,5 +85,22 @@ cc "${COMMON_FLAGS[@]}" \
 cc "${COMMON_FLAGS[@]}" \
   -o "$fixture_root/timeout/app" \
   samples/project-fixtures/timeout/src/main.c
+
+cc "${COMMON_FLAGS[@]}" \
+  -o "$fixture_root/repeat-clean/repeat_clean" \
+  samples/project-fixtures/repeat-clean/src/main.c
+
+cc "${COMMON_FLAGS[@]}" \
+  -o "$fixture_root/repeat-failing/repeat_failing" \
+  samples/project-fixtures/repeat-failing/src/main.c
+
+cc "${COMMON_FLAGS[@]}" \
+  -o "$fixture_root/repeat-flaky/repeat_flaky" \
+  samples/project-fixtures/repeat-flaky/src/main.c
+printf '0\n' > "$fixture_root/repeat-flaky/run/attempt-state.txt"
+
+cc "${COMMON_FLAGS[@]}" \
+  -o "$fixture_root/repeat-timeout/repeat_timeout" \
+  samples/project-fixtures/repeat-timeout/src/main.c
 
 printf 'Built project fixtures under %s\n' "$fixture_root"
