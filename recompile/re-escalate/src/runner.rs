@@ -2,7 +2,8 @@
 
 use crate::{
     parse_asan_output, parse_gdb_output, parse_lsan_output, parse_ubsan_output,
-    parse_valgrind_output, EscalationConfig, EscalationError, EscalationResult, Finding, Result,
+    parse_valgrind_output, EscalationConfig, EscalationError, EscalationResult, EscalationStatus,
+    Finding, Result,
 };
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -256,13 +257,39 @@ impl EscalationRunner {
         duration_ms: u64,
         error: String,
     ) -> EscalationResult {
+        self.result_failure_with_status(
+            finding_id,
+            escalation_id,
+            tool,
+            EscalationStatus::Failed,
+            tool_available,
+            duration_ms,
+            None,
+            error,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn result_failure_with_status(
+        &self,
+        finding_id: &str,
+        escalation_id: &str,
+        tool: &str,
+        status: EscalationStatus,
+        tool_available: bool,
+        duration_ms: u64,
+        timeout_ms: Option<u64>,
+        error: String,
+    ) -> EscalationResult {
         EscalationResult {
             id: escalation_id.to_string(),
             finding_id: finding_id.to_string(),
             tool: tool.to_string(),
+            status,
             success: false,
             tool_available,
             duration_ms,
+            timeout_ms,
             output_path: None,
             stdout_path: None,
             stderr_path: None,
@@ -273,6 +300,48 @@ impl EscalationRunner {
             error: Some(error),
             findings_detected: Vec::new(),
             timestamp: unix_timestamp(),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn timeout_result(
+        &self,
+        finding_id: &str,
+        escalation_id: &str,
+        tool: &str,
+        timeout_ms: u64,
+        duration_ms: u64,
+        command: Vec<String>,
+        stdout_path: Option<String>,
+        stderr_path: Option<String>,
+    ) -> EscalationResult {
+        EscalationResult {
+            id: escalation_id.to_string(),
+            finding_id: finding_id.to_string(),
+            tool: tool.to_string(),
+            status: EscalationStatus::Timeout,
+            success: false,
+            tool_available: true,
+            duration_ms,
+            timeout_ms: Some(timeout_ms),
+            output_path: None,
+            stdout_path,
+            stderr_path,
+            report_path: None,
+            command,
+            exit_code: None,
+            confirmed: false,
+            error: Some(format!("{tool} execution timed out after {timeout_ms}ms")),
+            findings_detected: Vec::new(),
+            timestamp: unix_timestamp(),
+        }
+    }
+
+    fn successful_status(confirmed: bool, findings_detected: &[String]) -> EscalationStatus {
+        if confirmed || !findings_detected.is_empty() {
+            EscalationStatus::Findings
+        } else {
+            EscalationStatus::Clean
         }
     }
 
@@ -313,12 +382,14 @@ impl EscalationRunner {
         start_time: Instant,
     ) -> Result<EscalationResult> {
         if !self.binary_looks_asan_instrumented(binary_path).await? {
-            return Ok(self.result_failure(
+            return Ok(self.result_failure_with_status(
                 finding_id,
                 escalation_id,
                 "asan",
-                false,
+                EscalationStatus::NotApplicable,
+                true,
                 start_time.elapsed().as_millis() as u64,
+                Some(self.config.tools.asan.timeout_ms),
                 format!(
                     "ASan requires a binary built with -fsanitize=address: {}",
                     binary_path.display()
@@ -345,12 +416,31 @@ impl EscalationRunner {
         cmd.env("ASAN_OPTIONS", runtime_flags);
         self.apply_cwd(&mut cmd, &mut command);
 
-        let timeout_duration = TokioDuration::from_millis(self.config.tools.asan.timeout_ms);
-        let output = timeout(timeout_duration, cmd.output())
-            .await
-            .map_err(|_| EscalationError::Timeout("ASan execution timed out".to_string()))?;
-
-        let output = output.map_err(|error| EscalationError::ToolExecution(error.to_string()))?;
+        let timeout_ms = self.config.tools.asan.timeout_ms;
+        let timeout_duration = TokioDuration::from_millis(timeout_ms);
+        let output = match timeout(timeout_duration, cmd.output()).await {
+            Ok(output) => {
+                output.map_err(|error| EscalationError::ToolExecution(error.to_string()))?
+            }
+            Err(_) => {
+                tokio::fs::write(&stdout_file, b"").await?;
+                tokio::fs::write(
+                    &stderr_file,
+                    format!("asan execution timed out after {timeout_ms}ms\n").as_bytes(),
+                )
+                .await?;
+                return Ok(self.timeout_result(
+                    finding_id,
+                    escalation_id,
+                    "asan",
+                    timeout_ms,
+                    start_time.elapsed().as_millis() as u64,
+                    command,
+                    Some(stdout_file.display().to_string()),
+                    Some(stderr_file.display().to_string()),
+                ));
+            }
+        };
 
         let output_str = String::from_utf8_lossy(&output.stdout);
         let error_str = String::from_utf8_lossy(&output.stderr);
@@ -361,15 +451,18 @@ impl EscalationRunner {
         tokio::fs::write(&report_file, serde_json::to_vec_pretty(&report)?).await?;
 
         let findings_detected = report.detected_classes();
+        let status = Self::successful_status(report.confirmed(), &findings_detected);
 
         log::info!("ASan escalation completed: {}", report_file.display());
         Ok(EscalationResult {
             id: escalation_id.to_string(),
             finding_id: finding_id.to_string(),
             tool: "asan".to_string(),
+            status,
             success: true,
             tool_available: true,
             duration_ms: start_time.elapsed().as_millis() as u64,
+            timeout_ms: Some(timeout_ms),
             output_path: Some(report_file.display().to_string()),
             stdout_path: Some(stdout_file.display().to_string()),
             stderr_path: Some(stderr_file.display().to_string()),
@@ -449,12 +542,14 @@ impl EscalationRunner {
         start_time: Instant,
     ) -> Result<EscalationResult> {
         if !self.binary_looks_lsan_instrumented(binary_path).await? {
-            return Ok(self.result_failure(
+            return Ok(self.result_failure_with_status(
                 finding_id,
                 escalation_id,
                 "lsan",
-                false,
+                EscalationStatus::NotApplicable,
+                true,
                 start_time.elapsed().as_millis() as u64,
+                Some(self.config.tools.lsan.timeout_ms),
                 format!(
                     "LSan requires a binary built with -fsanitize=leak: {}",
                     binary_path.display()
@@ -481,12 +576,31 @@ impl EscalationRunner {
         cmd.env("LSAN_OPTIONS", runtime_flags);
         self.apply_cwd(&mut cmd, &mut command);
 
-        let timeout_duration = TokioDuration::from_millis(self.config.tools.lsan.timeout_ms);
-        let output = timeout(timeout_duration, cmd.output())
-            .await
-            .map_err(|_| EscalationError::Timeout("LSan execution timed out".to_string()))?;
-
-        let output = output.map_err(|error| EscalationError::ToolExecution(error.to_string()))?;
+        let timeout_ms = self.config.tools.lsan.timeout_ms;
+        let timeout_duration = TokioDuration::from_millis(timeout_ms);
+        let output = match timeout(timeout_duration, cmd.output()).await {
+            Ok(output) => {
+                output.map_err(|error| EscalationError::ToolExecution(error.to_string()))?
+            }
+            Err(_) => {
+                tokio::fs::write(&stdout_file, b"").await?;
+                tokio::fs::write(
+                    &stderr_file,
+                    format!("lsan execution timed out after {timeout_ms}ms\n").as_bytes(),
+                )
+                .await?;
+                return Ok(self.timeout_result(
+                    finding_id,
+                    escalation_id,
+                    "lsan",
+                    timeout_ms,
+                    start_time.elapsed().as_millis() as u64,
+                    command,
+                    Some(stdout_file.display().to_string()),
+                    Some(stderr_file.display().to_string()),
+                ));
+            }
+        };
 
         let output_str = String::from_utf8_lossy(&output.stdout);
         let error_str = String::from_utf8_lossy(&output.stderr);
@@ -497,15 +611,18 @@ impl EscalationRunner {
         tokio::fs::write(&report_file, serde_json::to_vec_pretty(&report)?).await?;
 
         let findings_detected = report.detected_classes();
+        let status = Self::successful_status(report.confirmed(), &findings_detected);
 
         log::info!("LSan escalation completed: {}", report_file.display());
         Ok(EscalationResult {
             id: escalation_id.to_string(),
             finding_id: finding_id.to_string(),
             tool: "lsan".to_string(),
+            status,
             success: true,
             tool_available: true,
             duration_ms: start_time.elapsed().as_millis() as u64,
+            timeout_ms: Some(timeout_ms),
             output_path: Some(report_file.display().to_string()),
             stdout_path: Some(stdout_file.display().to_string()),
             stderr_path: Some(stderr_file.display().to_string()),
@@ -527,12 +644,14 @@ impl EscalationRunner {
         start_time: Instant,
     ) -> Result<EscalationResult> {
         if !self.binary_looks_ubsan_instrumented(binary_path).await? {
-            return Ok(self.result_failure(
+            return Ok(self.result_failure_with_status(
                 finding_id,
                 escalation_id,
                 "ubsan",
-                false,
+                EscalationStatus::NotApplicable,
+                true,
                 start_time.elapsed().as_millis() as u64,
+                Some(self.config.tools.ubsan.timeout_ms),
                 format!(
                     "UBSan requires a binary built with -fsanitize=undefined: {}",
                     binary_path.display()
@@ -559,12 +678,31 @@ impl EscalationRunner {
         cmd.env("UBSAN_OPTIONS", runtime_flags);
         self.apply_cwd(&mut cmd, &mut command);
 
-        let timeout_duration = TokioDuration::from_millis(self.config.tools.ubsan.timeout_ms);
-        let output = timeout(timeout_duration, cmd.output())
-            .await
-            .map_err(|_| EscalationError::Timeout("UBSan execution timed out".to_string()))?;
-
-        let output = output.map_err(|error| EscalationError::ToolExecution(error.to_string()))?;
+        let timeout_ms = self.config.tools.ubsan.timeout_ms;
+        let timeout_duration = TokioDuration::from_millis(timeout_ms);
+        let output = match timeout(timeout_duration, cmd.output()).await {
+            Ok(output) => {
+                output.map_err(|error| EscalationError::ToolExecution(error.to_string()))?
+            }
+            Err(_) => {
+                tokio::fs::write(&stdout_file, b"").await?;
+                tokio::fs::write(
+                    &stderr_file,
+                    format!("ubsan execution timed out after {timeout_ms}ms\n").as_bytes(),
+                )
+                .await?;
+                return Ok(self.timeout_result(
+                    finding_id,
+                    escalation_id,
+                    "ubsan",
+                    timeout_ms,
+                    start_time.elapsed().as_millis() as u64,
+                    command,
+                    Some(stdout_file.display().to_string()),
+                    Some(stderr_file.display().to_string()),
+                ));
+            }
+        };
 
         let output_str = String::from_utf8_lossy(&output.stdout);
         let error_str = String::from_utf8_lossy(&output.stderr);
@@ -575,15 +713,18 @@ impl EscalationRunner {
         tokio::fs::write(&report_file, serde_json::to_vec_pretty(&report)?).await?;
 
         let findings_detected = report.detected_classes();
+        let status = Self::successful_status(report.confirmed(), &findings_detected);
 
         log::info!("UBSan escalation completed: {}", report_file.display());
         Ok(EscalationResult {
             id: escalation_id.to_string(),
             finding_id: finding_id.to_string(),
             tool: "ubsan".to_string(),
+            status,
             success: true,
             tool_available: true,
             duration_ms: start_time.elapsed().as_millis() as u64,
+            timeout_ms: Some(timeout_ms),
             output_path: Some(report_file.display().to_string()),
             stdout_path: Some(stdout_file.display().to_string()),
             stderr_path: Some(stderr_file.display().to_string()),
@@ -680,20 +821,41 @@ impl EscalationRunner {
         }
         self.apply_cwd(&mut cmd, &mut command);
 
-        let timeout_duration = TokioDuration::from_millis(self.config.tools.valgrind.timeout_ms);
-        let output = timeout(timeout_duration, cmd.output())
-            .await
-            .map_err(|_| EscalationError::Timeout("Valgrind execution timed out".to_string()))?;
+        let timeout_ms = self.config.tools.valgrind.timeout_ms;
+        let timeout_duration = TokioDuration::from_millis(timeout_ms);
+        let output = match timeout(timeout_duration, cmd.output()).await {
+            Ok(output) => output,
+            Err(_) => {
+                tokio::fs::write(&stdout_file, b"").await?;
+                tokio::fs::write(
+                    &stderr_file,
+                    format!("valgrind execution timed out after {timeout_ms}ms\n").as_bytes(),
+                )
+                .await?;
+                return Ok(self.timeout_result(
+                    finding_id,
+                    escalation_id,
+                    "valgrind",
+                    timeout_ms,
+                    start_time.elapsed().as_millis() as u64,
+                    command,
+                    Some(stdout_file.display().to_string()),
+                    Some(stderr_file.display().to_string()),
+                ));
+            }
+        };
 
         let output = match output {
             Ok(output) => output,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(self.result_failure(
+                return Ok(self.result_failure_with_status(
                     finding_id,
                     escalation_id,
                     "valgrind",
+                    EscalationStatus::ToolUnavailable,
                     false,
                     start_time.elapsed().as_millis() as u64,
+                    Some(timeout_ms),
                     "valgrind not found in PATH".to_string(),
                 ));
             }
@@ -709,15 +871,18 @@ impl EscalationRunner {
         tokio::fs::write(&report_file, serde_json::to_vec_pretty(&report)?).await?;
 
         let findings_detected = report.detected_classes();
+        let status = Self::successful_status(report.confirmed(), &findings_detected);
 
         log::info!("Valgrind escalation completed: {}", report_file.display());
         Ok(EscalationResult {
             id: escalation_id.to_string(),
             finding_id: finding_id.to_string(),
             tool: "valgrind".to_string(),
+            status,
             success: true,
             tool_available: true,
             duration_ms: start_time.elapsed().as_millis() as u64,
+            timeout_ms: Some(timeout_ms),
             output_path: Some(report_file.display().to_string()),
             stdout_path: Some(stdout_file.display().to_string()),
             stderr_path: Some(stderr_file.display().to_string()),
@@ -776,20 +941,41 @@ impl EscalationRunner {
         }
         self.apply_cwd(&mut cmd, &mut command);
 
-        let timeout_duration = TokioDuration::from_millis(self.config.tools.gdb.timeout_ms);
-        let output = timeout(timeout_duration, cmd.output())
-            .await
-            .map_err(|_| EscalationError::Timeout("GDB execution timed out".to_string()))?;
+        let timeout_ms = self.config.tools.gdb.timeout_ms;
+        let timeout_duration = TokioDuration::from_millis(timeout_ms);
+        let output = match timeout(timeout_duration, cmd.output()).await {
+            Ok(output) => output,
+            Err(_) => {
+                tokio::fs::write(&stdout_file, b"").await?;
+                tokio::fs::write(
+                    &stderr_file,
+                    format!("gdb execution timed out after {timeout_ms}ms\n").as_bytes(),
+                )
+                .await?;
+                return Ok(self.timeout_result(
+                    finding_id,
+                    escalation_id,
+                    "gdb",
+                    timeout_ms,
+                    start_time.elapsed().as_millis() as u64,
+                    command,
+                    Some(stdout_file.display().to_string()),
+                    Some(stderr_file.display().to_string()),
+                ));
+            }
+        };
 
         let output = match output {
             Ok(output) => output,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(self.result_failure(
+                return Ok(self.result_failure_with_status(
                     finding_id,
                     escalation_id,
                     "gdb",
+                    EscalationStatus::ToolUnavailable,
                     false,
                     start_time.elapsed().as_millis() as u64,
+                    Some(timeout_ms),
                     "gdb not found in PATH".to_string(),
                 ));
             }
@@ -805,15 +991,18 @@ impl EscalationRunner {
         tokio::fs::write(&report_file, serde_json::to_vec_pretty(&report)?).await?;
 
         let findings_detected = report.detected_classes();
+        let status = Self::successful_status(report.confirmed, &findings_detected);
 
         log::info!("GDB escalation completed: {}", report_file.display());
         Ok(EscalationResult {
             id: escalation_id.to_string(),
             finding_id: finding_id.to_string(),
             tool: "gdb".to_string(),
+            status,
             success: true,
             tool_available: true,
             duration_ms: start_time.elapsed().as_millis() as u64,
+            timeout_ms: Some(timeout_ms),
             output_path: Some(report_file.display().to_string()),
             stdout_path: Some(stdout_file.display().to_string()),
             stderr_path: Some(stderr_file.display().to_string()),
@@ -924,6 +1113,7 @@ mod tests {
         EscalationPlan, Evidence, FindingProvenance, MemoryEvidence, StackEvidence,
     };
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
 
     fn sample_finding() -> Finding {
         Finding {
@@ -1016,6 +1206,39 @@ mod tests {
             .binary_looks_asan_instrumented(&binary)
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn asan_timeout_returns_structured_result() {
+        let dir = unique_test_dir("asan-timeout");
+        let binary = dir.join("target-bin");
+        fs::write(&binary, b"#!/bin/sh\n# __asan_init\nsleep 1\n").unwrap();
+        let mut permissions = fs::metadata(&binary).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&binary, permissions).unwrap();
+
+        let mut config = EscalationConfig::default();
+        config.binary_path = Some(binary.display().to_string());
+        config.output_dir = dir.join("escalations").display().to_string();
+        config.tools.asan.timeout_ms = 1;
+        let mut runner = EscalationRunner::new(config);
+
+        let result = runner.check_clean_binary("asan").await.unwrap();
+
+        assert_eq!(result.status, EscalationStatus::Timeout);
+        assert!(!result.success);
+        assert_eq!(result.timeout_ms, Some(1));
+        assert_eq!(result.tool, "asan");
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("timed out"));
+        assert!(result
+            .stderr_path
+            .as_deref()
+            .map(|path| std::path::Path::new(path).exists())
+            .unwrap_or(false));
     }
 
     #[tokio::test]

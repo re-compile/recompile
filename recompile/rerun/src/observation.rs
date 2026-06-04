@@ -163,6 +163,8 @@ pub struct ObservationEscalationSummary {
     pub findings_detected: Vec<String>,
     pub artifact_path: Option<String>,
     pub error: Option<String>,
+    pub duration_ms: u64,
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -775,6 +777,8 @@ mod tests {
             findings_detected: vec!["heap_overflow".to_string()],
             artifact_path: Some(".re/targets/buggy_app/escalations/results.json".to_string()),
             error: None,
+            duration_ms: 25,
+            timeout_ms: Some(60000),
         });
 
         let summary = ObservationRunSummary::new(

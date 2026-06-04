@@ -3,7 +3,9 @@
 use anyhow::{Context, Result};
 use clap::ArgMatches;
 use re_crashpack::EscalationPlan as FindingEscalationPlan;
-use re_escalate::{EscalationConfig, EscalationResult, EscalationRunner, Finding};
+use re_escalate::{
+    EscalationConfig, EscalationResult, EscalationRunner, EscalationStatus, Finding,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -73,11 +75,85 @@ struct ObserveRequest {
     output_root: PathBuf,
     cwd: Option<PathBuf>,
     timeout_ms: Option<u64>,
+    tool_timeouts: EscalationTimeoutOverrides,
     native_only: bool,
     deep: bool,
     escalation_enabled: bool,
     repeat_escalation_policy: RepeatEscalationPolicy,
     args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct EscalationTimeoutOverrides {
+    default_ms: Option<u64>,
+    asan_ms: Option<u64>,
+    lsan_ms: Option<u64>,
+    ubsan_ms: Option<u64>,
+    valgrind_ms: Option<u64>,
+    gdb_ms: Option<u64>,
+}
+
+impl EscalationTimeoutOverrides {
+    fn from_matches(matches: &ArgMatches) -> Self {
+        Self {
+            default_ms: matches.get_one::<u64>("tool-timeout-ms").copied(),
+            asan_ms: matches.get_one::<u64>("asan-timeout-ms").copied(),
+            lsan_ms: matches.get_one::<u64>("lsan-timeout-ms").copied(),
+            ubsan_ms: matches.get_one::<u64>("ubsan-timeout-ms").copied(),
+            valgrind_ms: matches.get_one::<u64>("valgrind-timeout-ms").copied(),
+            gdb_ms: matches.get_one::<u64>("gdb-timeout-ms").copied(),
+        }
+    }
+
+    fn apply(&self, config: &mut EscalationConfig) {
+        if let Some(timeout_ms) = self.default_ms {
+            config.timeouts.default_ms = timeout_ms;
+            config.timeouts.run_ms = timeout_ms;
+            config.tools.asan.timeout_ms = timeout_ms;
+            config.tools.lsan.timeout_ms = timeout_ms;
+            config.tools.ubsan.timeout_ms = timeout_ms;
+            config.tools.valgrind.timeout_ms = timeout_ms;
+            config.tools.gdb.timeout_ms = timeout_ms;
+        }
+        if let Some(timeout_ms) = self.asan_ms {
+            config.tools.asan.timeout_ms = timeout_ms;
+        }
+        if let Some(timeout_ms) = self.lsan_ms {
+            config.tools.lsan.timeout_ms = timeout_ms;
+        }
+        if let Some(timeout_ms) = self.ubsan_ms {
+            config.tools.ubsan.timeout_ms = timeout_ms;
+        }
+        if let Some(timeout_ms) = self.valgrind_ms {
+            config.tools.valgrind.timeout_ms = timeout_ms;
+        }
+        if let Some(timeout_ms) = self.gdb_ms {
+            config.tools.gdb.timeout_ms = timeout_ms;
+        }
+    }
+
+    fn describe(&self) -> Vec<String> {
+        let mut values = Vec::new();
+        if let Some(timeout_ms) = self.default_ms {
+            values.push(format!("all={timeout_ms}ms"));
+        }
+        if let Some(timeout_ms) = self.asan_ms {
+            values.push(format!("asan={timeout_ms}ms"));
+        }
+        if let Some(timeout_ms) = self.lsan_ms {
+            values.push(format!("lsan={timeout_ms}ms"));
+        }
+        if let Some(timeout_ms) = self.ubsan_ms {
+            values.push(format!("ubsan={timeout_ms}ms"));
+        }
+        if let Some(timeout_ms) = self.valgrind_ms {
+            values.push(format!("valgrind={timeout_ms}ms"));
+        }
+        if let Some(timeout_ms) = self.gdb_ms {
+            values.push(format!("gdb={timeout_ms}ms"));
+        }
+        values
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,6 +311,7 @@ pub fn handle_observe_command(matches: &ArgMatches) -> Result<()> {
         output_root: PathBuf::from(matches.get_one::<String>("output").unwrap()),
         cwd: matches.get_one::<String>("cwd").map(PathBuf::from),
         timeout_ms: matches.get_one::<u64>("timeout-ms").copied(),
+        tool_timeouts: EscalationTimeoutOverrides::from_matches(matches),
         native_only,
         deep,
         escalation_enabled: true,
@@ -278,6 +355,10 @@ fn print_observe_request(request: &ObserveRequest, repeat: u32) {
     }
     if let Some(timeout_ms) = request.timeout_ms {
         println!("Timeout: {}ms", timeout_ms);
+    }
+    let tool_timeouts = request.tool_timeouts.describe();
+    if !tool_timeouts.is_empty() {
+        println!("Tool timeouts: {}", tool_timeouts.join(", "));
     }
     if request.native_only {
         println!("Escalation: native-only");
@@ -638,6 +719,7 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
     let tool = matches.get_one::<String>("tool").unwrap();
     let check_clean = matches.get_flag("check-clean");
     let scan_binary = matches.get_flag("scan-binary");
+    let tool_timeouts = EscalationTimeoutOverrides::from_matches(matches);
     let crashpack_dir = PathBuf::from(crashpack_path);
     let findings_path = crashpack_dir.join("findings.json");
 
@@ -658,6 +740,7 @@ pub fn handle_escalate_command(matches: &ArgMatches) -> Result<()> {
     config.source_file = analysis.source_path.clone();
     config.cwd = analysis.cwd.clone();
     config.args = analysis.args.clone();
+    tool_timeouts.apply(&mut config);
 
     if scan_binary {
         if tool == "all" {
@@ -1403,6 +1486,7 @@ fn apply_observe_escalation_to_target(
                     run_options,
                     request.deep,
                     request.timeout_ms,
+                    &request.tool_timeouts,
                 )?;
                 return Ok(!target.escalation.is_empty());
             }
@@ -1413,7 +1497,7 @@ fn apply_observe_escalation_to_target(
         return Ok(false);
     }
 
-    let escalation_results = run_observe_escalation(target, request.deep)?;
+    let escalation_results = run_observe_escalation(target, request.deep, &request.tool_timeouts)?;
     if escalation_results.is_empty() {
         return Ok(false);
     }
@@ -1454,6 +1538,7 @@ fn run_observe_tool_only_fallback(
     options: &NativeRunOptions,
     deep: bool,
     timeout_ms: Option<u64>,
+    tool_timeouts: &EscalationTimeoutOverrides,
 ) -> Result<()> {
     println!("Native tracing unavailable; attempting tool-only fallback...");
     prepare_tool_only_crashpack(binary_path, target_dir, args, options)?;
@@ -1487,7 +1572,7 @@ fn run_observe_tool_only_fallback(
     } else {
         vec!["valgrind"]
     };
-    let results = run_observe_binary_scans(target_dir, &tools)?;
+    let results = run_observe_binary_scans(target_dir, &tools, tool_timeouts)?;
     if !results.is_empty() {
         write_escalation_results(&target_dir.to_path_buf(), &results)?;
         target.escalation = results.iter().map(observation_escalation_summary).collect();
@@ -1504,7 +1589,11 @@ fn run_observe_tool_only_fallback(
     Ok(())
 }
 
-fn run_observe_binary_scans(crashpack_dir: &Path, tools: &[&str]) -> Result<Vec<EscalationResult>> {
+fn run_observe_binary_scans(
+    crashpack_dir: &Path,
+    tools: &[&str],
+    tool_timeouts: &EscalationTimeoutOverrides,
+) -> Result<Vec<EscalationResult>> {
     let analysis = load_analysis_metadata(&crashpack_dir.to_path_buf())?;
     let mut config = EscalationConfig::default();
     config.output_dir = crashpack_dir.join("escalations").display().to_string();
@@ -1512,6 +1601,7 @@ fn run_observe_binary_scans(crashpack_dir: &Path, tools: &[&str]) -> Result<Vec<
     config.source_file = analysis.source_path.clone();
     config.cwd = analysis.cwd.clone();
     config.args = analysis.args.clone();
+    tool_timeouts.apply(&mut config);
 
     let runtime = tokio::runtime::Runtime::new()?;
     let mut results = Vec::new();
@@ -1563,6 +1653,12 @@ fn fallback_target_status(
     }
     if non_skipped_results
         .iter()
+        .any(|result| escalation_status(result) == TargetStatus::Timeout)
+    {
+        return TargetStatus::Timeout;
+    }
+    if non_skipped_results
+        .iter()
         .any(|result| escalation_status(result) == TargetStatus::ToolUnavailable)
     {
         return TargetStatus::ToolUnavailable;
@@ -1593,6 +1689,7 @@ fn fallback_target_status(
 fn run_observe_escalation(
     target: &ObservationTargetSummary,
     deep: bool,
+    tool_timeouts: &EscalationTimeoutOverrides,
 ) -> Result<Vec<EscalationResult>> {
     if target.findings_count == 0 && !deep {
         return Ok(Vec::new());
@@ -1606,6 +1703,7 @@ fn run_observe_escalation(
     config.source_file = analysis.source_path.clone();
     config.cwd = analysis.cwd.clone();
     config.args = analysis.args.clone();
+    tool_timeouts.apply(&mut config);
 
     let runtime = tokio::runtime::Runtime::new()?;
     let mut results = Vec::new();
@@ -1722,9 +1820,11 @@ fn observe_escalation_failure(finding_id: &str, tool: &str, error: String) -> Es
         id: format!("observe-{}-failed", tool),
         finding_id: finding_id.to_string(),
         tool: tool.to_string(),
+        status: EscalationStatus::Failed,
         success: false,
         tool_available: true,
         duration_ms: 0,
+        timeout_ms: None,
         output_path: None,
         stdout_path: None,
         stderr_path: None,
@@ -1743,9 +1843,11 @@ fn observe_escalation_skipped(finding_id: &str, tool: &str, reason: &str) -> Esc
         id: format!("observe-{}-skipped", tool),
         finding_id: finding_id.to_string(),
         tool: tool.to_string(),
+        status: EscalationStatus::Skipped,
         success: false,
         tool_available: true,
         duration_ms: 0,
+        timeout_ms: None,
         output_path: None,
         stdout_path: None,
         stderr_path: None,
@@ -1779,38 +1881,20 @@ fn observation_escalation_summary(
             .clone()
             .or_else(|| result.output_path.clone()),
         error: result.error.clone(),
+        duration_ms: result.duration_ms,
+        timeout_ms: result.timeout_ms,
     }
 }
 
 fn escalation_status(result: &EscalationResult) -> TargetStatus {
-    if result
-        .error
-        .as_deref()
-        .map(|error| error.starts_with("skipped:"))
-        .unwrap_or(false)
-    {
-        return TargetStatus::Skipped;
-    }
-    if (result.tool == "asan" || result.tool == "lsan" || result.tool == "ubsan")
-        && !result.success
-        && result
-            .error
-            .as_deref()
-            .map(|error| error.contains("-fsanitize="))
-            .unwrap_or(false)
-    {
-        return TargetStatus::NotApplicable;
-    }
-    if !result.tool_available {
-        return TargetStatus::ToolUnavailable;
-    }
-    if !result.success {
-        return TargetStatus::Failed;
-    }
-    if result.confirmed {
-        TargetStatus::Findings
-    } else {
-        TargetStatus::Clean
+    match result.status {
+        EscalationStatus::Clean => TargetStatus::Clean,
+        EscalationStatus::Findings => TargetStatus::Findings,
+        EscalationStatus::Failed => TargetStatus::Failed,
+        EscalationStatus::Timeout => TargetStatus::Timeout,
+        EscalationStatus::Skipped => TargetStatus::Skipped,
+        EscalationStatus::ToolUnavailable => TargetStatus::ToolUnavailable,
+        EscalationStatus::NotApplicable => TargetStatus::NotApplicable,
     }
 }
 
@@ -2421,6 +2505,33 @@ mod tests {
     }
 
     #[test]
+    fn escalation_timeout_overrides_apply_default_and_specific_budgets() {
+        let overrides = EscalationTimeoutOverrides {
+            default_ms: Some(1000),
+            valgrind_ms: Some(2500),
+            gdb_ms: Some(750),
+            ..EscalationTimeoutOverrides::default()
+        };
+        let mut config = EscalationConfig::default();
+
+        overrides.apply(&mut config);
+
+        assert_eq!(config.tools.asan.timeout_ms, 1000);
+        assert_eq!(config.tools.lsan.timeout_ms, 1000);
+        assert_eq!(config.tools.ubsan.timeout_ms, 1000);
+        assert_eq!(config.tools.valgrind.timeout_ms, 2500);
+        assert_eq!(config.tools.gdb.timeout_ms, 750);
+        assert_eq!(
+            overrides.describe(),
+            vec![
+                "all=1000ms".to_string(),
+                "valgrind=2500ms".to_string(),
+                "gdb=750ms".to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn repeated_summary_reports_error_if_any_attempt_errors() {
         let clean = ObservationTargetSummary::new(
             "attempt-0001-app",
@@ -2857,8 +2968,10 @@ mod tests {
             finding_id: "clean-run".to_string(),
             tool: "valgrind".to_string(),
             success: true,
+            status: EscalationStatus::Findings,
             tool_available: true,
             duration_ms: 10,
+            timeout_ms: Some(60000),
             output_path: Some(report_path.display().to_string()),
             stdout_path: None,
             stderr_path: None,
@@ -2974,8 +3087,10 @@ mod tests {
             finding_id: "clean-run".to_string(),
             tool: "valgrind".to_string(),
             success: true,
+            status: EscalationStatus::Findings,
             tool_available: true,
             duration_ms: 10,
+            timeout_ms: Some(60000),
             output_path: Some(report_path.display().to_string()),
             stdout_path: None,
             stderr_path: None,
@@ -3088,8 +3203,10 @@ mod tests {
             finding_id: "F-native-heap".to_string(),
             tool: "valgrind".to_string(),
             success: true,
+            status: EscalationStatus::Findings,
             tool_available: true,
             duration_ms: 10,
+            timeout_ms: Some(60000),
             output_path: Some(report_path.display().to_string()),
             stdout_path: None,
             stderr_path: None,
@@ -3189,8 +3306,10 @@ mod tests {
             finding_id: "F-crash-1".to_string(),
             tool: "gdb".to_string(),
             success: true,
+            status: EscalationStatus::Findings,
             tool_available: true,
             duration_ms: 10,
+            timeout_ms: Some(15000),
             output_path: Some(report_path.display().to_string()),
             stdout_path: Some(
                 base.join("escalations/gdb/stdout.log")
@@ -3390,9 +3509,11 @@ mod tests {
             id: "E-1".to_string(),
             finding_id: "tool-only-fallback".to_string(),
             tool: "valgrind".to_string(),
+            status: EscalationStatus::ToolUnavailable,
             success: false,
             tool_available: false,
             duration_ms: 0,
+            timeout_ms: Some(60000),
             output_path: None,
             stdout_path: None,
             stderr_path: None,
@@ -3411,6 +3532,7 @@ mod tests {
         );
 
         result.success = true;
+        result.status = EscalationStatus::Clean;
         result.tool_available = true;
         result.error = None;
         assert_eq!(
@@ -3419,6 +3541,7 @@ mod tests {
         );
 
         result.confirmed = true;
+        result.status = EscalationStatus::Findings;
         result.findings_detected = vec!["use_after_free".to_string()];
         assert_eq!(
             fallback_target_status(&target, &[result.clone()]),
@@ -3430,6 +3553,7 @@ mod tests {
 
         target.findings_count = 0;
         result.confirmed = false;
+        result.status = EscalationStatus::Skipped;
         result.findings_detected.clear();
         result.tool = "valgrind".to_string();
         result.success = false;
@@ -3442,6 +3566,31 @@ mod tests {
             fallback_target_status(&target, &[result]),
             TargetStatus::Skipped
         );
+
+        let timeout = EscalationResult {
+            id: "E-timeout".to_string(),
+            finding_id: "tool-only-fallback".to_string(),
+            tool: "valgrind".to_string(),
+            status: EscalationStatus::Timeout,
+            success: false,
+            tool_available: true,
+            duration_ms: 101,
+            timeout_ms: Some(100),
+            output_path: None,
+            stdout_path: Some(".re/targets/app/escalations/valgrind/stdout.log".to_string()),
+            stderr_path: Some(".re/targets/app/escalations/valgrind/stderr.log".to_string()),
+            report_path: None,
+            command: vec!["valgrind".to_string(), "build/app".to_string()],
+            exit_code: None,
+            confirmed: false,
+            error: Some("valgrind execution timed out after 100ms".to_string()),
+            findings_detected: Vec::new(),
+            timestamp: 1,
+        };
+        assert_eq!(
+            fallback_target_status(&target, &[timeout]),
+            TargetStatus::Timeout
+        );
     }
 
     #[test]
@@ -3451,8 +3600,10 @@ mod tests {
             finding_id: "F-1".to_string(),
             tool: "valgrind".to_string(),
             success: true,
+            status: EscalationStatus::Findings,
             tool_available: true,
             duration_ms: 1,
+            timeout_ms: Some(60000),
             output_path: Some(".re/targets/app/escalations/valgrind/report.json".to_string()),
             stdout_path: None,
             stderr_path: None,
@@ -3467,26 +3618,34 @@ mod tests {
         assert_eq!(escalation_status(&result), TargetStatus::Findings);
 
         result.confirmed = false;
+        result.status = EscalationStatus::Clean;
         result.findings_detected.clear();
         assert_eq!(escalation_status(&result), TargetStatus::Clean);
 
         result.success = false;
+        result.status = EscalationStatus::ToolUnavailable;
         result.tool_available = false;
         result.error = Some("valgrind not found in PATH".to_string());
         assert_eq!(escalation_status(&result), TargetStatus::ToolUnavailable);
 
         result.tool = "asan".to_string();
+        result.status = EscalationStatus::NotApplicable;
         result.tool_available = false;
         result.error = Some("ASan requires a binary built with -fsanitize=address".to_string());
         assert_eq!(escalation_status(&result), TargetStatus::NotApplicable);
 
         result.tool = "valgrind".to_string();
+        result.status = EscalationStatus::Skipped;
         result.tool_available = true;
         result.error = Some(
             "skipped: sanitizer runtime detected; sanitizer scans provide primary evidence"
                 .to_string(),
         );
         assert_eq!(escalation_status(&result), TargetStatus::Skipped);
+
+        result.status = EscalationStatus::Timeout;
+        result.error = Some("valgrind execution timed out after 60000ms".to_string());
+        assert_eq!(escalation_status(&result), TargetStatus::Timeout);
     }
 
     #[test]

@@ -132,6 +132,12 @@ whole-binary Valgrind scan; `--deep` also attempts ASan, LSan, and UBSan scans
 when applicable. For sanitizer-built binaries, deep fallback records the
 Valgrind scan as `skipped` instead of silently omitting it. `--native-only`
 disables this fallback and preserves strict native-tracing failure behavior.
+Escalation tools have explicit timeout budgets. Use `--tool-timeout-ms` to set
+one budget for all escalation tools, or override individual tools with
+`--valgrind-timeout-ms`, `--asan-timeout-ms`, `--lsan-timeout-ms`,
+`--ubsan-timeout-ms`, or `--gdb-timeout-ms`. Tool timeouts are recorded as
+structured `timeout` escalation results so native findings and other artifacts
+remain available.
 
 Repeated observation is opt-in:
 
@@ -177,6 +183,12 @@ Primary outputs:
 ```bash
 cargo run -p rerun -- escalate build/invalid-free --tool valgrind
 jq . build/invalid-free/escalations/results.json
+```
+
+Manual escalation accepts the same tool timeout flags as `observe`:
+
+```bash
+cargo run -p rerun -- escalate build/invalid-free --tool valgrind --valgrind-timeout-ms 5000
 ```
 
 ### Summarize for coding agents

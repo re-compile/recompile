@@ -115,10 +115,28 @@ Each target summary records:
 - duration and timeout
 - finding counts by class
 - issue group count
-- escalation summaries
+- escalation summaries, including tool status, duration, and timeout budget
 - artifact paths
 - replay and summarize commands when available
 - next inspection commands
+
+## Escalation Timeout Budgets
+
+Tool escalation budgets are separate from the target runtime timeout:
+
+- `--timeout-ms` bounds the primary target execution during native observation.
+- `--tool-timeout-ms` sets one timeout budget for all escalation tools.
+- `--valgrind-timeout-ms`, `--asan-timeout-ms`, `--lsan-timeout-ms`,
+  `--ubsan-timeout-ms`, and `--gdb-timeout-ms` override individual tools.
+
+Timeouts are evidence, not fatal plumbing errors. If native observation already
+produced findings, those findings remain in the crashpack even when a tool
+times out. The raw `escalations/results.json` entry records `status:
+"timeout"`, `duration_ms`, `timeout_ms`, command arguments, and any stdout or
+stderr artifacts that could be written. The run summary mirrors the tool
+`status`, `duration_ms`, and `timeout_ms` under each target's `escalation`
+array so agents can distinguish "tool timed out" from "tool found nothing" and
+"tool was unavailable".
 
 ## Dependency Metadata
 
