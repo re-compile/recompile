@@ -1303,6 +1303,31 @@ static bool pid_still_alive(pid_t pid)
     return kill(pid, 0) == 0 || errno == EPERM;
 }
 
+static void prearm_target_state(int state_fd)
+{
+    if (state_fd < 0 || target_pid <= 0)
+        return;
+
+    __u32 pid = (__u32)target_pid;
+    struct re_sentinel_state state = {};
+    if (bpf_map_lookup_elem(state_fd, &pid, &state) != 0) {
+        if (errno != ENOENT) {
+            log_line("warning: sentinel_state lookup failed for pid=%u: %s",
+                     pid, strerror(errno));
+        }
+        memset(&state, 0, sizeof(state));
+    }
+
+    state.flags |= RE_SENTINEL_STATE_ARMED;
+    if (bpf_map_update_elem(state_fd, &pid, &state, BPF_ANY) != 0) {
+        log_line("warning: sentinel_state pre-arm failed for pid=%u: %s",
+                 pid, strerror(errno));
+        return;
+    }
+
+    log_line("target sentinel_state armed pid=%u", pid);
+}
+
 static void debug_drop(__u32 pid, const char *reason)
 {
     if (reason && strcmp(reason, last_drop_reason) == 0)
@@ -2390,6 +2415,7 @@ int main(int argc, char **argv){
     }
 
     install_signal_handlers();
+    prearm_target_state(shared_state_fd);
     maybe_snapshot_target_modules();
     log_line("ready");
 
