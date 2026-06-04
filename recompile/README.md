@@ -145,7 +145,8 @@ Repeat mode writes each attempt under
 `build/repeat-demo/run-summary.json` with attempt-prefixed target names. It
 also writes `build/repeat-demo/repeat-summary.json`, which records attempt
 counts, status/outcome totals, per-attempt artifact paths, first non-pass
-attempt, best evidence attempt, and next inspection commands.
+attempt, best evidence attempt, cross-attempt issue groups, and next inspection
+commands.
 `--repeat --deep` is intentionally rejected until the repeat escalation policy
 is implemented, because repeated sanitizer/Valgrind scans are expensive and
 should not become an accidental default path.
@@ -275,7 +276,8 @@ make phase6
 `make repeat-fixtures-smoke` runs reproducible repeat-mode fixtures without true
 randomness. `repeat_flaky` uses a counter file in its `--cwd` to produce a fixed
 clean/finding/clean sequence, so local and CI runs can assert first failure,
-best evidence attempt, status totals, and per-attempt artifact paths.
+best evidence attempt, status totals, per-attempt artifact paths, and
+cross-attempt issue groups.
 `make phase6` runs `make phase5` and then this repeat fixture gate.
 
 ### Run the golden-only baseline

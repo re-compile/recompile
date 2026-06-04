@@ -1,6 +1,6 @@
 //! CLI command handlers
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::ArgMatches;
 use re_crashpack::EscalationPlan as FindingEscalationPlan;
 use re_escalate::{EscalationConfig, EscalationResult, EscalationRunner, Finding};
@@ -12,13 +12,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::issue_groups::IssueGroupReport;
 use crate::native::{
     finalize_findings, native_capability_diagnostics, prepare_tool_only_crashpack, run_native,
     run_native_with_options, NativeCapabilityDiagnostic, NativeRunOptions, NativeRunResult,
 };
 use crate::observation::{
     ObservationArtifacts, ObservationDiagnostic, ObservationRunSummary, ObservationTargetSummary,
-    RepeatAttemptSummary, RepeatRunSummary, TargetExitSummary, TargetStatus,
+    RepeatAttemptSummary, RepeatIssueGroupInput, RepeatIssueGroupOccurrence, RepeatRunSummary,
+    TargetExitSummary, TargetStatus,
 };
 use crate::summary::{print_findings_summary, read_findings};
 
@@ -318,6 +320,7 @@ fn run_observe_repeated(request: &ObserveRequest, repeat: u32) -> Result<()> {
 
     let mut aggregate_targets = Vec::new();
     let mut repeat_attempts = Vec::new();
+    let mut repeat_issue_group_inputs = Vec::new();
     let mut next_commands = vec![format!(
         "jq . {}",
         request.output_root.join("repeat-summary.json").display()
@@ -342,13 +345,15 @@ fn run_observe_repeated(request: &ObserveRequest, repeat: u32) -> Result<()> {
 
         for target in &attempt_summary.targets {
             let target_name = repeat_target_name(attempt, &target.name);
-            repeat_attempts.push(RepeatAttemptSummary::from_target(
+            let repeat_attempt = RepeatAttemptSummary::from_target(
                 attempt,
                 target_name,
                 attempt_dir.display().to_string(),
                 attempt_dir.join("run-summary.json").display().to_string(),
                 target,
-            ));
+            );
+            repeat_issue_group_inputs.extend(load_repeat_issue_group_inputs(&repeat_attempt)?);
+            repeat_attempts.push(repeat_attempt);
         }
 
         next_commands.push(format!(
@@ -366,10 +371,11 @@ fn run_observe_repeated(request: &ObserveRequest, repeat: u32) -> Result<()> {
         aggregate_targets,
         next_commands.clone(),
     );
-    let repeat_summary = RepeatRunSummary::new(
+    let repeat_summary = RepeatRunSummary::new_with_issue_groups(
         request.output_root.display().to_string(),
         repeat,
         repeat_attempts,
+        repeat_issue_group_inputs,
         next_commands,
     );
     write_repeat_summary(&request.output_root, &repeat_summary)?;
@@ -406,6 +412,51 @@ fn repeat_attempt_dir(output_root: &Path, attempt: u32) -> PathBuf {
 
 fn repeat_target_name(attempt: u32, target_name: &str) -> String {
     format!("attempt-{attempt:04}-{target_name}")
+}
+
+fn load_repeat_issue_group_inputs(
+    attempt: &RepeatAttemptSummary,
+) -> Result<Vec<RepeatIssueGroupInput>> {
+    let Some(issue_groups_path) = attempt.issue_groups.as_deref() else {
+        return Ok(Vec::new());
+    };
+    let issue_groups_path = PathBuf::from(issue_groups_path);
+    if !issue_groups_path.exists() {
+        if attempt.issue_group_count == 0 {
+            return Ok(Vec::new());
+        }
+        return Err(anyhow::anyhow!(
+            "missing issue group artifact for {} at {}",
+            attempt.target_name,
+            issue_groups_path.display()
+        ));
+    }
+
+    let report: IssueGroupReport = serde_json::from_slice(
+        &fs::read(&issue_groups_path)
+            .with_context(|| format!("Failed to read {}", issue_groups_path.display()))?,
+    )
+    .with_context(|| format!("Failed to parse {}", issue_groups_path.display()))?;
+
+    Ok(report
+        .groups
+        .into_iter()
+        .map(|group| RepeatIssueGroupInput {
+            fingerprint: group.fingerprint,
+            class: group.class,
+            operation: group.operation,
+            severity: group.severity,
+            confidence: group.confidence,
+            occurrence: RepeatIssueGroupOccurrence {
+                attempt: attempt.attempt,
+                target_name: attempt.target_name.clone(),
+                issue_group_id: group.id,
+                finding_count: group.finding_count as u64,
+                issue_groups: issue_groups_path.display().to_string(),
+                crashpack: attempt.crashpack.clone(),
+            },
+        })
+        .collect())
 }
 
 fn observation_summary_had_error(summary: &ObservationRunSummary) -> bool {

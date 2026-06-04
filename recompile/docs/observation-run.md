@@ -61,6 +61,9 @@ records:
 - raw status totals such as `clean`, `findings`, `timeout`, or `failed`
 - outcome totals such as `pass`, `finding`, `timeout`, `failure`, or `inconclusive`
 - finding totals by class across attempts
+- cross-attempt issue groups keyed by stable fingerprint, including
+  `attempt_count`, `occurrence_count`, first/last attempt, representative
+  attempt, and per-attempt artifact pointers
 - one row per attempt with the attempt output root, run summary, crashpack,
   findings, evidence pack, and issue-group paths
 - `first_failure`, which points at the first non-pass attempt when one exists
@@ -163,8 +166,10 @@ The current Phase 4 baseline supports one binary, args after `--`, `--cwd`,
 The current Phase 6 baseline adds `--repeat N` for opt-in repeated native
 observation runs. Repeat mode runs the same binary multiple times, stores each
 attempt independently under `attempts/`, and writes an aggregate
-`run-summary.json` plus `repeat-summary.json`. It does not yet write
-cross-attempt issue groups or repeated escalation policy artifacts.
+`run-summary.json` plus `repeat-summary.json`. Repeat summaries aggregate
+per-attempt `issue-groups.json` reports by stable fingerprint so the same issue
+reports frequency and representative evidence without merging independent
+bugs. Repeated escalation policy artifacts are still deferred.
 
 Repeat/flaky fixtures are covered by `make repeat-fixtures-smoke`:
 
@@ -176,7 +181,7 @@ Repeat/flaky fixtures are covered by `make repeat-fixtures-smoke`:
 The flaky fixture uses a counter file in its `--cwd`; it does not use randomness
 or timing races. This keeps repeat-mode tests reproducible while still proving
 that `repeat-summary.json` can report mixed pass/fail distributions and select
-the first failure and best evidence attempt.
+the first failure, best evidence attempt, and cross-attempt issue groups.
 
 Default escalation policy:
 

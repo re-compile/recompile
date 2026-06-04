@@ -256,15 +256,33 @@ pub struct RepeatRunSummary {
     pub finding_totals_by_class: BTreeMap<String, u64>,
     pub first_failure: Option<RepeatAttemptSelection>,
     pub best_evidence_attempt: Option<RepeatAttemptSelection>,
+    pub issue_groups: Vec<RepeatIssueGroup>,
     pub attempts: Vec<RepeatAttemptSummary>,
     pub next_commands: Vec<String>,
 }
 
 impl RepeatRunSummary {
+    #[cfg(test)]
     pub fn new(
         output_root: impl Into<String>,
         requested_attempts: u32,
         attempts: Vec<RepeatAttemptSummary>,
+        next_commands: Vec<String>,
+    ) -> Self {
+        Self::new_with_issue_groups(
+            output_root,
+            requested_attempts,
+            attempts,
+            Vec::new(),
+            next_commands,
+        )
+    }
+
+    pub fn new_with_issue_groups(
+        output_root: impl Into<String>,
+        requested_attempts: u32,
+        attempts: Vec<RepeatAttemptSummary>,
+        issue_group_inputs: Vec<RepeatIssueGroupInput>,
         next_commands: Vec<String>,
     ) -> Self {
         let first_failure = attempts
@@ -299,6 +317,7 @@ impl RepeatRunSummary {
             finding_totals_by_class: repeat_finding_totals_by_class(&attempts),
             first_failure,
             best_evidence_attempt,
+            issue_groups: aggregate_repeat_issue_groups(issue_group_inputs),
             attempts,
             next_commands,
         }
@@ -383,6 +402,42 @@ impl RepeatAttemptSelection {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepeatIssueGroupInput {
+    pub fingerprint: String,
+    pub class: String,
+    pub operation: String,
+    pub severity: String,
+    pub confidence: String,
+    pub occurrence: RepeatIssueGroupOccurrence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepeatIssueGroup {
+    pub id: String,
+    pub fingerprint: String,
+    pub class: String,
+    pub operation: String,
+    pub severity: String,
+    pub confidence: String,
+    pub attempt_count: u64,
+    pub occurrence_count: u64,
+    pub first_attempt: u32,
+    pub last_attempt: u32,
+    pub representative_attempt: RepeatIssueGroupOccurrence,
+    pub attempts: Vec<RepeatIssueGroupOccurrence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepeatIssueGroupOccurrence {
+    pub attempt: u32,
+    pub target_name: String,
+    pub issue_group_id: String,
+    pub finding_count: u64,
+    pub issue_groups: String,
+    pub crashpack: String,
+}
+
 fn status_totals(targets: &[ObservationTargetSummary]) -> BTreeMap<String, u64> {
     let mut totals = BTreeMap::new();
     for target in targets {
@@ -429,6 +484,97 @@ fn repeat_finding_totals_by_class(attempts: &[RepeatAttemptSummary]) -> BTreeMap
         }
     }
     totals
+}
+
+fn aggregate_repeat_issue_groups(inputs: Vec<RepeatIssueGroupInput>) -> Vec<RepeatIssueGroup> {
+    #[derive(Debug)]
+    struct RepeatIssueGroupBuilder {
+        id: String,
+        fingerprint: String,
+        class: String,
+        operation: String,
+        severity: String,
+        confidence: String,
+        occurrence_count: u64,
+        attempt_numbers: BTreeSet<u32>,
+        attempts: Vec<RepeatIssueGroupOccurrence>,
+    }
+
+    let mut builders = BTreeMap::<String, RepeatIssueGroupBuilder>::new();
+    for input in inputs {
+        builders
+            .entry(input.fingerprint.clone())
+            .and_modify(|builder| {
+                builder.occurrence_count += input.occurrence.finding_count;
+                builder.attempt_numbers.insert(input.occurrence.attempt);
+                builder.attempts.push(input.occurrence.clone());
+            })
+            .or_insert_with(|| {
+                let mut attempt_numbers = BTreeSet::new();
+                attempt_numbers.insert(input.occurrence.attempt);
+                RepeatIssueGroupBuilder {
+                    id: repeat_issue_group_id(&input.fingerprint),
+                    fingerprint: input.fingerprint,
+                    class: input.class,
+                    operation: input.operation,
+                    severity: input.severity,
+                    confidence: input.confidence,
+                    occurrence_count: input.occurrence.finding_count,
+                    attempt_numbers,
+                    attempts: vec![input.occurrence],
+                }
+            });
+    }
+
+    builders
+        .into_values()
+        .map(|mut builder| {
+            builder.attempts.sort_by(|left, right| {
+                left.attempt
+                    .cmp(&right.attempt)
+                    .then_with(|| left.target_name.cmp(&right.target_name))
+                    .then_with(|| left.issue_group_id.cmp(&right.issue_group_id))
+            });
+            let representative_attempt = builder
+                .attempts
+                .first()
+                .cloned()
+                .expect("repeat issue group builders always contain an occurrence");
+            let first_attempt = builder
+                .attempt_numbers
+                .first()
+                .copied()
+                .expect("repeat issue group builders always contain an attempt");
+            let last_attempt = builder
+                .attempt_numbers
+                .last()
+                .copied()
+                .expect("repeat issue group builders always contain an attempt");
+
+            RepeatIssueGroup {
+                id: builder.id,
+                fingerprint: builder.fingerprint,
+                class: builder.class,
+                operation: builder.operation,
+                severity: builder.severity,
+                confidence: builder.confidence,
+                attempt_count: builder.attempt_numbers.len() as u64,
+                occurrence_count: builder.occurrence_count,
+                first_attempt,
+                last_attempt,
+                representative_attempt,
+                attempts: builder.attempts,
+            }
+        })
+        .collect()
+}
+
+fn repeat_issue_group_id(fingerprint: &str) -> String {
+    let suffix = fingerprint
+        .rsplit_once('-')
+        .map(|(_, value)| value)
+        .unwrap_or(fingerprint);
+    format!("RIG-{}", &suffix[..suffix.len().min(12)])
 }
 
 fn finding_totals_by_class(targets: &[ObservationTargetSummary]) -> BTreeMap<String, u64> {
@@ -492,6 +638,30 @@ mod tests {
             format!(".re/attempts/{attempt:04}/run-summary.json"),
             &target,
         )
+    }
+
+    fn sample_repeat_issue_group_input(
+        attempt: &RepeatAttemptSummary,
+        fingerprint: &str,
+        class: &str,
+        operation: &str,
+        finding_count: u64,
+    ) -> RepeatIssueGroupInput {
+        RepeatIssueGroupInput {
+            fingerprint: fingerprint.to_string(),
+            class: class.to_string(),
+            operation: operation.to_string(),
+            severity: "high".to_string(),
+            confidence: "confirmed".to_string(),
+            occurrence: RepeatIssueGroupOccurrence {
+                attempt: attempt.attempt,
+                target_name: attempt.target_name.clone(),
+                issue_group_id: format!("IG-{}", &fingerprint[fingerprint.len() - 4..]),
+                finding_count,
+                issue_groups: attempt.issue_groups.clone().unwrap(),
+                crashpack: attempt.crashpack.clone(),
+            },
+        }
     }
 
     #[test]
@@ -644,6 +814,73 @@ mod tests {
     }
 
     #[test]
+    fn repeat_summary_aggregates_issue_groups_by_fingerprint() {
+        let first = sample_repeat_attempt(1, TargetStatus::Findings, &[("heap_overflow", 1)]);
+        let second = sample_repeat_attempt(2, TargetStatus::Findings, &[("heap_overflow", 2)]);
+        let third = sample_repeat_attempt(3, TargetStatus::Findings, &[("invalid_free", 1)]);
+        let repeated_fingerprint = "re-issue-v1-1111111111111111";
+        let independent_fingerprint = "re-issue-v1-2222222222222222";
+
+        let summary = RepeatRunSummary::new_with_issue_groups(
+            ".re",
+            3,
+            vec![first.clone(), second.clone(), third.clone()],
+            vec![
+                sample_repeat_issue_group_input(
+                    &second,
+                    repeated_fingerprint,
+                    "heap_overflow",
+                    "memcpy",
+                    2,
+                ),
+                sample_repeat_issue_group_input(
+                    &first,
+                    repeated_fingerprint,
+                    "heap_overflow",
+                    "memcpy",
+                    1,
+                ),
+                sample_repeat_issue_group_input(
+                    &third,
+                    independent_fingerprint,
+                    "invalid_free",
+                    "free",
+                    1,
+                ),
+            ],
+            vec!["jq . .re/repeat-summary.json".to_string()],
+        );
+
+        assert_eq!(summary.issue_groups.len(), 2);
+
+        let repeated = &summary.issue_groups[0];
+        assert_eq!(repeated.id, "RIG-111111111111");
+        assert_eq!(repeated.fingerprint, repeated_fingerprint);
+        assert_eq!(repeated.class, "heap_overflow");
+        assert_eq!(repeated.operation, "memcpy");
+        assert_eq!(repeated.attempt_count, 2);
+        assert_eq!(repeated.occurrence_count, 3);
+        assert_eq!(repeated.first_attempt, 1);
+        assert_eq!(repeated.last_attempt, 2);
+        assert_eq!(repeated.representative_attempt.attempt, 1);
+        assert_eq!(
+            repeated
+                .attempts
+                .iter()
+                .map(|occurrence| occurrence.attempt)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+
+        let independent = &summary.issue_groups[1];
+        assert_eq!(independent.fingerprint, independent_fingerprint);
+        assert_eq!(independent.class, "invalid_free");
+        assert_eq!(independent.attempt_count, 1);
+        assert_eq!(independent.occurrence_count, 1);
+        assert_eq!(independent.first_attempt, 3);
+    }
+
+    #[test]
     fn repeat_summary_uses_timeout_as_best_evidence_without_findings() {
         let summary = RepeatRunSummary::new(
             ".re",
@@ -748,11 +985,13 @@ mod tests {
             "finding_totals_by_class",
             "first_failure",
             "best_evidence_attempt",
+            "issue_groups",
             "attempts",
             "next_commands",
         ] {
             assert!(value.get(key).is_some(), "missing repeat field {key}");
         }
+        assert!(value["issue_groups"].is_array());
 
         let attempt: &Value = &value["attempts"][0];
         for key in [
