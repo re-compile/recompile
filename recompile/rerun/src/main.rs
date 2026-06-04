@@ -91,7 +91,7 @@ fn build_cli() -> Command {
                         .trailing_var_arg(true),
                 ),
         )
-        .subcommand(
+        .subcommand(add_tool_timeout_args(
             Command::new("observe")
                 .about("Observe an already-built native binary and write .re/run-summary.json")
                 .arg(
@@ -157,8 +157,8 @@ fn build_cli() -> Command {
                         .num_args(0..)
                         .trailing_var_arg(true),
                 ),
-        )
-        .subcommand(
+        ))
+        .subcommand(add_tool_timeout_args(
             Command::new("escalate")
                 .about("Run escalation analysis on existing crashpack")
                 .arg(
@@ -185,7 +185,7 @@ fn build_cli() -> Command {
                         .action(ArgAction::SetTrue)
                         .help("Run the selected tool against the whole binary instead of per native finding"),
                 ),
-        )
+        ))
         .subcommand(
             Command::new("crashpack")
                 .about("Crashpack operations")
@@ -246,6 +246,52 @@ fn build_cli() -> Command {
         )
 }
 
+fn add_tool_timeout_args(command: Command) -> Command {
+    command
+        .arg(
+            Arg::new("tool-timeout-ms")
+                .long("tool-timeout-ms")
+                .value_name("MS")
+                .value_parser(clap::value_parser!(u64))
+                .help("Override every escalation tool timeout budget in milliseconds"),
+        )
+        .arg(
+            Arg::new("asan-timeout-ms")
+                .long("asan-timeout-ms")
+                .value_name("MS")
+                .value_parser(clap::value_parser!(u64))
+                .help("Override ASan escalation timeout budget in milliseconds"),
+        )
+        .arg(
+            Arg::new("lsan-timeout-ms")
+                .long("lsan-timeout-ms")
+                .value_name("MS")
+                .value_parser(clap::value_parser!(u64))
+                .help("Override LSan escalation timeout budget in milliseconds"),
+        )
+        .arg(
+            Arg::new("ubsan-timeout-ms")
+                .long("ubsan-timeout-ms")
+                .value_name("MS")
+                .value_parser(clap::value_parser!(u64))
+                .help("Override UBSan escalation timeout budget in milliseconds"),
+        )
+        .arg(
+            Arg::new("valgrind-timeout-ms")
+                .long("valgrind-timeout-ms")
+                .value_name("MS")
+                .value_parser(clap::value_parser!(u64))
+                .help("Override Valgrind escalation timeout budget in milliseconds"),
+        )
+        .arg(
+            Arg::new("gdb-timeout-ms")
+                .long("gdb-timeout-ms")
+                .value_name("MS")
+                .value_parser(clap::value_parser!(u64))
+                .help("Override GDB escalation timeout budget in milliseconds"),
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,5 +346,48 @@ mod tests {
                 .map(String::as_str),
             Some("first-failure")
         );
+    }
+
+    #[test]
+    fn observe_accepts_tool_timeout_budgets() {
+        let matches = build_cli()
+            .try_get_matches_from([
+                "rerun",
+                "observe",
+                "--tool-timeout-ms",
+                "250",
+                "--valgrind-timeout-ms",
+                "500",
+                "build/app",
+            ])
+            .expect("observe tool timeouts should parse");
+
+        let Some(("observe", observe)) = matches.subcommand() else {
+            panic!("expected observe subcommand");
+        };
+
+        assert_eq!(observe.get_one::<u64>("tool-timeout-ms"), Some(&250));
+        assert_eq!(observe.get_one::<u64>("valgrind-timeout-ms"), Some(&500));
+    }
+
+    #[test]
+    fn escalate_accepts_tool_timeout_budgets() {
+        let matches = build_cli()
+            .try_get_matches_from([
+                "rerun",
+                "escalate",
+                "--tool",
+                "valgrind",
+                "--gdb-timeout-ms",
+                "750",
+                ".re/targets/app",
+            ])
+            .expect("escalate tool timeouts should parse");
+
+        let Some(("escalate", escalate)) = matches.subcommand() else {
+            panic!("expected escalate subcommand");
+        };
+
+        assert_eq!(escalate.get_one::<u64>("gdb-timeout-ms"), Some(&750));
     }
 }

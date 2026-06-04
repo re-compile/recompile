@@ -28,9 +28,13 @@ pub struct EscalationResult {
     pub id: String,
     pub finding_id: String,
     pub tool: String,
+    #[serde(default)]
+    pub status: EscalationStatus,
     pub success: bool,
     pub tool_available: bool,
     pub duration_ms: u64,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
     pub output_path: Option<String>,
     pub stdout_path: Option<String>,
     pub stderr_path: Option<String>,
@@ -41,6 +45,24 @@ pub struct EscalationResult {
     pub error: Option<String>,
     pub findings_detected: Vec<String>,
     pub timestamp: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EscalationStatus {
+    Clean,
+    Findings,
+    Failed,
+    Timeout,
+    Skipped,
+    ToolUnavailable,
+    NotApplicable,
+}
+
+impl Default for EscalationStatus {
+    fn default() -> Self {
+        Self::Failed
+    }
 }
 
 /// Parsed escalation evidence from a tool run.

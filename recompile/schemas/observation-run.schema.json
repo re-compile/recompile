@@ -118,14 +118,16 @@
     "escalation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["tool", "status", "confirmed", "findings_detected", "artifact_path", "error"],
+      "required": ["tool", "status", "confirmed", "findings_detected", "artifact_path", "error", "duration_ms", "timeout_ms"],
       "properties": {
         "tool": {"type": "string", "minLength": 1},
         "status": {"$ref": "#/$defs/status"},
         "confirmed": {"type": "boolean"},
         "findings_detected": {"type": "array", "items": {"type": "string"}},
         "artifact_path": {"type": ["string", "null"]},
-        "error": {"type": ["string", "null"]}
+        "error": {"type": ["string", "null"]},
+        "duration_ms": {"type": "integer", "minimum": 0},
+        "timeout_ms": {"type": ["integer", "null"], "minimum": 0}
       }
     },
     "diagnostic": {

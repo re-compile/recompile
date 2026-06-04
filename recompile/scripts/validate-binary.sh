@@ -135,6 +135,23 @@ EOF
     exit 1
 fi
 
+debug_stream_path="${output_dir}/re-findings.jsonl"
+if [[ ! -f "$debug_stream_path" ]] || ! awk '
+    /target sentinel_state armed pid=/ { armed = 1 }
+    /RE:AGENT: ready/ {
+        ready = 1
+        if (!armed) exit 1
+    }
+    END { if (!armed || !ready) exit 1 }
+' "$debug_stream_path"; then
+    printf '%s: native agent did not pre-arm the target sentinel_state before ready\n' "$binary_name" >&2
+    printf '\n--- run log ---\n' >&2
+    tail -n 80 "$log_path" >&2 || true
+    printf '\n--- agent debug stream ---\n' >&2
+    tail -n 80 "$debug_stream_path" >&2 || true
+    exit 1
+fi
+
 python3 - "$output_dir/findings.json" "$expected_class" "$expect_none" "$binary_name" <<'PY'
 import json
 import pathlib

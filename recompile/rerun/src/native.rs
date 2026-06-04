@@ -31,6 +31,8 @@ const GENERATED_OUTPUT_FILES: &[&str] = &[
 ];
 
 const GENERATED_OUTPUT_DIRS: &[&str] = &[".re", "bins", "escalations", "logs", "replay"];
+const AGENT_POST_READY_SETTLE_MS: u64 = 50;
+const AGENT_EVENT_DRAIN_GRACE_MS: u64 = 1_000;
 #[cfg(target_os = "linux")]
 const AGENT_TERMINATION_GRACE_MS: u64 = 10_000;
 #[cfg(target_os = "linux")]
@@ -242,6 +244,10 @@ pub fn run_native_with_options(
     )?;
     println!("✓ Agent ready (PID: {})", agent.id());
 
+    // A short settle boundary avoids resuming tiny targets in the same scheduling
+    // slice that created the last uprobe/kprobe links.
+    std::thread::sleep(Duration::from_millis(AGENT_POST_READY_SETTLE_MS));
+
     // Resume the target now that probes are attached.
     println!("\nRunning target binary...");
     resume_target(target.id())?;
@@ -274,8 +280,9 @@ pub fn run_native_with_options(
         }
     };
 
-    // Give agent time to process final events
-    std::thread::sleep(Duration::from_millis(500));
+    // The agent drains ring-buffer events after fast targets exit; keep it alive
+    // long enough for that bounded drain window before SIGTERM.
+    std::thread::sleep(Duration::from_millis(AGENT_EVENT_DRAIN_GRACE_MS));
 
     // Terminate the agent
     println!("Stopping agent...");

@@ -300,6 +300,36 @@ printf '[observe] finding binary with default confirmation\n'
 "$runner_path" observe build/user-samples/copy_overrun_case --output "$output_root/copy_overrun_case"
 assert_observation "$output_root/copy_overrun_case/run-summary.json" findings heap_overflow 1 valgrind findings heap_overflow
 
+printf '[observe] tool timeout budget preserves native finding\n'
+"$runner_path" observe --valgrind-timeout-ms 1 build/user-samples/copy_overrun_case --output "$output_root/copy_overrun_case_tool_timeout"
+python3 - "$output_root/copy_overrun_case_tool_timeout/run-summary.json" \
+    "$output_root/copy_overrun_case_tool_timeout/targets/copy_overrun_case/escalations/results.json" <<'PY'
+import json
+import pathlib
+import sys
+
+summary = json.loads(pathlib.Path(sys.argv[1]).read_text())
+results = json.loads(pathlib.Path(sys.argv[2]).read_text())
+target = summary["targets"][0]
+if target.get("status") != "findings" or target.get("findings_by_class", {}).get("heap_overflow") != 1:
+    raise SystemExit(f"native finding was not preserved under tool timeout: {target}")
+match = next((item for item in target.get("escalation") or [] if item.get("tool") == "valgrind"), None)
+if not match or match.get("status") != "timeout" or match.get("timeout_ms") != 1:
+    raise SystemExit(f"missing timeout escalation summary: {target.get('escalation')}")
+raw = next((item for item in results if item.get("tool") == "valgrind"), None)
+if not raw or raw.get("status") != "timeout" or raw.get("timeout_ms") != 1:
+    raise SystemExit(f"missing raw timeout result: {results}")
+stderr_path = raw.get("stderr_path")
+if not stderr_path or not pathlib.Path(stderr_path).exists():
+    raise SystemExit(f"timeout stderr artifact missing: {raw}")
+print(json.dumps({
+    "status": target.get("status"),
+    "tool": match.get("tool"),
+    "tool_status": match.get("status"),
+    "timeout_ms": match.get("timeout_ms"),
+}, sort_keys=True))
+PY
+
 printf '[observe] opt-in repeated finding binary writes repeat summary\n'
 "$runner_path" observe --native-only --repeat 2 build/user-samples/copy_overrun_case --output "$output_root/copy_overrun_case_native_repeat"
 python3 - "$output_root/copy_overrun_case_native_repeat/repeat-summary.json" <<'PY'
