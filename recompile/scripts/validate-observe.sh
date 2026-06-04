@@ -218,12 +218,31 @@ print(json.dumps({
 }, sort_keys=True))
 PY
 
-printf '[observe] repeated deep mode is policy-gated\n'
-if "$runner_path" observe --deep --repeat 2 build/user-samples/clean_malloc_free --output "$output_root/repeat_deep_reject" > "$output_root/repeat-deep-reject.log" 2>&1; then
-    printf 'observe --repeat --deep unexpectedly succeeded before repeat escalation policy exists\n' >&2
-    exit 1
-fi
-grep -q 'repeat escalation policy' "$output_root/repeat-deep-reject.log"
+printf '[observe] repeat deep defaults to first-failure policy\n'
+"$runner_path" observe --deep --repeat 2 build/user-samples/clean_malloc_free --output "$output_root/repeat_deep_clean"
+python3 - "$output_root/repeat_deep_clean/repeat-summary.json" <<'PY'
+import json
+import pathlib
+import sys
+
+summary_path = pathlib.Path(sys.argv[1])
+summary = json.loads(summary_path.read_text())
+policy = summary.get("escalation_policy") or {}
+if policy.get("policy") != "first-failure" or policy.get("deep") is not True:
+    raise SystemExit(f"{summary_path}: repeat deep should default to first-failure: {policy}")
+if policy.get("selected_attempt_count") != 0 or policy.get("selected_attempts") != []:
+    raise SystemExit(f"{summary_path}: clean first-failure repeat should not run escalations: {policy}")
+for attempt in summary.get("attempts") or []:
+    run_summary = json.loads(pathlib.Path(attempt["run_summary"]).read_text())
+    target = run_summary["targets"][0]
+    if target.get("escalation"):
+        raise SystemExit(f"{summary_path}: clean first-failure attempt unexpectedly escalated: {target}")
+print(json.dumps({
+    "repeat_summary": str(summary_path),
+    "policy": policy.get("policy"),
+    "selected_attempt_count": policy.get("selected_attempt_count"),
+}, sort_keys=True))
+PY
 
 printf '[observe] signal-only crash evidence\n'
 "$runner_path" observe build/user-samples/crash_segv_case --output "$output_root/crash_segv_case"
@@ -306,6 +325,9 @@ if first_failure.get("attempt") != 1 or first_failure.get("status") != "findings
     raise SystemExit(f"{summary_path}: unexpected first_failure {first_failure}")
 if best_evidence.get("attempt") != 1 or best_evidence.get("findings_count") != 1:
     raise SystemExit(f"{summary_path}: unexpected best_evidence_attempt {best_evidence}")
+policy = summary.get("escalation_policy") or {}
+if policy.get("policy") != "never" or policy.get("selected_attempt_count") != 0:
+    raise SystemExit(f"{summary_path}: native-only repeat should record policy never: {policy}")
 attempts = summary.get("attempts") or []
 if len(attempts) != 2:
     raise SystemExit(f"{summary_path}: expected two attempts, got {attempts}")
@@ -324,6 +346,42 @@ print(json.dumps({
     "outcome_totals": summary.get("outcome_totals"),
     "first_failure": first_failure.get("attempt"),
     "best_evidence_attempt": best_evidence.get("attempt"),
+}, sort_keys=True))
+PY
+
+printf '[observe] repeat deep escalates only first failing attempt by default\n'
+"$runner_path" observe --deep --repeat 2 build/user-samples/copy_overrun_case --output "$output_root/copy_overrun_case_deep_repeat"
+python3 - "$output_root/copy_overrun_case_deep_repeat/repeat-summary.json" <<'PY'
+import json
+import pathlib
+import sys
+
+summary_path = pathlib.Path(sys.argv[1])
+summary = json.loads(summary_path.read_text())
+policy = summary.get("escalation_policy") or {}
+selected = policy.get("selected_attempts") or []
+if policy.get("policy") != "first-failure" or policy.get("deep") is not True:
+    raise SystemExit(f"{summary_path}: unexpected repeat escalation policy {policy}")
+if policy.get("selected_attempt_count") != 1 or len(selected) != 1:
+    raise SystemExit(f"{summary_path}: expected one selected escalation attempt, got {policy}")
+if selected[0].get("attempt") != 1 or selected[0].get("reason") != "first_escalatable_failure":
+    raise SystemExit(f"{summary_path}: expected attempt 1 first failure selection, got {selected}")
+
+attempts = summary.get("attempts") or []
+if len(attempts) != 2:
+    raise SystemExit(f"{summary_path}: expected two attempts, got {attempts}")
+first_summary = json.loads(pathlib.Path(attempts[0]["run_summary"]).read_text())
+second_summary = json.loads(pathlib.Path(attempts[1]["run_summary"]).read_text())
+first_escalations = first_summary["targets"][0].get("escalation") or []
+second_escalations = second_summary["targets"][0].get("escalation") or []
+if not any(result.get("tool") == "valgrind" for result in first_escalations):
+    raise SystemExit(f"{summary_path}: first attempt missing Valgrind escalation: {first_escalations}")
+if second_escalations:
+    raise SystemExit(f"{summary_path}: second attempt should not be escalated by first-failure: {second_escalations}")
+print(json.dumps({
+    "repeat_summary": str(summary_path),
+    "policy": policy.get("policy"),
+    "selected_attempts": [attempt.get("attempt") for attempt in selected],
 }, sort_keys=True))
 PY
 

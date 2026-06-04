@@ -256,6 +256,7 @@ pub struct RepeatRunSummary {
     pub finding_totals_by_class: BTreeMap<String, u64>,
     pub first_failure: Option<RepeatAttemptSelection>,
     pub best_evidence_attempt: Option<RepeatAttemptSelection>,
+    pub escalation_policy: RepeatEscalationSummary,
     pub issue_groups: Vec<RepeatIssueGroup>,
     pub attempts: Vec<RepeatAttemptSummary>,
     pub next_commands: Vec<String>,
@@ -278,11 +279,30 @@ impl RepeatRunSummary {
         )
     }
 
+    #[cfg(test)]
     pub fn new_with_issue_groups(
         output_root: impl Into<String>,
         requested_attempts: u32,
         attempts: Vec<RepeatAttemptSummary>,
         issue_group_inputs: Vec<RepeatIssueGroupInput>,
+        next_commands: Vec<String>,
+    ) -> Self {
+        Self::new_with_issue_groups_and_escalation(
+            output_root,
+            requested_attempts,
+            attempts,
+            issue_group_inputs,
+            RepeatEscalationSummary::disabled(),
+            next_commands,
+        )
+    }
+
+    pub fn new_with_issue_groups_and_escalation(
+        output_root: impl Into<String>,
+        requested_attempts: u32,
+        attempts: Vec<RepeatAttemptSummary>,
+        issue_group_inputs: Vec<RepeatIssueGroupInput>,
+        escalation_policy: RepeatEscalationSummary,
         next_commands: Vec<String>,
     ) -> Self {
         let first_failure = attempts
@@ -317,6 +337,7 @@ impl RepeatRunSummary {
             finding_totals_by_class: repeat_finding_totals_by_class(&attempts),
             first_failure,
             best_evidence_attempt,
+            escalation_policy,
             issue_groups: aggregate_repeat_issue_groups(issue_group_inputs),
             attempts,
             next_commands,
@@ -388,6 +409,63 @@ pub struct RepeatAttemptSelection {
 
 impl RepeatAttemptSelection {
     fn from_attempt(attempt: &RepeatAttemptSummary, reason: impl Into<String>) -> Self {
+        Self {
+            attempt: attempt.attempt,
+            target_name: attempt.target_name.clone(),
+            status: attempt.status,
+            outcome: attempt.outcome,
+            reason: reason.into(),
+            run_summary: attempt.run_summary.clone(),
+            crashpack: attempt.crashpack.clone(),
+            findings_count: attempt.findings_count,
+            findings_by_class: attempt.findings_by_class.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepeatEscalationSummary {
+    pub policy: String,
+    pub deep: bool,
+    pub selected_attempt_count: usize,
+    pub selected_attempts: Vec<RepeatEscalationAttempt>,
+}
+
+impl RepeatEscalationSummary {
+    pub fn new(
+        policy: impl Into<String>,
+        deep: bool,
+        selected_attempts: Vec<RepeatEscalationAttempt>,
+    ) -> Self {
+        Self {
+            policy: policy.into(),
+            deep,
+            selected_attempt_count: selected_attempts.len(),
+            selected_attempts,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn disabled() -> Self {
+        Self::new("never", false, Vec::new())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepeatEscalationAttempt {
+    pub attempt: u32,
+    pub target_name: String,
+    pub status: TargetStatus,
+    pub outcome: RepeatAttemptOutcome,
+    pub reason: String,
+    pub run_summary: String,
+    pub crashpack: String,
+    pub findings_count: u64,
+    pub findings_by_class: BTreeMap<String, u64>,
+}
+
+impl RepeatEscalationAttempt {
+    pub fn from_attempt(attempt: &RepeatAttemptSummary, reason: impl Into<String>) -> Self {
         Self {
             attempt: attempt.attempt,
             target_name: attempt.target_name.clone(),
@@ -766,6 +844,8 @@ mod tests {
             summary.finding_totals_by_class.get("heap_overflow"),
             Some(&1)
         );
+        assert_eq!(summary.escalation_policy.policy, "never");
+        assert_eq!(summary.escalation_policy.selected_attempt_count, 0);
 
         let first_failure = summary.first_failure.as_ref().unwrap();
         assert_eq!(first_failure.attempt, 2);
@@ -985,12 +1065,18 @@ mod tests {
             "finding_totals_by_class",
             "first_failure",
             "best_evidence_attempt",
+            "escalation_policy",
             "issue_groups",
             "attempts",
             "next_commands",
         ] {
             assert!(value.get(key).is_some(), "missing repeat field {key}");
         }
+        assert_eq!(value["escalation_policy"]["policy"], json!("never"));
+        assert_eq!(
+            value["escalation_policy"]["selected_attempt_count"],
+            json!(0)
+        );
         assert!(value["issue_groups"].is_array());
 
         let attempt: &Value = &value["attempts"][0];

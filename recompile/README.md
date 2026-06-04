@@ -147,9 +147,11 @@ also writes `build/repeat-demo/repeat-summary.json`, which records attempt
 counts, status/outcome totals, per-attempt artifact paths, first non-pass
 attempt, best evidence attempt, cross-attempt issue groups, and next inspection
 commands.
-`--repeat --deep` is intentionally rejected until the repeat escalation policy
-is implemented, because repeated sanitizer/Valgrind scans are expensive and
-should not become an accidental default path.
+Repeat-mode escalation is policy-driven so expensive Valgrind/sanitizer scans
+do not accidentally run on every attempt. The default repeat policy is
+`first-failure`; use `--repeat-escalation never`, `sampled`, or `always` to make
+that choice explicit. `--repeat --deep` is allowed, but with the default policy
+it only escalates the first escalatable failing attempt.
 
 If a target terminates with `SIGSEGV`, `SIGABRT`, `SIGBUS`, or `SIGFPE` and no
 more precise detector has emitted a finding, `observe` records an

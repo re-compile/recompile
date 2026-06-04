@@ -134,6 +134,12 @@ pub fn annotate_findings_with_issue_groups(findings: &mut [Value]) -> IssueGroup
 
 fn fingerprint_inputs(finding: &Value) -> IssueFingerprintInputs {
     let tool = tool_name(finding);
+    let class = finding_string(finding, &["class"])
+        .or_else(|| finding_string(finding, &["kind"]))
+        .unwrap_or_else(|| "unknown".to_string());
+    let operation = finding_string(finding, &["evidence", "memory", "operation"])
+        .or_else(|| finding_string(finding, &["evidence", "api"]))
+        .unwrap_or_else(|| "unknown".to_string());
     let source_path = finding_string(finding, &["provenance", "source_path"])
         .or_else(|| finding_file_uri(finding, &["primaryLocation", "uri"]));
     let raw_call_site = finding_call_site(finding);
@@ -157,11 +163,20 @@ fn fingerprint_inputs(finding: &Value) -> IssueFingerprintInputs {
         alloc_size,
         alloc_offset,
     );
-    let binary_identity = if tool.is_some()
-        && source_path.is_none()
-        && call_site.is_none()
-        && alloc_site.is_none()
-        && free_site.is_none()
+    let native_memory_identity = has_stable_native_memory_identity(
+        tool.as_deref(),
+        &class,
+        &operation,
+        access_size,
+        alloc_size,
+        alloc_offset,
+    );
+    let binary_identity = if native_memory_identity
+        || (tool.is_some()
+            && source_path.is_none()
+            && call_site.is_none()
+            && alloc_site.is_none()
+            && free_site.is_none())
     {
         binary_identity(finding)
     } else {
@@ -169,12 +184,8 @@ fn fingerprint_inputs(finding: &Value) -> IssueFingerprintInputs {
     };
 
     IssueFingerprintInputs {
-        class: finding_string(finding, &["class"])
-            .or_else(|| finding_string(finding, &["kind"]))
-            .unwrap_or_else(|| "unknown".to_string()),
-        operation: finding_string(finding, &["evidence", "memory", "operation"])
-            .or_else(|| finding_string(finding, &["evidence", "api"]))
-            .unwrap_or_else(|| "unknown".to_string()),
+        class,
+        operation,
         source_path,
         call_site,
         alloc_site,
@@ -216,6 +227,33 @@ fn fingerprint_call_site(
     Some(call_site)
 }
 
+fn has_stable_native_memory_identity(
+    tool: Option<&str>,
+    class: &str,
+    operation: &str,
+    access_size: Option<u64>,
+    alloc_size: Option<u64>,
+    alloc_offset: Option<u64>,
+) -> bool {
+    tool.is_none()
+        && stable_non_unknown(class)
+        && stable_non_unknown(operation)
+        && access_size.is_some()
+        && alloc_size.is_some()
+        && alloc_offset.is_some()
+}
+
+fn uses_stable_native_memory_identity(inputs: &IssueFingerprintInputs) -> bool {
+    has_stable_native_memory_identity(
+        inputs.tool.as_deref(),
+        &inputs.class,
+        &inputs.operation,
+        inputs.access_size,
+        inputs.alloc_size,
+        inputs.alloc_offset,
+    )
+}
+
 fn issue_fingerprint(inputs: &IssueFingerprintInputs) -> String {
     let access_size = inputs
         .access_size
@@ -229,17 +267,42 @@ fn issue_fingerprint(inputs: &IssueFingerprintInputs) -> String {
         .alloc_offset
         .map(|value| value.to_string())
         .unwrap_or_default();
+    let native_memory_identity = uses_stable_native_memory_identity(inputs);
+    let source_path = if native_memory_identity {
+        ""
+    } else {
+        inputs.source_path.as_deref().unwrap_or("")
+    };
+    let call_site = if native_memory_identity {
+        ""
+    } else {
+        inputs.call_site.as_deref().unwrap_or("")
+    };
+    let alloc_site = if native_memory_identity {
+        ""
+    } else {
+        inputs.alloc_site.as_deref().unwrap_or("")
+    };
+    let free_site = if native_memory_identity {
+        ""
+    } else {
+        inputs.free_site.as_deref().unwrap_or("")
+    };
     let mut fields = vec![
         inputs.class.as_str(),
         inputs.operation.as_str(),
-        inputs.source_path.as_deref().unwrap_or(""),
-        inputs.call_site.as_deref().unwrap_or(""),
-        inputs.alloc_site.as_deref().unwrap_or(""),
-        inputs.free_site.as_deref().unwrap_or(""),
+        source_path,
+        call_site,
+        alloc_site,
+        free_site,
         access_size.as_str(),
         alloc_size.as_str(),
         alloc_offset.as_str(),
     ];
+    if native_memory_identity {
+        fields.push("native_memory_identity");
+        fields.push(inputs.binary_identity.as_deref().unwrap_or(""));
+    }
     if inputs.tool.is_some() {
         fields.push(inputs.tool.as_deref().unwrap_or(""));
         fields.push(inputs.tool_summary.as_deref().unwrap_or(""));
@@ -451,6 +514,101 @@ mod tests {
         let second = issue_fingerprint(&fingerprint_inputs(&finding));
         assert_eq!(first, second);
         assert!(first.starts_with("re-issue-v1-"));
+    }
+
+    #[test]
+    fn native_fingerprints_ignore_optional_source_context_with_stable_memory_identity() {
+        let resolved = json!({
+            "id": "F-1",
+            "class": "heap_overflow",
+            "severity": "error",
+            "confidence": "high",
+            "evidence": {
+                "memory": {"operation": "memcpy", "size": 80, "alloc_size": 24, "alloc_offset": 0},
+                "stacks": {
+                    "call": ["main (/tmp/project/src/app.c:25)"],
+                    "alloc": ["packet_new (/tmp/project/src/app.c:11)"]
+                },
+                "alloc_site": "/tmp/project/src/app.c"
+            },
+            "provenance": {
+                "binary_path": "/tmp/crashpack/bins/app",
+                "original_binary_path": "/tmp/project/build/app",
+                "source_status": "resolved",
+                "source_path": "/tmp/project/src/app.c"
+            }
+        });
+        let unresolved = json!({
+            "id": "F-2",
+            "class": "heap_overflow",
+            "severity": "error",
+            "confidence": "high",
+            "evidence": {
+                "memory": {"operation": "memcpy", "size": 80, "alloc_size": 24, "alloc_offset": 0},
+                "stacks": {
+                    "call": ["0xffff88d21a80", "/tmp/project/build/app+0x9c4"],
+                    "alloc": ["0xffff88d21a40"]
+                }
+            },
+            "provenance": {
+                "binary_path": "/tmp/crashpack/bins/app",
+                "original_binary_path": "/tmp/project/build/app",
+                "source_status": "unresolved"
+            }
+        });
+
+        let resolved_inputs = fingerprint_inputs(&resolved);
+        let unresolved_inputs = fingerprint_inputs(&unresolved);
+
+        assert_eq!(
+            resolved_inputs.source_path.as_deref(),
+            Some("/tmp/project/src/app.c")
+        );
+        assert_eq!(
+            resolved_inputs.alloc_site.as_deref(),
+            Some("/tmp/project/src/app.c")
+        );
+        assert_eq!(resolved_inputs.binary_identity.as_deref(), Some("app"));
+        assert_eq!(unresolved_inputs.source_path, None);
+        assert_eq!(unresolved_inputs.binary_identity.as_deref(), Some("app"));
+        assert_eq!(
+            issue_fingerprint(&resolved_inputs),
+            issue_fingerprint(&unresolved_inputs)
+        );
+
+        let mut findings = vec![resolved];
+        let report = annotate_findings_with_issue_groups(&mut findings);
+        let group = report.groups.first().expect("expected issue group");
+        assert_eq!(group.source.path.as_deref(), Some("/tmp/project/src/app.c"));
+        assert_eq!(
+            group.source.alloc_site.as_deref(),
+            Some("/tmp/project/src/app.c")
+        );
+    }
+
+    #[test]
+    fn native_fingerprints_split_stable_memory_identity_by_binary() {
+        let first = json!({
+            "id": "F-1",
+            "class": "heap_overflow",
+            "evidence": {
+                "memory": {"operation": "memcpy", "size": 80, "alloc_size": 24, "alloc_offset": 0}
+            },
+            "provenance": {"original_binary_path": "/tmp/project/build/app"}
+        });
+        let second = json!({
+            "id": "F-2",
+            "class": "heap_overflow",
+            "evidence": {
+                "memory": {"operation": "memcpy", "size": 80, "alloc_size": 24, "alloc_offset": 0}
+            },
+            "provenance": {"original_binary_path": "/tmp/project/build/worker"}
+        });
+
+        assert_ne!(
+            issue_fingerprint(&fingerprint_inputs(&first)),
+            issue_fingerprint(&fingerprint_inputs(&second))
+        );
     }
 
     #[test]
