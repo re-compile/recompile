@@ -144,6 +144,7 @@ static const char *detect_libstdcxx_path(void) {
 }
 
 static volatile sig_atomic_t stop = 0;
+#define TARGET_EXIT_EVENT_DRAIN_MS 750
 static const char *obj_path = NULL;
 static const char *heap_path = NULL;
 static const char *libc_path = NULL;  // Detected at runtime or via --libc
@@ -323,6 +324,14 @@ static void log_line(const char *fmt, ...) {
         fputc('\n', stderr);
     }
     va_end(ap);
+}
+
+static uint64_t monotonic_ms(void)
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
+    return ((uint64_t)ts.tv_sec * 1000ULL) + ((uint64_t)ts.tv_nsec / 1000000ULL);
 }
 
 // V1 schema finding emission
@@ -1150,41 +1159,20 @@ static bool is_cxx_operator_symbol(const char *symbol)
             || strcmp(symbol, "_ZdaPvm") == 0);
 }
 
-static struct bpf_link *attach_uprobe_by_name(const struct bpf_program *prog, bool retprobe,
-    int attach_pid, const char *binary_path, const char *symbol, char *impl_out, size_t impl_sz)
+static bool is_memory_string_symbol(const char *symbol)
 {
-    for (int i = 0; ; ++i) {
-        const char *candidate = preferred_symbol_aliases(symbol, i);
-        if (!candidate)
-            break;
+    return symbol
+        && (strcmp(symbol, "memcpy") == 0
+            || strcmp(symbol, "memmove") == 0
+            || strcmp(symbol, "memset") == 0
+            || strcmp(symbol, "strcpy") == 0
+            || strcmp(symbol, "strncpy") == 0);
+}
 
-        struct bpf_uprobe_opts opts = {};
-        opts.sz = sizeof(opts);
-        opts.retprobe = retprobe;
-        opts.func_name = candidate;
-
-        struct bpf_link *link =
-            bpf_program__attach_uprobe_opts(prog, attach_pid, binary_path, 0, &opts);
-        if (!link || libbpf_get_error(link))
-            continue;
-
-        if (impl_out && impl_sz) {
-            strncpy(impl_out, candidate, impl_sz - 1);
-            impl_out[impl_sz - 1] = '\0';
-        }
-        return link;
-    }
-
-    if (strcmp(symbol, "memcpy") != 0
-        && strcmp(symbol, "memmove") != 0
-        && strcmp(symbol, "memset") != 0
-        && strcmp(symbol, "strcpy") != 0
-        && strcmp(symbol, "strncpy") != 0)
-        return NULL;
-
-    // IFUNC-backed libc memory/string routines on aarch64 glibc can fail
-    // name-based attachment. Resolve the actual implementation address from
-    // the loaded libc and attach by offset as a narrow fallback.
+static struct bpf_link *attach_uprobe_by_resolved_symbol(const struct bpf_program *prog,
+    bool retprobe, int attach_pid, const char *binary_path, const char *symbol,
+    char *impl_out, size_t impl_sz)
+{
     void *handle = dlopen(binary_path, RTLD_LAZY | RTLD_LOCAL);
     if (!handle)
         return NULL;
@@ -1221,6 +1209,43 @@ static struct bpf_link *attach_uprobe_by_name(const struct bpf_program *prog, bo
 
     dlclose(handle);
     return link;
+}
+
+static struct bpf_link *attach_uprobe_by_name(const struct bpf_program *prog, bool retprobe,
+    int attach_pid, const char *binary_path, const char *symbol, char *impl_out, size_t impl_sz)
+{
+    // Prefer the concrete implementation address for IFUNC-backed libc
+    // memory/string routines. Name-based attachment can land on a resolver
+    // entry that fast targets never execute after dynamic linking.
+    if (is_memory_string_symbol(symbol)) {
+        struct bpf_link *link = attach_uprobe_by_resolved_symbol(
+            prog, retprobe, attach_pid, binary_path, symbol, impl_out, impl_sz);
+        if (link && !libbpf_get_error(link))
+            return link;
+    }
+
+    for (int i = 0; ; ++i) {
+        const char *candidate = preferred_symbol_aliases(symbol, i);
+        if (!candidate)
+            break;
+
+        struct bpf_uprobe_opts opts = {};
+        opts.sz = sizeof(opts);
+        opts.retprobe = retprobe;
+        opts.func_name = candidate;
+
+        struct bpf_link *link =
+            bpf_program__attach_uprobe_opts(prog, attach_pid, binary_path, 0, &opts);
+        if (!link || libbpf_get_error(link))
+            continue;
+
+        if (impl_out && impl_sz) {
+            strncpy(impl_out, candidate, impl_sz - 1);
+            impl_out[impl_sz - 1] = '\0';
+        }
+        return link;
+    }
+    return NULL;
 }
 
 struct link_vec {
@@ -2365,23 +2390,31 @@ int main(int argc, char **argv){
     }
 
     install_signal_handlers();
+    maybe_snapshot_target_modules();
     log_line("ready");
 
+    bool target_exit_drain_started = false;
+    uint64_t target_exit_drain_deadline_ms = 0;
     while (!stop) {
-        maybe_snapshot_target_modules();
-        if (target_pid > 0) {
+        if (target_pid > 0 && !target_exit_drain_started) {
             if (!pid_still_alive(target_pid)) {
-                stop = 1;
-                continue;
-            }
-            struct module_cache *cache = get_module_cache((__u32)target_pid);
-            if (cache && !cache->built && pid_still_alive(target_pid)) {
-                usleep(5 * 1000);
-                continue;
+                target_exit_drain_started = true;
+                target_exit_drain_deadline_ms = monotonic_ms() + TARGET_EXIT_EVENT_DRAIN_MS;
+                log_line("target exited; draining events for %dms", TARGET_EXIT_EVENT_DRAIN_MS);
             }
         }
-        if (rb) ring_buffer__poll(rb, 250);
-        else    usleep(200*1000);
+
+        int poll_timeout_ms = target_exit_drain_started ? 50 : 250;
+        if (rb) ring_buffer__poll(rb, poll_timeout_ms);
+        else    usleep((useconds_t)poll_timeout_ms * 1000);
+
+        if (!target_exit_drain_started)
+            maybe_snapshot_target_modules();
+
+        if (target_exit_drain_started && monotonic_ms() >= target_exit_drain_deadline_ms) {
+            log_line("target exit event drain complete");
+            stop = 1;
+        }
     }
     if (rb)
         ring_buffer__poll(rb, 0);
