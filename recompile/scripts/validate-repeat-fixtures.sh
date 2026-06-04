@@ -74,6 +74,7 @@ cases = [
         "classes": [{}, {}, {}],
         "first_failure": None,
         "best_evidence": None,
+        "repeat_issue_groups": [],
     },
     {
         "name": "repeat-failing",
@@ -84,6 +85,13 @@ cases = [
         "classes": [{"heap_overflow": 1}, {"heap_overflow": 1}, {"heap_overflow": 1}],
         "first_failure": 1,
         "best_evidence": 1,
+        "repeat_issue_groups": [
+            {
+                "class": "heap_overflow",
+                "attempts": [1, 2, 3],
+                "occurrence_count": 3,
+            }
+        ],
     },
     {
         "name": "repeat-flaky",
@@ -94,6 +102,13 @@ cases = [
         "classes": [{}, {"heap_overflow": 1}, {}],
         "first_failure": 2,
         "best_evidence": 2,
+        "repeat_issue_groups": [
+            {
+                "class": "heap_overflow",
+                "attempts": [2],
+                "occurrence_count": 1,
+            }
+        ],
     },
     {
         "name": "repeat-timeout",
@@ -104,6 +119,7 @@ cases = [
         "classes": [{}, {}],
         "first_failure": 1,
         "best_evidence": 1,
+        "repeat_issue_groups": [],
     },
 ]
 
@@ -144,6 +160,55 @@ def assert_selection(summary, field, expected_attempt):
         )
     if not selection.get("crashpack") or not pathlib.Path(selection["crashpack"]).exists():
         raise SystemExit(f"{summary['output_root']}: {field} crashpack missing: {selection}")
+
+
+def assert_repeat_issue_groups(summary, case, summary_path):
+    groups = summary.get("issue_groups")
+    if not isinstance(groups, list):
+        raise SystemExit(f"{summary_path}: issue_groups must be a list")
+
+    expected_groups = case["repeat_issue_groups"]
+    if len(groups) != len(expected_groups):
+        raise SystemExit(
+            f"{summary_path}: expected {len(expected_groups)} repeat issue groups, got {groups}"
+        )
+
+    for expected in expected_groups:
+        matches = [group for group in groups if group.get("class") == expected["class"]]
+        if len(matches) != 1:
+            raise SystemExit(
+                f"{summary_path}: expected one {expected['class']} repeat issue group, got {groups}"
+            )
+        group = matches[0]
+        attempts = group.get("attempts")
+        if not isinstance(attempts, list) or not attempts:
+            raise SystemExit(f"{summary_path}: repeat issue group missing attempts: {group}")
+
+        attempt_numbers = [occurrence.get("attempt") for occurrence in attempts]
+        if attempt_numbers != expected["attempts"]:
+            raise SystemExit(
+                f"{summary_path}: expected repeat issue attempts {expected['attempts']}, got {attempt_numbers}"
+            )
+        if group.get("attempt_count") != len(set(expected["attempts"])):
+            raise SystemExit(f"{summary_path}: attempt_count mismatch: {group}")
+        if group.get("occurrence_count") != expected["occurrence_count"]:
+            raise SystemExit(f"{summary_path}: occurrence_count mismatch: {group}")
+        if group.get("first_attempt") != expected["attempts"][0]:
+            raise SystemExit(f"{summary_path}: first_attempt mismatch: {group}")
+        if group.get("last_attempt") != expected["attempts"][-1]:
+            raise SystemExit(f"{summary_path}: last_attempt mismatch: {group}")
+
+        representative = group.get("representative_attempt")
+        if not isinstance(representative, dict) or representative.get("attempt") != expected["attempts"][0]:
+            raise SystemExit(f"{summary_path}: representative_attempt mismatch: {group}")
+        if not group.get("fingerprint") or not group.get("id", "").startswith("RIG-"):
+            raise SystemExit(f"{summary_path}: repeat issue group missing stable identity: {group}")
+
+        for occurrence in attempts:
+            assert_artifact(occurrence.get("issue_groups"), f"{case['name']} repeat occurrence issue_groups")
+            assert_artifact(occurrence.get("crashpack"), f"{case['name']} repeat occurrence crashpack")
+            if not occurrence.get("issue_group_id", "").startswith("IG-"):
+                raise SystemExit(f"{summary_path}: occurrence missing issue_group_id: {occurrence}")
 
 
 results = []
@@ -228,12 +293,14 @@ for case in cases:
 
     if not any("repeat-summary.json" in command for command in repeat_summary.get("next_commands") or []):
         raise SystemExit(f"{repeat_summary_path}: next_commands should include repeat-summary.json")
+    assert_repeat_issue_groups(repeat_summary, case, repeat_summary_path)
 
     results.append({
         "name": case["name"],
         "status_totals": repeat_summary.get("status_totals"),
         "outcome_totals": repeat_summary.get("outcome_totals"),
         "finding_totals_by_class": repeat_summary.get("finding_totals_by_class"),
+        "repeat_issue_group_count": len(repeat_summary.get("issue_groups") or []),
         "first_failure": None if case["first_failure"] is None else repeat_summary["first_failure"]["attempt"],
         "best_evidence": None if case["best_evidence"] is None else repeat_summary["best_evidence_attempt"]["attempt"],
     })
