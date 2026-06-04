@@ -64,6 +64,8 @@ records:
 - cross-attempt issue groups keyed by stable fingerprint, including
   `attempt_count`, `occurrence_count`, first/last attempt, representative
   attempt, and per-attempt artifact pointers
+- `escalation_policy`, which records the repeat escalation policy, whether
+  deep escalation was requested, and the attempts selected for tool escalation
 - one row per attempt with the attempt output root, run summary, crashpack,
   findings, evidence pack, and issue-group paths
 - `first_failure`, which points at the first non-pass attempt when one exists
@@ -74,8 +76,15 @@ records:
 
 All-pass repeat runs intentionally keep `first_failure` and
 `best_evidence_attempt` as `null`.
-Repeated deep escalation is policy-gated for now because sanitizer and Valgrind
-retries are expensive and must be budgeted deliberately.
+Repeated escalation is policy-gated because sanitizer and Valgrind retries are
+expensive:
+
+- `never`: native observation only
+- `first-failure`: default for repeat mode; escalate the first escalatable
+  failing attempt only
+- `sampled`: escalate a bounded sample: the first attempt for `--deep`, plus
+  the first later escalatable failure if it differs
+- `always`: escalate every escalatable attempt; expensive and explicitly opt-in
 
 `run-summary.json` is versioned by `schemas/observation-run.schema.json` and uses `schema_version: "1.0"` with `purpose: "local_runtime_observation"`.
 
@@ -137,26 +146,32 @@ Fingerprints are deterministic. The current inputs are:
 
 - finding class
 - observed operation or API
-- resolved source path when available
-- normalized call site when it is deterministic enough for the source
-- normalized allocation site
-- normalized free site when available
+- resolved source path when it is stable enough for the finding mode
+- normalized call site when it is deterministic enough for the finding mode
+- normalized allocation site when it is stable enough for the finding mode
+- normalized free site when available and stable enough for the finding mode
 - access size
 - allocation size
+- allocation offset when available
+- binary identity when source context is absent or intentionally omitted
 
 The fingerprint deliberately excludes pointer addresses, PIDs, timestamps,
 absolute crashpack output directories, and escalation artifact names because
 those vary between runs. Repeated executions of the same bug path should keep
 the same fingerprint. Independent findings should split when their class,
-operation, source site, lifecycle site, or size evidence differs.
+operation, lifecycle site, size evidence, offset evidence, or binary identity
+differs.
 
-Native eBPF stack symbolization is opportunistic, so a source call site may be
-present in one run and missing in another. For native memory findings that
-already have stable source, allocation, and size evidence, the call site stays
-visible in the issue-group source context but is not part of the primary
-fingerprint. Tool-backed findings from ASan, Valgrind, UBSan, LSan, or GDB can
-use normalized tool frames because those outputs are deterministic enough for
-the escalation layer.
+Native eBPF stack symbolization and source recovery are opportunistic, so
+source, allocation, or call-site context may be present in one run and missing
+in another. For native memory findings with a complete memory identity
+(`class`, `operation`, access size, allocation size, and allocation offset), the
+primary fingerprint uses that memory identity plus binary identity. Source,
+allocation, and call-site details remain visible in issue-group source context
+and fingerprint input diagnostics, but they are not hashed for that native
+case. Tool-backed findings from ASan, Valgrind, UBSan, LSan, or GDB can use
+normalized tool frames because those outputs are deterministic enough for the
+escalation layer.
 
 ## Phase 4 And Phase 6 Baseline Scope
 
@@ -169,7 +184,9 @@ attempt independently under `attempts/`, and writes an aggregate
 `run-summary.json` plus `repeat-summary.json`. Repeat summaries aggregate
 per-attempt `issue-groups.json` reports by stable fingerprint so the same issue
 reports frequency and representative evidence without merging independent
-bugs. Repeated escalation policy artifacts are still deferred.
+bugs. Repeat summaries also record the repeat escalation policy and selected
+attempts so agents can distinguish intentionally un-escalated retries from
+missing evidence.
 
 Repeat/flaky fixtures are covered by `make repeat-fixtures-smoke`:
 

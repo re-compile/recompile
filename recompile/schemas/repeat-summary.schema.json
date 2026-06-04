@@ -14,6 +14,7 @@
     "finding_totals_by_class",
     "first_failure",
     "best_evidence_attempt",
+    "escalation_policy",
     "issue_groups",
     "attempts",
     "next_commands"
@@ -38,6 +39,7 @@
     },
     "first_failure": {"anyOf": [{"$ref": "#/$defs/selection"}, {"type": "null"}]},
     "best_evidence_attempt": {"anyOf": [{"$ref": "#/$defs/selection"}, {"type": "null"}]},
+    "escalation_policy": {"$ref": "#/$defs/escalation_policy"},
     "issue_groups": {
       "type": "array",
       "items": {"$ref": "#/$defs/repeat_issue_group"}
@@ -79,6 +81,54 @@
       "additionalProperties": {"type": "integer", "minimum": 0}
     },
     "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempt",
+        "target_name",
+        "status",
+        "outcome",
+        "reason",
+        "run_summary",
+        "crashpack",
+        "findings_count",
+        "findings_by_class"
+      ],
+      "properties": {
+        "attempt": {"type": "integer", "minimum": 1},
+        "target_name": {"type": "string", "minLength": 1},
+        "status": {"$ref": "#/$defs/status"},
+        "outcome": {"$ref": "#/$defs/outcome"},
+        "reason": {"type": "string", "minLength": 1},
+        "run_summary": {"type": "string"},
+        "crashpack": {"type": "string"},
+        "findings_count": {"type": "integer", "minimum": 0},
+        "findings_by_class": {"$ref": "#/$defs/class_counts"}
+      }
+    },
+    "escalation_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "deep",
+        "selected_attempt_count",
+        "selected_attempts"
+      ],
+      "properties": {
+        "policy": {
+          "type": "string",
+          "enum": ["never", "first-failure", "sampled", "always"]
+        },
+        "deep": {"type": "boolean"},
+        "selected_attempt_count": {"type": "integer", "minimum": 0},
+        "selected_attempts": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/escalation_attempt"}
+        }
+      }
+    },
+    "escalation_attempt": {
       "type": "object",
       "additionalProperties": false,
       "required": [

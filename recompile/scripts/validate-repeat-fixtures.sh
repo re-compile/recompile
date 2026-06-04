@@ -249,6 +249,11 @@ for case in cases:
 
     assert_selection(repeat_summary, "first_failure", case["first_failure"])
     assert_selection(repeat_summary, "best_evidence_attempt", case["best_evidence"])
+    escalation_policy = repeat_summary.get("escalation_policy") or {}
+    if escalation_policy.get("policy") != "never":
+        raise SystemExit(f"{repeat_summary_path}: native-only repeat should record escalation policy never")
+    if escalation_policy.get("selected_attempt_count") != 0 or escalation_policy.get("selected_attempts") != []:
+        raise SystemExit(f"{repeat_summary_path}: native-only repeat should not select escalations: {escalation_policy}")
 
     attempts = repeat_summary.get("attempts") or []
     if len(attempts) != case["requested_attempts"]:

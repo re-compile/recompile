@@ -132,6 +132,13 @@ fn build_cli() -> Command {
                         .help("Run observe N times as an opt-in flaky-failure diagnostic"),
                 )
                 .arg(
+                    Arg::new("repeat-escalation")
+                        .long("repeat-escalation")
+                        .value_name("POLICY")
+                        .value_parser(["never", "first-failure", "sampled", "always"])
+                        .help("Repeat-mode escalation policy: never, first-failure, sampled, always"),
+                )
+                .arg(
                     Arg::new("native-only")
                         .long("native-only")
                         .action(ArgAction::SetTrue)
@@ -267,5 +274,31 @@ mod tests {
         };
 
         assert_eq!(observe.get_one::<u32>("repeat"), Some(&3));
+    }
+
+    #[test]
+    fn observe_accepts_repeat_escalation_policy() {
+        let matches = build_cli()
+            .try_get_matches_from([
+                "rerun",
+                "observe",
+                "--repeat",
+                "3",
+                "--repeat-escalation",
+                "first-failure",
+                "build/app",
+            ])
+            .expect("observe --repeat-escalation should parse");
+
+        let Some(("observe", observe)) = matches.subcommand() else {
+            panic!("expected observe subcommand");
+        };
+
+        assert_eq!(
+            observe
+                .get_one::<String>("repeat-escalation")
+                .map(String::as_str),
+            Some("first-failure")
+        );
     }
 }

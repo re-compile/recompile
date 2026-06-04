@@ -19,8 +19,8 @@ use crate::native::{
 };
 use crate::observation::{
     ObservationArtifacts, ObservationDiagnostic, ObservationRunSummary, ObservationTargetSummary,
-    RepeatAttemptSummary, RepeatIssueGroupInput, RepeatIssueGroupOccurrence, RepeatRunSummary,
-    TargetExitSummary, TargetStatus,
+    RepeatAttemptSummary, RepeatEscalationAttempt, RepeatEscalationSummary, RepeatIssueGroupInput,
+    RepeatIssueGroupOccurrence, RepeatRunSummary, TargetExitSummary, TargetStatus,
 };
 use crate::summary::{print_findings_summary, read_findings};
 
@@ -75,7 +75,93 @@ struct ObserveRequest {
     timeout_ms: Option<u64>,
     native_only: bool,
     deep: bool,
+    escalation_enabled: bool,
+    repeat_escalation_policy: RepeatEscalationPolicy,
     args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepeatEscalationPolicy {
+    Never,
+    FirstFailure,
+    Sampled,
+    Always,
+}
+
+impl RepeatEscalationPolicy {
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "never" => Ok(Self::Never),
+            "first-failure" => Ok(Self::FirstFailure),
+            "sampled" => Ok(Self::Sampled),
+            "always" => Ok(Self::Always),
+            _ => Err(anyhow::anyhow!(
+                "unsupported repeat escalation policy: {value}"
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Never => "never",
+            Self::FirstFailure => "first-failure",
+            Self::Sampled => "sampled",
+            Self::Always => "always",
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct RepeatEscalationState {
+    first_failure_selected: bool,
+    sampled_first_attempt_selected: bool,
+    sampled_failure_selected: bool,
+}
+
+impl RepeatEscalationState {
+    fn select_attempt(
+        &mut self,
+        policy: RepeatEscalationPolicy,
+        attempt: u32,
+        summary: &ObservationRunSummary,
+        deep: bool,
+    ) -> Option<&'static str> {
+        let has_candidate = summary
+            .targets
+            .iter()
+            .any(|target| repeat_target_can_run_escalation(target, deep));
+        let has_failure_candidate = summary.targets.iter().any(|target| {
+            repeat_target_can_run_escalation(target, deep) && repeat_target_is_failure_like(target)
+        });
+
+        match policy {
+            RepeatEscalationPolicy::Never => None,
+            RepeatEscalationPolicy::Always => has_candidate.then_some("policy_always"),
+            RepeatEscalationPolicy::FirstFailure => {
+                if has_failure_candidate && !self.first_failure_selected {
+                    self.first_failure_selected = true;
+                    Some("first_escalatable_failure")
+                } else {
+                    None
+                }
+            }
+            RepeatEscalationPolicy::Sampled => {
+                if deep && attempt == 1 && has_candidate && !self.sampled_first_attempt_selected {
+                    self.sampled_first_attempt_selected = true;
+                    if has_failure_candidate {
+                        self.sampled_failure_selected = true;
+                    }
+                    return Some("sampled_first_attempt");
+                }
+                if has_failure_candidate && !self.sampled_failure_selected {
+                    self.sampled_failure_selected = true;
+                    Some("sampled_first_failure")
+                } else {
+                    None
+                }
+            }
+        }
+    }
 }
 
 /// Handle the 'run' command
@@ -134,20 +220,30 @@ pub fn handle_run_command(matches: &ArgMatches) -> Result<()> {
 
 /// Handle the 'observe' command
 pub fn handle_observe_command(matches: &ArgMatches) -> Result<()> {
+    let repeat = matches.get_one::<u32>("repeat").copied().unwrap_or(1);
+    let native_only = matches.get_flag("native-only");
+    let deep = matches.get_flag("deep");
+    let explicit_repeat_escalation = matches
+        .get_one::<String>("repeat-escalation")
+        .map(|value| RepeatEscalationPolicy::parse(value))
+        .transpose()?;
+    let repeat_escalation_policy =
+        resolve_repeat_escalation_policy(repeat, native_only, explicit_repeat_escalation)?;
+
     let request = ObserveRequest {
         binary_path: PathBuf::from(matches.get_one::<String>("binary").unwrap()),
         output_root: PathBuf::from(matches.get_one::<String>("output").unwrap()),
         cwd: matches.get_one::<String>("cwd").map(PathBuf::from),
         timeout_ms: matches.get_one::<u64>("timeout-ms").copied(),
-        native_only: matches.get_flag("native-only"),
-        deep: matches.get_flag("deep"),
+        native_only,
+        deep,
+        escalation_enabled: true,
+        repeat_escalation_policy,
         args: matches
             .get_many::<String>("args")
             .map(|args| args.map(|s| s.to_string()).collect())
             .unwrap_or_default(),
     };
-    let repeat = matches.get_one::<u32>("repeat").copied().unwrap_or(1);
-    validate_observe_repeat_options(repeat, request.deep)?;
 
     print_observe_request(&request, repeat);
 
@@ -190,18 +286,41 @@ fn print_observe_request(request: &ObserveRequest, repeat: u32) {
     } else {
         println!("Escalation: confirm");
     }
+    if repeat > 1 {
+        println!(
+            "Repeat escalation policy: {}",
+            request.repeat_escalation_policy.as_str()
+        );
+    }
 }
 
-fn validate_observe_repeat_options(repeat: u32, deep: bool) -> Result<()> {
+fn resolve_repeat_escalation_policy(
+    repeat: u32,
+    native_only: bool,
+    explicit_policy: Option<RepeatEscalationPolicy>,
+) -> Result<RepeatEscalationPolicy> {
     if repeat == 0 {
         return Err(anyhow::anyhow!("--repeat must be at least 1"));
     }
-    if repeat > 1 && deep {
-        return Err(anyhow::anyhow!(
-            "--repeat with --deep requires a repeat escalation policy; run repeat without --deep for now"
-        ));
+    if repeat == 1 {
+        if explicit_policy.is_some() {
+            return Err(anyhow::anyhow!(
+                "--repeat-escalation requires --repeat greater than 1"
+            ));
+        }
+        return Ok(RepeatEscalationPolicy::Always);
     }
-    Ok(())
+    if native_only {
+        if let Some(policy) = explicit_policy {
+            if policy != RepeatEscalationPolicy::Never {
+                return Err(anyhow::anyhow!(
+                    "--native-only repeat runs can only use --repeat-escalation never"
+                ));
+            }
+        }
+        return Ok(RepeatEscalationPolicy::Never);
+    }
+    Ok(explicit_policy.unwrap_or(RepeatEscalationPolicy::FirstFailure))
 }
 
 fn run_observe_once(request: &ObserveRequest) -> Result<ObservationRunSummary> {
@@ -226,7 +345,6 @@ fn run_observe_once(request: &ObserveRequest) -> Result<ObservationRunSummary> {
         run_options.clone(),
     );
 
-    let mut used_tool_only_fallback = false;
     let mut target = match native_result {
         Ok(result) => {
             let mut target =
@@ -247,50 +365,12 @@ fn run_observe_once(request: &ObserveRequest) -> Result<ObservationRunSummary> {
                 started.elapsed().as_millis(),
             );
             target.diagnostics = native_diagnostics.clone();
-            if !request.native_only && native_error_allows_tool_only_fallback(&native_error) {
-                used_tool_only_fallback = true;
-                run_observe_tool_only_fallback(
-                    &mut target,
-                    &request.binary_path,
-                    &target_dir,
-                    &request.args,
-                    &run_options,
-                    request.deep,
-                    request.timeout_ms,
-                )?;
-            }
             target
         }
     };
 
-    if !request.native_only && !used_tool_only_fallback && !had_observation_error(target.status) {
-        let escalation_results = run_observe_escalation(&target, request.deep)?;
-        if !escalation_results.is_empty() {
-            write_escalation_results(
-                &PathBuf::from(&target.artifacts.crashpack),
-                &escalation_results,
-            )?;
-            let escalation_summaries = escalation_results
-                .iter()
-                .map(observation_escalation_summary)
-                .collect::<Vec<_>>();
-            if target.status == TargetStatus::Clean
-                && escalation_summaries
-                    .iter()
-                    .any(|summary| summary.confirmed || !summary.findings_detected.is_empty())
-            {
-                target.status = TargetStatus::Findings;
-            }
-            target.escalation = escalation_summaries;
-            if let Some(snapshot) = promote_tool_findings_to_crashpack(
-                &PathBuf::from(&target.artifacts.crashpack),
-                &escalation_results,
-            )? {
-                target.findings_count = snapshot.count;
-                target.findings_by_class = snapshot.class_counts;
-                target.issue_group_count = snapshot.issue_group_count;
-            }
-        }
+    if request.escalation_enabled {
+        apply_observe_escalation_to_target(&mut target, request, &target_dir, &run_options)?;
     }
 
     let summary = ObservationRunSummary::new(
@@ -320,6 +400,8 @@ fn run_observe_repeated(request: &ObserveRequest, repeat: u32) -> Result<()> {
 
     let mut aggregate_targets = Vec::new();
     let mut repeat_attempts = Vec::new();
+    let mut repeat_escalation_attempts = Vec::new();
+    let mut repeat_escalation_state = RepeatEscalationState::default();
     let mut repeat_issue_group_inputs = Vec::new();
     let mut next_commands = vec![format!(
         "jq . {}",
@@ -341,7 +423,39 @@ fn run_observe_repeated(request: &ObserveRequest, repeat: u32) -> Result<()> {
 
         let mut attempt_request = request.clone();
         attempt_request.output_root = attempt_dir.clone();
-        let attempt_summary = run_observe_once(&attempt_request)?;
+        attempt_request.escalation_enabled = false;
+        let mut attempt_summary = run_observe_once(&attempt_request)?;
+        let escalation_reason = repeat_escalation_state.select_attempt(
+            request.repeat_escalation_policy,
+            attempt,
+            &attempt_summary,
+            request.deep,
+        );
+        let mut escalated_targets = BTreeSet::new();
+        if let Some(reason) = escalation_reason {
+            let run_options = NativeRunOptions {
+                cwd: request.cwd.clone(),
+                timeout: request.timeout_ms.map(Duration::from_millis),
+            };
+            let mut escalation_request = request.clone();
+            escalation_request.output_root = attempt_dir.clone();
+            escalation_request.escalation_enabled = true;
+            for target in &mut attempt_summary.targets {
+                if repeat_reason_selects_target(reason, target, request.deep) {
+                    let target_dir = PathBuf::from(&target.artifacts.crashpack);
+                    apply_observe_escalation_to_target(
+                        target,
+                        &escalation_request,
+                        &target_dir,
+                        &run_options,
+                    )?;
+                    escalated_targets.insert(target.name.clone());
+                }
+            }
+            if !escalated_targets.is_empty() {
+                write_observation_summary(&attempt_dir, &attempt_summary)?;
+            }
+        }
 
         for target in &attempt_summary.targets {
             let target_name = repeat_target_name(attempt, &target.name);
@@ -353,6 +467,14 @@ fn run_observe_repeated(request: &ObserveRequest, repeat: u32) -> Result<()> {
                 target,
             );
             repeat_issue_group_inputs.extend(load_repeat_issue_group_inputs(&repeat_attempt)?);
+            if let Some(reason) = escalation_reason {
+                if escalated_targets.contains(&target.name) {
+                    repeat_escalation_attempts.push(RepeatEscalationAttempt::from_attempt(
+                        &repeat_attempt,
+                        reason,
+                    ));
+                }
+            }
             repeat_attempts.push(repeat_attempt);
         }
 
@@ -371,11 +493,17 @@ fn run_observe_repeated(request: &ObserveRequest, repeat: u32) -> Result<()> {
         aggregate_targets,
         next_commands.clone(),
     );
-    let repeat_summary = RepeatRunSummary::new_with_issue_groups(
+    let escalation_policy = RepeatEscalationSummary::new(
+        request.repeat_escalation_policy.as_str(),
+        request.deep,
+        repeat_escalation_attempts,
+    );
+    let repeat_summary = RepeatRunSummary::new_with_issue_groups_and_escalation(
         request.output_root.display().to_string(),
         repeat,
         repeat_attempts,
         repeat_issue_group_inputs,
+        escalation_policy,
         next_commands,
     );
     write_repeat_summary(&request.output_root, &repeat_summary)?;
@@ -412,6 +540,44 @@ fn repeat_attempt_dir(output_root: &Path, attempt: u32) -> PathBuf {
 
 fn repeat_target_name(attempt: u32, target_name: &str) -> String {
     format!("attempt-{attempt:04}-{target_name}")
+}
+
+fn repeat_target_is_failure_like(target: &ObservationTargetSummary) -> bool {
+    target.findings_count > 0
+        || matches!(
+            target.status,
+            TargetStatus::Findings | TargetStatus::Failed | TargetStatus::Skipped
+        )
+}
+
+fn repeat_target_can_run_escalation(target: &ObservationTargetSummary, deep: bool) -> bool {
+    if target.findings_count > 0 {
+        return true;
+    }
+    if target.status == TargetStatus::Failed {
+        return target
+            .error
+            .as_deref()
+            .is_some_and(native_error_allows_tool_only_fallback);
+    }
+    deep && !had_observation_error(target.status)
+}
+
+fn repeat_reason_selects_target(
+    reason: &str,
+    target: &ObservationTargetSummary,
+    deep: bool,
+) -> bool {
+    if !repeat_target_can_run_escalation(target, deep) {
+        return false;
+    }
+    match reason {
+        "first_escalatable_failure" | "sampled_first_failure" => {
+            repeat_target_is_failure_like(target)
+        }
+        "sampled_first_attempt" | "policy_always" => true,
+        _ => false,
+    }
 }
 
 fn load_repeat_issue_group_inputs(
@@ -1214,6 +1380,70 @@ fn native_error_allows_tool_only_fallback(error: &str) -> bool {
     known_setup_failures
         .iter()
         .any(|needle| error.contains(needle))
+}
+
+fn apply_observe_escalation_to_target(
+    target: &mut ObservationTargetSummary,
+    request: &ObserveRequest,
+    target_dir: &Path,
+    run_options: &NativeRunOptions,
+) -> Result<bool> {
+    if request.native_only {
+        return Ok(false);
+    }
+
+    if target.status == TargetStatus::Failed {
+        if let Some(error) = target.error.clone() {
+            if native_error_allows_tool_only_fallback(&error) {
+                run_observe_tool_only_fallback(
+                    target,
+                    &request.binary_path,
+                    target_dir,
+                    &request.args,
+                    run_options,
+                    request.deep,
+                    request.timeout_ms,
+                )?;
+                return Ok(!target.escalation.is_empty());
+            }
+        }
+    }
+
+    if had_observation_error(target.status) {
+        return Ok(false);
+    }
+
+    let escalation_results = run_observe_escalation(target, request.deep)?;
+    if escalation_results.is_empty() {
+        return Ok(false);
+    }
+
+    write_escalation_results(
+        &PathBuf::from(&target.artifacts.crashpack),
+        &escalation_results,
+    )?;
+    let escalation_summaries = escalation_results
+        .iter()
+        .map(observation_escalation_summary)
+        .collect::<Vec<_>>();
+    if target.status == TargetStatus::Clean
+        && escalation_summaries
+            .iter()
+            .any(|summary| summary.confirmed || !summary.findings_detected.is_empty())
+    {
+        target.status = TargetStatus::Findings;
+    }
+    target.escalation = escalation_summaries;
+    if let Some(snapshot) = promote_tool_findings_to_crashpack(
+        &PathBuf::from(&target.artifacts.crashpack),
+        &escalation_results,
+    )? {
+        target.findings_count = snapshot.count;
+        target.findings_by_class = snapshot.class_counts;
+        target.issue_group_count = snapshot.issue_group_count;
+    }
+
+    Ok(true)
 }
 
 fn run_observe_tool_only_fallback(
@@ -2218,13 +2448,111 @@ mod tests {
     }
 
     #[test]
-    fn repeat_deep_is_rejected_until_policy_exists() {
-        assert!(validate_observe_repeat_options(1, true).is_ok());
-        assert!(validate_observe_repeat_options(2, false).is_ok());
+    fn repeat_escalation_policy_resolution_is_explicit() {
+        assert_eq!(
+            resolve_repeat_escalation_policy(2, false, None).unwrap(),
+            RepeatEscalationPolicy::FirstFailure
+        );
+        assert_eq!(
+            resolve_repeat_escalation_policy(2, false, Some(RepeatEscalationPolicy::Always))
+                .unwrap(),
+            RepeatEscalationPolicy::Always
+        );
+        assert_eq!(
+            resolve_repeat_escalation_policy(2, true, None).unwrap(),
+            RepeatEscalationPolicy::Never
+        );
+        assert_eq!(
+            resolve_repeat_escalation_policy(2, true, Some(RepeatEscalationPolicy::Never)).unwrap(),
+            RepeatEscalationPolicy::Never
+        );
 
-        let error = validate_observe_repeat_options(2, true)
-            .expect_err("repeat deep should require an explicit policy");
-        assert!(error.to_string().contains("repeat escalation policy"));
+        let single_error =
+            resolve_repeat_escalation_policy(1, false, Some(RepeatEscalationPolicy::Always))
+                .expect_err("single runs should not accept repeat escalation policy");
+        assert!(single_error
+            .to_string()
+            .contains("--repeat-escalation requires --repeat"));
+
+        let native_only_error =
+            resolve_repeat_escalation_policy(2, true, Some(RepeatEscalationPolicy::Always))
+                .expect_err("native-only should reject tool-running repeat policies");
+        assert!(native_only_error
+            .to_string()
+            .contains("--native-only repeat runs"));
+    }
+
+    fn repeat_policy_target(status: TargetStatus, findings_count: u64) -> ObservationTargetSummary {
+        let mut target = ObservationTargetSummary::new(
+            "app",
+            "build/app",
+            Vec::new(),
+            ".",
+            status,
+            TargetExitSummary::clean_exit(),
+            ObservationArtifacts::target_defaults(".re/targets/app"),
+        );
+        target.findings_count = findings_count;
+        if findings_count > 0 {
+            target
+                .findings_by_class
+                .insert("heap_overflow".to_string(), findings_count);
+        }
+        target
+    }
+
+    fn repeat_policy_summary(status: TargetStatus, findings_count: u64) -> ObservationRunSummary {
+        ObservationRunSummary::new(
+            ".re",
+            vec![repeat_policy_target(status, findings_count)],
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn repeat_escalation_state_selects_bounded_attempts() {
+        let clean = repeat_policy_summary(TargetStatus::Clean, 0);
+        let finding = repeat_policy_summary(TargetStatus::Findings, 1);
+
+        let mut first_failure = RepeatEscalationState::default();
+        assert_eq!(
+            first_failure.select_attempt(RepeatEscalationPolicy::FirstFailure, 1, &clean, true),
+            None
+        );
+        assert_eq!(
+            first_failure.select_attempt(RepeatEscalationPolicy::FirstFailure, 2, &finding, true),
+            Some("first_escalatable_failure")
+        );
+        assert_eq!(
+            first_failure.select_attempt(RepeatEscalationPolicy::FirstFailure, 3, &finding, true),
+            None
+        );
+
+        let mut sampled = RepeatEscalationState::default();
+        assert_eq!(
+            sampled.select_attempt(RepeatEscalationPolicy::Sampled, 1, &clean, true),
+            Some("sampled_first_attempt")
+        );
+        assert_eq!(
+            sampled.select_attempt(RepeatEscalationPolicy::Sampled, 2, &finding, true),
+            Some("sampled_first_failure")
+        );
+        assert_eq!(
+            sampled.select_attempt(RepeatEscalationPolicy::Sampled, 3, &finding, true),
+            None
+        );
+
+        let mut always = RepeatEscalationState::default();
+        assert_eq!(
+            always.select_attempt(RepeatEscalationPolicy::Always, 1, &clean, true),
+            Some("policy_always")
+        );
+
+        let mut never = RepeatEscalationState::default();
+        assert_eq!(
+            never.select_attempt(RepeatEscalationPolicy::Never, 1, &finding, true),
+            None
+        );
     }
 
     #[test]
