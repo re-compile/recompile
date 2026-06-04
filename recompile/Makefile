@@ -1,4 +1,4 @@
-.PHONY: all bpf passes agent agent-test toolchain examples user-samples project-fixtures external-smoke escalation-smoke asan-smoke lsan-smoke ubsan-smoke summarize-smoke replay-smoke observe-smoke project-smoke observe-hit-rate support-matrix-smoke finding-schema-smoke phase5-closeout-smoke recc-smoke hit-rate phase1 rc phase2 phase4 phase5
+.PHONY: all bpf passes agent agent-test toolchain examples user-samples project-fixtures external-smoke escalation-smoke asan-smoke lsan-smoke ubsan-smoke summarize-smoke replay-smoke observe-smoke project-smoke repeat-fixtures-smoke observe-hit-rate support-matrix-smoke finding-schema-smoke phase5-closeout-smoke recc-smoke hit-rate phase1 rc phase2 phase4 phase5 phase6
 
 all: examples
 
@@ -37,6 +37,9 @@ observe-smoke:
 
 project-smoke:
 	./scripts/validate-project-fixtures.sh
+
+repeat-fixtures-smoke:
+	./scripts/validate-repeat-fixtures.sh
 
 observe-hit-rate:
 	./scripts/validate-observe-hit-rate.sh
@@ -84,6 +87,10 @@ phase5:
 	$(MAKE) finding-schema-smoke
 	$(MAKE) phase5-closeout-smoke
 	$(MAKE) phase4
+
+phase6:
+	$(MAKE) phase5
+	$(MAKE) repeat-fixtures-smoke
 
 passes:
 	cmake -S llvm-passes -B build/passes && cmake --build build/passes
