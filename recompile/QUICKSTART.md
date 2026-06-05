@@ -17,8 +17,10 @@ Inside the container:
 
 ```bash
 cd /workspace/recompile/recompile
-make rc
+make phase6
 ```
+
+Use `make rc` when you only need the quicker Phase 1 regression gate.
 
 ## Option 2: Native Linux host
 
@@ -26,8 +28,8 @@ make rc
 cd recompile
 cargo build --release -p rerun
 ./scripts/build-examples.sh
-./target/release/rerun run --native build/examples/double_free --output build/double-free-demo
-jq . build/double-free-demo/findings.json
+./target/release/rerun observe build/examples/double_free --output build/double-free-demo
+jq . build/double-free-demo/run-summary.json
 ```
 
 ## Golden Regression Set
@@ -44,7 +46,13 @@ Expected findings:
 - `double_free` -> `double_free`
 - `invalid_free` -> `invalid_free`
 
-Run the full Phase 1 RC gate with:
+Run the current aggregate validation gate with:
+
+```bash
+make phase6
+```
+
+Run the quicker Phase 1 RC gate with:
 
 ```bash
 make rc
@@ -79,8 +87,8 @@ clang -g -O0 -fno-omit-frame-pointer \
 Run it under `rerun`:
 
 ```bash
-./target/release/rerun run --native ./my_test --output build/my-test
-jq . build/my-test/findings.json
+./target/release/rerun observe ./my_test --output build/my-test
+jq . build/my-test/run-summary.json
 ```
 
 Findings include `provenance.source_status`, which is `resolved` when source is
@@ -89,15 +97,15 @@ known and `unresolved` when the tool refuses to guess.
 Confirm a finding with Valgrind:
 
 ```bash
-./target/release/rerun escalate build/my-test --tool valgrind
-jq . build/my-test/escalations/results.json
+./target/release/rerun escalate build/my-test/targets/my_test --tool valgrind
+jq . build/my-test/targets/my_test/escalations/results.json
 ```
 
 For a no-finding crashpack, run an explicit Valgrind binary scan:
 
 ```bash
-./target/release/rerun escalate build/my-test --tool valgrind --scan-binary
-jq . build/my-test/escalations/results.json
+./target/release/rerun escalate build/my-test/targets/my_test --tool valgrind --scan-binary
+jq . build/my-test/targets/my_test/escalations/results.json
 ```
 
 Confirm an already-ASan-built binary with ASan:
@@ -179,12 +187,13 @@ make hit-rate
 jq . build/hit-rate/summary.json
 ```
 
-Run the Phase 2 closeout validation:
+Run the current aggregate validation:
 
 ```bash
-make phase2
-make hit-rate
+make phase6
 ```
+
+Use `make hit-rate` when you only need the native/escalation corpus score.
 
 `make recc-smoke` remains available as an explicit optional wiring check. It is
 not part of the current phase gates.

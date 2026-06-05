@@ -12,6 +12,7 @@ Phase 2 is complete for the current issue-backed escalation and evaluation scope
 Phase 3 is complete for the agentic runtime evidence MVP scope.
 Phase 4 is complete for the local runtime observability foundation.
 Phase 5 is complete for the current memory/resource coverage expansion scope.
+Phase 6 is complete for repeated-run and flaky-failure observability.
 `rerun observe` is the primary human/agent observation-run entry point.
 
 What is working now:
@@ -56,19 +57,19 @@ Inside the container:
 
 ```bash
 cd /workspace/recompile/recompile
+make phase6
+```
+
+For a quicker Phase 1 regression gate:
+
+```bash
 make rc
 ```
 
-For the full current closeout gate:
+For the Phase 6 repeat/flaky fixture gate only:
 
 ```bash
-make phase5
-```
-
-For the Phase 6 repeat/flaky fixture gate:
-
-```bash
-make phase6
+make repeat-fixtures-smoke
 ```
 
 ### Native Linux host
@@ -76,7 +77,8 @@ make phase6
 ```bash
 cargo build --release -p rerun
 ./scripts/build-examples.sh
-./target/release/rerun run --native build/examples/double_free --output build/demo
+./target/release/rerun observe build/examples/double_free --output build/demo
+jq . build/demo/run-summary.json
 ```
 
 ## Important Constraints
@@ -113,7 +115,7 @@ cargo run -p rerun -- observe build/user-samples/copy_overrun_case --output buil
 jq . build/observe-demo/run-summary.json
 ```
 
-`observe` is the Phase 4 local observability entry point. It runs the native
+`observe` is the current local observability entry point. It runs the native
 crashpack path, writes `.re`-style run summaries, supports `--cwd`,
 `--timeout-ms`, `--native-only`, `--deep`, `--repeat`, and target args after
 `--`.
@@ -227,18 +229,22 @@ This runs active Rust checks/tests, the golden baseline, and user-style external
 ### Run the current closeout gate
 
 ```bash
-make phase4
+make phase6
 ```
 
-`make phase4` runs the Phase 2 gate, observation-run smoke tests,
-project-shaped fixtures, observation hit-rate scoring, and lower-level hit-rate
-scoring. Optional `recc`/LLVM validation is intentionally excluded from the
-phase gate and remains available through `make recc-smoke`.
+`make phase6` runs the Phase 5 gate and deterministic repeated-run fixtures.
+That includes the Phase 4 observation-run gate, the Phase 2 escalation/summary
+gate, the Phase 1 RC gate, support-matrix validation, finding-schema
+validation, and the active-path stale/hotfix scan. Optional `recc`/LLVM
+validation is intentionally excluded from the phase gate and remains available
+through `make recc-smoke`.
 
 The individual gates remain available:
 
 ```bash
 make phase2
+make phase4
+make phase5
 make observe-smoke
 make project-smoke
 make repeat-fixtures-smoke
@@ -356,7 +362,7 @@ make recc-smoke
 
 This checks the optional compiler-wrapper path and LLVM pass build. It does not
 replace `rerun observe` or `rerun run --native`, and it is intentionally not
-part of `make phase2`, `make phase4`, or `make phase5`.
+part of `make phase2`, `make phase4`, `make phase5`, or `make phase6`.
 
 ### Score hit rate
 
