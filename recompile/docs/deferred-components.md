@@ -30,6 +30,6 @@ rerun observe <linux-elf-binary> --output <dir>
 
 ## Validation Boundary
 
-`make phase5` is the current aggregate validation gate for the supported runtime path. It intentionally excludes optional `recc`/LLVM validation. Use `make recc-smoke` only when intentionally working on that optional path.
+`make phase6` is the current aggregate validation gate for the supported runtime path. It runs the Phase 5 gate plus deterministic repeated-run fixtures. It intentionally excludes optional `recc`/LLVM validation. Use `make recc-smoke` only when intentionally working on that optional path.
 
 `make phase5-closeout-smoke` scans active production paths for sample-specific, golden-specific, hotfix-like, and stale RECC-era labels. Deferred components are documented here rather than treated as production detector code.
