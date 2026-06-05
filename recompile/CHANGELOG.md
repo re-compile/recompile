@@ -58,6 +58,12 @@
 - Added `make phase5-closeout-smoke` to scan active production paths for sample-specific and hotfix-like logic.
 - Added `make phase5` as the aggregate Phase 5 validation gate.
 - Marked Phase 5 complete for the current memory/resource coverage expansion scope.
+- Added opt-in repeated observation with `rerun observe --repeat N` and `repeat-summary.json`.
+- Added deterministic repeat fixtures for stable clean, stable failing, controlled flaky, and timeout cases.
+- Added repeat escalation policies so expensive tools run only on selected attempts by default.
+- Added bounded GDB batch enrichment for signal-only crash evidence.
+- Added `make repeat-fixtures-smoke` and `make phase6` as the aggregate Phase 6 validation gate.
+- Marked Phase 6 complete for repeated-run and flaky-failure observability.
 
 ### Fixed
 - PID-scoped native runs no longer depend on the old shell-wrapper launch path.

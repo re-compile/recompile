@@ -2036,7 +2036,7 @@ pub fn handle_summarize_command(matches: &ArgMatches) -> Result<()> {
         return Err(anyhow::anyhow!("unsupported summarize format: {}", format));
     }
 
-    let summary = summarize_crashpack(&crashpack_path)?;
+    let summary = summarize_path(&crashpack_path)?;
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
 }
@@ -2137,6 +2137,31 @@ fn write_replay_result(crashpack_path: &PathBuf, result: &ReplayResult) -> Resul
     let results_path = replay_dir.join("results.json");
     fs::write(&results_path, serde_json::to_vec_pretty(result)?)?;
     Ok(())
+}
+
+fn summarize_path(path: &PathBuf) -> Result<Value> {
+    if path.join("repeat-summary.json").exists() {
+        return summarize_repeat_run(path);
+    }
+
+    summarize_crashpack(path)
+}
+
+fn summarize_repeat_run(output_root: &PathBuf) -> Result<Value> {
+    let repeat_summary_path = output_root.join("repeat-summary.json");
+    let repeat_summary = read_json_file(&repeat_summary_path)?;
+    let run_summary_path = output_root.join("run-summary.json");
+    let run_summary = if run_summary_path.exists() {
+        read_json_file(&run_summary_path)?
+    } else {
+        Value::Null
+    };
+
+    Ok(build_repeat_agent_summary(
+        output_root,
+        &repeat_summary,
+        &run_summary,
+    ))
 }
 
 fn summarize_crashpack(crashpack_path: &PathBuf) -> Result<Value> {
@@ -2242,6 +2267,112 @@ fn compact_agent_finding(finding: &Value, escalation_results: &[Value]) -> Value
         "tool": finding.get("tool").cloned().unwrap_or(Value::Null),
         "escalation_plan": finding.get("escalation_plan").cloned().unwrap_or(Value::Null),
         "escalation_result": linked_escalation,
+    })
+}
+
+fn build_repeat_agent_summary(
+    output_root: &PathBuf,
+    repeat_summary: &Value,
+    run_summary: &Value,
+) -> Value {
+    let completed_attempts = repeat_summary
+        .get("completed_attempts")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let pass_attempts = repeat_summary
+        .pointer("/outcome_totals/pass")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let non_pass_attempts = completed_attempts.saturating_sub(pass_attempts);
+    let failure_rate = if completed_attempts > 0 {
+        json!(non_pass_attempts as f64 / completed_attempts as f64)
+    } else {
+        Value::Null
+    };
+
+    let attempts = repeat_summary
+        .get("attempts")
+        .and_then(Value::as_array)
+        .map(|attempts| {
+            attempts
+                .iter()
+                .map(compact_repeat_attempt)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let issue_groups = repeat_summary
+        .get("issue_groups")
+        .and_then(Value::as_array)
+        .map(|groups| {
+            groups
+                .iter()
+                .map(compact_repeat_issue_group)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    json!({
+        "schema_version": "1.0",
+        "purpose": "repeat_agent_summary",
+        "output_root": output_root.display().to_string(),
+        "artifacts": {
+            "repeat_summary": output_root.join("repeat-summary.json").display().to_string(),
+            "run_summary": output_root.join("run-summary.json").display().to_string(),
+        },
+        "summary": {
+            "requested_attempts": repeat_summary.get("requested_attempts").cloned().unwrap_or(Value::Null),
+            "completed_attempts": completed_attempts,
+            "pass_attempts": pass_attempts,
+            "non_pass_attempts": non_pass_attempts,
+            "failure_rate": failure_rate,
+            "status_totals": repeat_summary.get("status_totals").cloned().unwrap_or_else(|| json!({})),
+            "outcome_totals": repeat_summary.get("outcome_totals").cloned().unwrap_or_else(|| json!({})),
+            "finding_totals_by_class": repeat_summary.get("finding_totals_by_class").cloned().unwrap_or_else(|| json!({})),
+            "repeat_issue_group_count": issue_groups.len(),
+            "target_count": run_summary.get("target_count").cloned().unwrap_or(Value::Null),
+            "tool_totals_by_status": run_summary.get("escalation_totals_by_tool").cloned().unwrap_or_else(|| json!({})),
+        },
+        "first_failure": repeat_summary.get("first_failure").cloned().unwrap_or(Value::Null),
+        "best_evidence_attempt": repeat_summary.get("best_evidence_attempt").cloned().unwrap_or(Value::Null),
+        "issue_groups": issue_groups,
+        "attempts": attempts,
+        "escalation": repeat_summary.get("escalation_policy").cloned().unwrap_or_else(|| json!({})),
+        "next_commands": repeat_summary.get("next_commands").cloned().unwrap_or_else(|| json!([])),
+    })
+}
+
+fn compact_repeat_attempt(attempt: &Value) -> Value {
+    json!({
+        "attempt": attempt.get("attempt").cloned().unwrap_or(Value::Null),
+        "target_name": attempt.get("target_name").cloned().unwrap_or(Value::Null),
+        "status": attempt.get("status").cloned().unwrap_or(Value::Null),
+        "outcome": attempt.get("outcome").cloned().unwrap_or(Value::Null),
+        "findings_count": attempt.get("findings_count").cloned().unwrap_or(Value::Null),
+        "findings_by_class": attempt.get("findings_by_class").cloned().unwrap_or_else(|| json!({})),
+        "issue_group_count": attempt.get("issue_group_count").cloned().unwrap_or(Value::Null),
+        "error": attempt.get("error").cloned().unwrap_or(Value::Null),
+        "duration_ms": attempt.get("duration_ms").cloned().unwrap_or(Value::Null),
+        "run_summary": attempt.get("run_summary").cloned().unwrap_or(Value::Null),
+        "crashpack": attempt.get("crashpack").cloned().unwrap_or(Value::Null),
+        "findings": attempt.get("findings").cloned().unwrap_or(Value::Null),
+        "evidence_pack": attempt.get("evidence_pack").cloned().unwrap_or(Value::Null),
+        "issue_groups": attempt.get("issue_groups").cloned().unwrap_or(Value::Null),
+        "next_commands": attempt.get("next_commands").cloned().unwrap_or_else(|| json!([])),
+    })
+}
+
+fn compact_repeat_issue_group(group: &Value) -> Value {
+    json!({
+        "id": group.get("id").cloned().unwrap_or(Value::Null),
+        "fingerprint": group.get("fingerprint").cloned().unwrap_or(Value::Null),
+        "class": group.get("class").cloned().unwrap_or(Value::Null),
+        "operation": group.get("operation").cloned().unwrap_or(Value::Null),
+        "attempt_count": group.get("attempt_count").cloned().unwrap_or(Value::Null),
+        "occurrence_count": group.get("occurrence_count").cloned().unwrap_or(Value::Null),
+        "first_attempt": group.get("first_attempt").cloned().unwrap_or(Value::Null),
+        "last_attempt": group.get("last_attempt").cloned().unwrap_or(Value::Null),
+        "representative_attempt": group.get("representative_attempt").cloned().unwrap_or(Value::Null),
+        "attempts": group.get("attempts").cloned().unwrap_or_else(|| json!([])),
     })
 }
 
@@ -2918,6 +3049,144 @@ mod tests {
                 .pointer("/findings/0/escalation_result/confirmed")
                 .and_then(Value::as_bool),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn repeat_agent_summary_exposes_agent_fields() {
+        let repeat_summary = json!({
+            "requested_attempts": 3,
+            "completed_attempts": 3,
+            "status_totals": {"clean": 1, "findings": 2},
+            "outcome_totals": {"pass": 1, "finding": 2},
+            "finding_totals_by_class": {"heap_overflow": 2},
+            "first_failure": {
+                "attempt": 2,
+                "target_name": "attempt-0002-app",
+                "status": "findings",
+                "outcome": "finding",
+                "reason": "first_non_pass",
+                "run_summary": ".re/attempts/0002/run-summary.json",
+                "crashpack": ".re/attempts/0002/targets/app",
+                "findings_count": 1,
+                "findings_by_class": {"heap_overflow": 1}
+            },
+            "best_evidence_attempt": {
+                "attempt": 2,
+                "target_name": "attempt-0002-app",
+                "status": "findings",
+                "outcome": "finding",
+                "reason": "best_available_evidence",
+                "run_summary": ".re/attempts/0002/run-summary.json",
+                "crashpack": ".re/attempts/0002/targets/app",
+                "findings_count": 1,
+                "findings_by_class": {"heap_overflow": 1}
+            },
+            "escalation_policy": {
+                "policy": "first-failure",
+                "deep": true,
+                "selected_attempt_count": 1,
+                "selected_attempts": [{"attempt": 2, "reason": "first_escalatable_failure"}]
+            },
+            "issue_groups": [{
+                "id": "RIG-abc",
+                "fingerprint": "re-issue-v1-abc",
+                "class": "heap_overflow",
+                "operation": "memcpy",
+                "attempt_count": 2,
+                "occurrence_count": 2,
+                "first_attempt": 2,
+                "last_attempt": 3,
+                "representative_attempt": {"attempt": 2},
+                "attempts": [{"attempt": 2}, {"attempt": 3}]
+            }],
+            "attempts": [
+                {
+                    "attempt": 1,
+                    "target_name": "attempt-0001-app",
+                    "status": "clean",
+                    "outcome": "pass",
+                    "findings_count": 0,
+                    "findings_by_class": {},
+                    "issue_group_count": 0,
+                    "run_summary": ".re/attempts/0001/run-summary.json",
+                    "crashpack": ".re/attempts/0001/targets/app",
+                    "findings": ".re/attempts/0001/targets/app/findings.json",
+                    "evidence_pack": ".re/attempts/0001/targets/app/evidence-pack.json",
+                    "issue_groups": ".re/attempts/0001/targets/app/issue-groups.json",
+                    "next_commands": ["rerun summarize .re/attempts/0001/targets/app --format json"]
+                },
+                {
+                    "attempt": 2,
+                    "target_name": "attempt-0002-app",
+                    "status": "findings",
+                    "outcome": "finding",
+                    "findings_count": 1,
+                    "findings_by_class": {"heap_overflow": 1},
+                    "issue_group_count": 1,
+                    "run_summary": ".re/attempts/0002/run-summary.json",
+                    "crashpack": ".re/attempts/0002/targets/app",
+                    "findings": ".re/attempts/0002/targets/app/findings.json",
+                    "evidence_pack": ".re/attempts/0002/targets/app/evidence-pack.json",
+                    "issue_groups": ".re/attempts/0002/targets/app/issue-groups.json",
+                    "next_commands": ["rerun summarize .re/attempts/0002/targets/app --format json"]
+                }
+            ],
+            "next_commands": ["jq . .re/repeat-summary.json"]
+        });
+        let run_summary = json!({
+            "target_count": 3,
+            "escalation_totals_by_tool": {
+                "valgrind": {"findings": 1}
+            }
+        });
+
+        let summary =
+            build_repeat_agent_summary(&PathBuf::from(".re"), &repeat_summary, &run_summary);
+
+        assert_eq!(
+            summary.pointer("/purpose").and_then(Value::as_str),
+            Some("repeat_agent_summary")
+        );
+        assert_eq!(
+            summary
+                .pointer("/summary/non_pass_attempts")
+                .and_then(Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            summary
+                .pointer("/summary/failure_rate")
+                .and_then(Value::as_f64),
+            Some(2.0 / 3.0)
+        );
+        assert_eq!(
+            summary
+                .pointer("/summary/tool_totals_by_status/valgrind/findings")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .pointer("/best_evidence_attempt/attempt")
+                .and_then(Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            summary
+                .pointer("/issue_groups/0/occurrence_count")
+                .and_then(Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            summary
+                .pointer("/attempts/1/status")
+                .and_then(Value::as_str),
+            Some("findings")
+        );
+        assert_eq!(
+            summary.pointer("/next_commands/0").and_then(Value::as_str),
+            Some("jq . .re/repeat-summary.json")
         );
     }
 

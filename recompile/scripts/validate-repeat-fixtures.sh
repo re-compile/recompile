@@ -56,13 +56,15 @@ run_repeat_case repeat-timeout 2 yes \
     --timeout-ms 100 \
     build/project-fixtures/repeat-timeout/repeat_timeout
 
-python3 - "$output_root" "build/project-fixtures/repeat-flaky/run/attempt-state.txt" <<'PY'
+python3 - "$output_root" "build/project-fixtures/repeat-flaky/run/attempt-state.txt" "$runner_path" <<'PY'
 import json
 import pathlib
+import subprocess
 import sys
 
 output_root = pathlib.Path(sys.argv[1])
 flaky_state_path = pathlib.Path(sys.argv[2])
+runner_path = pathlib.Path(sys.argv[3])
 
 cases = [
     {
@@ -211,6 +213,42 @@ def assert_repeat_issue_groups(summary, case, summary_path):
                 raise SystemExit(f"{summary_path}: occurrence missing issue_group_id: {occurrence}")
 
 
+def assert_repeat_agent_summary(case_dir, repeat_summary_path, case, repeat_summary):
+    agent_summary = json.loads(subprocess.check_output(
+        [str(runner_path), "summarize", str(case_dir), "--format", "json"],
+        text=True,
+    ))
+    if agent_summary.get("purpose") != "repeat_agent_summary":
+        raise SystemExit(f"{case_dir}: summarize root did not emit repeat_agent_summary: {agent_summary}")
+    artifacts = agent_summary.get("artifacts") or {}
+    if pathlib.Path(artifacts.get("repeat_summary", "")) != repeat_summary_path:
+        raise SystemExit(f"{case_dir}: repeat summary artifact mismatch: {artifacts}")
+    summary = agent_summary.get("summary") or {}
+    if summary.get("requested_attempts") != case["requested_attempts"]:
+        raise SystemExit(f"{case_dir}: agent requested_attempts mismatch: {summary}")
+    if summary.get("completed_attempts") != case["requested_attempts"]:
+        raise SystemExit(f"{case_dir}: agent completed_attempts mismatch: {summary}")
+    expected_passes = case["outcomes"].count("pass")
+    expected_non_passes = case["requested_attempts"] - expected_passes
+    if summary.get("pass_attempts") != expected_passes:
+        raise SystemExit(f"{case_dir}: agent pass_attempts mismatch: {summary}")
+    if summary.get("non_pass_attempts") != expected_non_passes:
+        raise SystemExit(f"{case_dir}: agent non_pass_attempts mismatch: {summary}")
+    expected_failure_rate = expected_non_passes / case["requested_attempts"]
+    if abs(summary.get("failure_rate", -1) - expected_failure_rate) > 0.000001:
+        raise SystemExit(f"{case_dir}: agent failure_rate mismatch: {summary}")
+    if summary.get("status_totals") != repeat_summary.get("status_totals"):
+        raise SystemExit(f"{case_dir}: agent status_totals mismatch: {summary}")
+    if summary.get("finding_totals_by_class") != repeat_summary.get("finding_totals_by_class"):
+        raise SystemExit(f"{case_dir}: agent finding totals mismatch: {summary}")
+    if len(agent_summary.get("attempts") or []) != case["requested_attempts"]:
+        raise SystemExit(f"{case_dir}: agent attempts mismatch: {agent_summary.get('attempts')}")
+    if len(agent_summary.get("issue_groups") or []) != len(case["repeat_issue_groups"]):
+        raise SystemExit(f"{case_dir}: agent repeat issue groups mismatch: {agent_summary.get('issue_groups')}")
+    if not any("repeat-summary.json" in command for command in agent_summary.get("next_commands") or []):
+        raise SystemExit(f"{case_dir}: agent next_commands should include repeat-summary.json")
+
+
 results = []
 for case in cases:
     case_dir = output_root / case["name"]
@@ -299,6 +337,7 @@ for case in cases:
     if not any("repeat-summary.json" in command for command in repeat_summary.get("next_commands") or []):
         raise SystemExit(f"{repeat_summary_path}: next_commands should include repeat-summary.json")
     assert_repeat_issue_groups(repeat_summary, case, repeat_summary_path)
+    assert_repeat_agent_summary(case_dir, repeat_summary_path, case, repeat_summary)
 
     results.append({
         "name": case["name"],

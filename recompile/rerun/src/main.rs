@@ -210,10 +210,10 @@ fn build_cli() -> Command {
         )
         .subcommand(
             Command::new("summarize")
-                .about("Print a compact agent-readable crashpack summary")
+                .about("Print a compact agent-readable crashpack or repeat-run summary")
                 .arg(
                     Arg::new("crashpack")
-                        .help("Path to crashpack directory")
+                        .help("Path to a crashpack directory or repeat observation output directory")
                         .required(true)
                         .value_hint(ValueHint::DirPath),
                 )
