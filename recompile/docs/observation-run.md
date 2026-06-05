@@ -302,9 +302,9 @@ native setup failures remain target failures and no tool-only fallback is run.
 
 ## Manual Linux Validation Checklist
 
-Phase 4 should be validated on Linux or in the supported Docker-native setup.
-The container must use `--privileged --pid=host` so eBPF events and target PIDs
-line up.
+The current supported path should be validated on Linux or in the supported
+Docker-native setup. The container must use `--privileged --pid=host` so eBPF
+events and target PIDs line up.
 
 From the repository root:
 
@@ -320,7 +320,7 @@ docker run --rm -it --privileged --pid=host \
 Inside the container:
 
 ```bash
-make phase5
+make phase6
 ```
 
 The equivalent expanded gate is:

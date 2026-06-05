@@ -18,6 +18,7 @@ Phase 2 is complete for the current issue-backed escalation and evaluation scope
 Phase 3 is complete for the agentic runtime evidence MVP scope.
 Phase 4 is complete for the local runtime observability foundation.
 Phase 5 is complete for the current memory/resource coverage expansion scope.
+Phase 6 is complete for repeated-run and flaky-failure observability.
 
 Validated native findings in Docker:
 
@@ -126,6 +127,7 @@ jq . build/hit-rate/summary.json
 - [`recompile/ARCHITECTURE.md`](recompile/ARCHITECTURE.md)
 - [`recompile/docs/support-matrix.md`](recompile/docs/support-matrix.md)
 - [`recompile/docs/phase5-closeout.md`](recompile/docs/phase5-closeout.md)
+- [`recompile/docs/phase6-closeout.md`](recompile/docs/phase6-closeout.md)
 - [`recompile/docs/deferred-components.md`](recompile/docs/deferred-components.md)
 
 ## Not In Scope Right Now
@@ -182,22 +184,27 @@ Valgrind-first and marked as native-unsupported in that summary. Native
 `double_close` and `invalid_close` are tracked, but tool confirmation is marked
 unsupported until a reliable escalation path exists.
 
-Phase 5 adds a machine-readable support matrix:
+Phase 5 adds a machine-readable support matrix, and Phase 6 adds the current
+aggregate validation gate for repeated-run evidence:
 
 ```bash
 cd recompile
 make support-matrix-smoke
 make phase5-closeout-smoke
+make repeat-fixtures-smoke
 make phase5
+make phase6
 ```
 
 `recompile/docs/support-matrix.json` is validated against the committed
 hit-rate and sanitizer smoke scripts. `make phase5-closeout-smoke` scans active
 production paths for sample-specific and hotfix-like logic. `make phase5` runs
-both checks plus the Phase 4 gate. Optional `recc`/LLVM validation remains
-manual through `make recc-smoke` and is not part of `make phase5`. These reports
+those checks plus the Phase 4 gate. `make phase6` runs the Phase 5 gate and the
+deterministic repeat fixture gate. Optional `recc`/LLVM validation remains
+manual through `make recc-smoke` and is not part of `make phase6`. These reports
 are regression and coverage signals, not exhaustive production proof; they make
-supported, tool-backed, unsupported, and not-covered classes explicit.
+supported, tool-backed, unsupported, not-covered, and repeated-run behavior
+explicit.
 
 Native findings include `provenance.source_status` so unresolved source
 locations are explicit instead of silently missing.
@@ -232,6 +239,15 @@ For the agent-first observation path, prefer `observe`:
 ./target/release/rerun observe ./my_test --output build/my-observation
 jq . build/my-observation/run-summary.json
 ./target/release/rerun summarize build/my-observation/targets/my_test --format json
+```
+
+For suspected flaky behavior, opt into bounded repetition:
+
+```bash
+./target/release/rerun observe ./my_test \
+  --repeat 5 \
+  --output build/my-repeat-observation
+jq . build/my-repeat-observation/repeat-summary.json
 ```
 
 If the binary terminates with `SIGSEGV`, `SIGABRT`, `SIGBUS`, or `SIGFPE` and no
