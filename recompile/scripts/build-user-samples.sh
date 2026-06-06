@@ -42,6 +42,16 @@ UBSAN_FLAGS=(
   -fno-sanitize-recover=undefined
 )
 
+TSAN_FLAGS=(
+  -g
+  -O1
+  -fno-omit-frame-pointer
+  -fsanitize=thread
+  -pthread
+)
+
+BUILD_TSAN=${BUILD_TSAN:-0}
+
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/copy_overrun_case samples/user-binaries/copy_overrun_case.c
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/memmove_overrun_case samples/user-binaries/memmove_overrun_case.c
 "$CC" "${COMMON_FLAGS[@]}" -o build/user-samples/memset_overrun_case samples/user-binaries/memset_overrun_case.c
@@ -103,7 +113,17 @@ UBSAN_FLAGS=(
 "$CC" "${UBSAN_FLAGS[@]}" -o build/user-samples-ubsan/bounds samples/user-binaries/ubsan_bounds.c
 "$CC" "${UBSAN_FLAGS[@]}" -o build/user-samples-ubsan/clean_malloc_free samples/user-binaries/clean_malloc_free.c
 
+if [[ "$BUILD_TSAN" == "1" ]]; then
+  mkdir -p build/user-samples-tsan
+  "$CC" -std=c11 "${TSAN_FLAGS[@]}" -o build/user-samples-tsan/data_race samples/user-binaries/tsan_data_race.c
+  "$CC" -std=c11 "${TSAN_FLAGS[@]}" -o build/user-samples-tsan/clean_mutex samples/user-binaries/tsan_clean_mutex.c
+  "$CC" -std=c11 "${TSAN_FLAGS[@]}" -o build/user-samples-tsan/clean_atomic samples/user-binaries/tsan_clean_atomic.c
+fi
+
 echo "Built user-style samples under build/user-samples/"
 echo "Built ASan-instrumented samples under build/user-samples-asan/"
 echo "Built LSan-instrumented samples under build/user-samples-lsan/"
 echo "Built UBSan-instrumented samples under build/user-samples-ubsan/"
+if [[ "$BUILD_TSAN" == "1" ]]; then
+  echo "Built TSan-instrumented samples under build/user-samples-tsan/"
+fi

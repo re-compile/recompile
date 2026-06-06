@@ -1,4 +1,4 @@
-.PHONY: all bpf passes agent agent-test toolchain examples user-samples project-fixtures external-smoke escalation-smoke asan-smoke lsan-smoke ubsan-smoke summarize-smoke replay-smoke observe-smoke project-smoke repeat-fixtures-smoke observe-hit-rate support-matrix-smoke finding-schema-smoke phase5-closeout-smoke recc-smoke hit-rate phase1 rc phase2 phase4 phase5 phase6
+.PHONY: all bpf passes agent agent-test toolchain examples user-samples project-fixtures external-smoke escalation-smoke asan-smoke lsan-smoke ubsan-smoke tsan-fixtures-smoke summarize-smoke replay-smoke observe-smoke project-smoke repeat-fixtures-smoke observe-hit-rate support-matrix-smoke finding-schema-smoke phase5-closeout-smoke recc-smoke hit-rate phase1 rc phase2 phase4 phase5 phase6
 
 all: examples
 
@@ -25,6 +25,9 @@ lsan-smoke:
 
 ubsan-smoke:
 	./scripts/validate-ubsan.sh
+
+tsan-fixtures-smoke:
+	./scripts/validate-tsan-fixtures.sh
 
 summarize-smoke:
 	./scripts/validate-summarize.sh
